@@ -18,9 +18,10 @@ DIGISELLER_API_KEY=这里填 WebMoney Keeper 里的完整 API Key
 DIGISELLER_ADMIN_HOST=127.0.0.1
 DIGISELLER_ADMIN_PORT=8765
 DIGISELLER_KEEP_ONLINE=1
-DIGISELLER_KEEP_ONLINE_INTERVAL=30
+DIGISELLER_KEEP_ONLINE_INTERVAL=15
 DIGISELLER_ONLINE_VALUE=1
 DIGISELLER_ONLINE_VERIFY_TYPE=seller
+DIGISELLER_PUBLIC_SELLER_URL=https://plati.market/seller/hello1989/1437041/?lang=en-US
 ```
 
 建议：如果 API Key 曾经发到聊天或公开地方，先在 Digiseller 后台重新生成新 key，再写入 `.env`。
@@ -51,7 +52,7 @@ http://127.0.0.1:8765
 
 Web 提醒：启动后台并打开 `http://127.0.0.1:8765` 后，点击右下角 `Enable alerts`。
 
-Online keepalive: every 30s calls `setonlinesetting` + `checknewchats`, then verifies buyer-visible status with `getonlinestatus`; disable with `DIGISELLER_KEEP_ONLINE=0`.
+Online keepalive: every 15s calls `setonlinesetting` + chat heartbeat APIs, then verifies buyer-visible status with `getonlinestatus` and the public seller page; disable with `DIGISELLER_KEEP_ONLINE=0`.
 
 开启后页面会每 15 秒检查一次未读消息；有新的未读时会：
 
