@@ -621,6 +621,8 @@ ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
     "setting_error": "",
     "verify_error": "",
     "public_error": "",
+    "public_checked_at": "",
+    "public_checked_ts": 0.0,
     "recovery_error": "",
     "failure_count": 0,
 }
@@ -669,7 +671,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 
 
 def layout(title: str, body: str) -> bytes:
-    online = ONLINE_KEEPALIVE_STATUS.copy()
+    online = refresh_public_online_status()
     online_error = str(online.get("last_error") or "")
     online_last_ok = str(online.get("last_ok") or "")
     online_last_set = str(online.get("last_set") or "")
@@ -679,6 +681,7 @@ def layout(title: str, body: str) -> bytes:
     online_setting_error = str(online.get("setting_error") or "")
     online_verify_error = str(online.get("verify_error") or "")
     online_public_error = str(online.get("public_error") or "")
+    online_public_checked_at = str(online.get("public_checked_at") or "")
     online_recovery_error = str(online.get("recovery_error") or "")
     if online.get("verified_online") or online.get("public_online"):
         online_label = "Online verified"
@@ -695,7 +698,7 @@ def layout(title: str, body: str) -> bytes:
     else:
         online_label = "Online checking"
         online_class = ""
-    online_title = f"Last verified: {online_last_ok or '-'} | Last set: {online_last_set or '-'} | Last chat heartbeat: {online_last_heartbeat or '-'} | API status: {online.get('status') if online.get('status') is not None else '-'} | Public online: {'yes' if online.get('public_online') else 'no'} | Set error: {online_set_error or '-'} | Chat heartbeat error: {online_heartbeat_error or '-'} | Setting error: {online_setting_error or '-'} | Verify error: {online_verify_error or '-'} | Public verify error: {online_public_error or '-'} | Recovering: {online_recovery_error or '-'} | Error: {online_error or '-'}"
+    online_title = f"Last verified: {online_last_ok or '-'} | Last set: {online_last_set or '-'} | Last chat heartbeat: {online_last_heartbeat or '-'} | API status: {online.get('status') if online.get('status') is not None else '-'} | Public online: {'yes' if online.get('public_online') else 'no'} | Set error: {online_set_error or '-'} | Chat heartbeat error: {online_heartbeat_error or '-'} | Setting error: {online_setting_error or '-'} | Verify error: {online_verify_error or '-'} | Public checked: {online_public_checked_at or '-'} | Public verify error: {online_public_error or '-'} | Recovering: {online_recovery_error or '-'} | Error: {online_error or '-'}"
     chat_keepalive_url = get_chat_keepalive_url()
     chat_browser = CHAT_KEEPALIVE_BROWSER_STATUS.copy()
     chat_button_label = "Chat auto-opened" if chat_browser.get("opened") else "Open chat window"
@@ -810,6 +813,7 @@ def layout(title: str, body: str) -> bytes:
         const settingError = status.setting_error || '';
         const verifyError = status.verify_error || '';
         const publicError = status.public_error || '';
+        const publicCheckedAt = status.public_checked_at || '';
         const recoveryError = status.recovery_error || '';
         let label = 'Online checking';
         let cls = '';
@@ -817,8 +821,9 @@ def layout(title: str, body: str) -> bytes:
           label = 'Online verified';
           cls = 'ok';
         }} else if (error && error !== 'disabled') {{
-          label = 'Online error';
-          cls = 'bad';
+          const chatOpened = status.chat_browser && status.chat_browser.opened;
+          label = chatOpened ? 'Online verifying' : 'Online error';
+          cls = chatOpened ? '' : 'bad';
         }} else if (lastSet || lastHeartbeat) {{
           label = 'Online heartbeat';
         }} else if (lastOk) {{
@@ -827,7 +832,7 @@ def layout(title: str, body: str) -> bytes:
         }}
         pill.textContent = label;
         pill.className = `top-online ${{cls}}`;
-        pill.title = `Last verified: ${{lastOk || '-'}} | Last set: ${{lastSet || '-'}} | Last chat heartbeat: ${{lastHeartbeat || '-'}} | API status: ${{status.status ?? '-'}} | Public online: ${{status.public_online ? 'yes' : 'no'}} | Set error: ${{setError || '-'}} | Chat heartbeat error: ${{heartbeatError || '-'}} | Setting error: ${{settingError || '-'}} | Verify error: ${{verifyError || '-'}} | Public verify error: ${{publicError || '-'}} | Recovering: ${{recoveryError || '-'}} | Error: ${{error || '-'}}`;
+        pill.title = `Last verified: ${{lastOk || '-'}} | Last set: ${{lastSet || '-'}} | Last chat heartbeat: ${{lastHeartbeat || '-'}} | API status: ${{status.status ?? '-'}} | Public online: ${{status.public_online ? 'yes' : 'no'}} | Set error: ${{setError || '-'}} | Chat heartbeat error: ${{heartbeatError || '-'}} | Setting error: ${{settingError || '-'}} | Verify error: ${{verifyError || '-'}} | Public checked: ${{publicCheckedAt || '-'}} | Public verify error: ${{publicError || '-'}} | Recovering: ${{recoveryError || '-'}} | Error: ${{error || '-'}}`;
       }}
       async function refreshOnlineStatus() {{
         try {{
@@ -1302,6 +1307,50 @@ def remove_phrase_files(phrase: dict[str, Any]) -> None:
 def update_online_keepalive_status(**values: Any) -> None:
     values.setdefault("last_checked", dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
     ONLINE_KEEPALIVE_STATUS.update(values)
+
+
+def refresh_public_online_status(force: bool = False) -> dict[str, Any]:
+    now = time.time()
+    last_checked_ts = float(ONLINE_KEEPALIVE_STATUS.get("public_checked_ts") or 0)
+    if not force and now - last_checked_ts < 10:
+        data = ONLINE_KEEPALIVE_STATUS.copy()
+        data["chat_browser"] = CHAT_KEEPALIVE_BROWSER_STATUS.copy()
+        return data
+
+    checked_at = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    try:
+        public_data = client.public_seller_online_status()
+    except Exception as exc:
+        update_online_keepalive_status(
+            public_error=str(exc),
+            public_checked_at=checked_at,
+            public_checked_ts=now,
+        )
+    else:
+        public_online = bool(public_data.get("online"))
+        updates: dict[str, Any] = {
+            "public_online": public_online,
+            "public_url": public_data.get("url") or ONLINE_KEEPALIVE_STATUS.get("public_url", ""),
+            "public_error": "",
+            "public_checked_at": checked_at,
+            "public_checked_ts": now,
+            "public_response": public_data,
+        }
+        if public_online:
+            updates.update(
+                {
+                    "verified_online": True,
+                    "last_ok": checked_at,
+                    "last_error": "",
+                    "recovery_error": "",
+                    "failure_count": 0,
+                }
+            )
+        update_online_keepalive_status(**updates)
+
+    data = ONLINE_KEEPALIVE_STATUS.copy()
+    data["chat_browser"] = CHAT_KEEPALIVE_BROWSER_STATUS.copy()
+    return data
 
 
 def run_online_keepalive(interval: int) -> None:
@@ -2587,9 +2636,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(data)
 
     def api_online_keepalive(self) -> None:
-        data = ONLINE_KEEPALIVE_STATUS.copy()
-        data["chat_browser"] = CHAT_KEEPALIVE_BROWSER_STATUS.copy()
-        self.send_json(data)
+        self.send_json(refresh_public_online_status(force=True))
 
     def api_chat_debug(self) -> None:
         order_id = int(self.q("order_id", "0") or 0)
