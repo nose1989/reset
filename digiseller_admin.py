@@ -285,6 +285,20 @@ class DigisellerClient:
             return {}
         return r.json()
 
+    def session_get(self, path: str) -> Any:
+        session_id = urllib.parse.quote(self.token, safe="")
+        r = self.http.get(API_BASE + path.format(session_id=session_id))
+        if r.status_code == 401:
+            self._token = None
+            session_id = urllib.parse.quote(self.token, safe="")
+            r = self.http.get(API_BASE + path.format(session_id=session_id))
+        r.raise_for_status()
+        return r.json()
+
+    def online_setting(self) -> dict[str, Any]:
+        data = self.session_get("/getonlinesetting/{session_id}")
+        return data if isinstance(data, dict) else {"raw": data}
+
     def sales(self, days: int, rows: int, page: int = 1) -> dict[str, Any]:
         finish = dt.datetime.utcnow()
         start = finish - dt.timedelta(days=days)
@@ -403,6 +417,14 @@ class DigisellerClient:
 
 client = DigisellerClient()
 UNREAD_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
+ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
+    "enabled": False,
+    "last_ok": "",
+    "last_error": "",
+    "last_checked": "",
+    "setting": None,
+    "period": None,
+}
 
 
 def start_auto_reload() -> None:
@@ -792,6 +814,45 @@ def clear_unread_cache() -> None:
     UNREAD_CACHE["data"] = None
 
 
+def update_online_keepalive_status(**values: Any) -> None:
+    values.setdefault("last_checked", dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
+    ONLINE_KEEPALIVE_STATUS.update(values)
+
+
+def run_online_keepalive(interval: int) -> None:
+    while True:
+        if not client.configured():
+            update_online_keepalive_status(enabled=False, last_error="missing .env")
+            time.sleep(interval)
+            continue
+        try:
+            data = client.online_setting()
+            checked_at = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            update_online_keepalive_status(
+                enabled=True,
+                last_checked=checked_at,
+                last_ok=checked_at,
+                last_error="",
+                setting=data.get("setting"),
+                period=data.get("period"),
+            )
+        except Exception as exc:
+            update_online_keepalive_status(enabled=True, last_error=str(exc))
+        time.sleep(interval)
+
+
+def start_online_keepalive() -> None:
+    enabled = os.getenv("DIGISELLER_KEEP_ONLINE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    if not enabled:
+        update_online_keepalive_status(enabled=False, last_error="disabled")
+        return
+    try:
+        interval = max(30, int(os.getenv("DIGISELLER_KEEP_ONLINE_INTERVAL", "60") or "60"))
+    except ValueError:
+        interval = 60
+    threading.Thread(target=run_online_keepalive, args=(interval,), daemon=True).start()
+
+
 def notify_desktop(text: str) -> None:
     print("\a" + text, flush=True)
     if sys.platform == "darwin":
@@ -1097,9 +1158,19 @@ class Handler(BaseHTTPRequestHandler):
                 login_info = f"<div class='stat'>API login: <span class='ok'>OK</span><br>seller_id: {h(data.get('seller_id'))}<br>valid_thru: {h(data.get('valid_thru'))}</div>"
             except Exception as exc:
                 login_info = f"<div class='stat bad'>API login failed: {h(exc)}</div>"
+        online = ONLINE_KEEPALIVE_STATUS.copy()
+        online_ok = bool(online.get("enabled")) and not online.get("last_error")
+        online_state = "<span class='ok'>active</span>" if online_ok else "<span class='bad'>not active</span>"
+        online_info = (
+            f"<div class='stat'><b>Online keepalive</b><br>Status: {online_state}"
+            f"<br>Last OK: {h(online.get('last_ok') or '-')}"
+            f"<br>Setting: {h(online.get('setting') if online.get('setting') is not None else '-')}"
+            f" · period: {h(online.get('period') if online.get('period') is not None else '-')}"
+            f"<br>Error: {h(online.get('last_error') or '-')}</div>"
+        )
         body = f"""
         <div class='card'><h2>Digiseller Local Admin</h2><p>Config: {status}</p><p class='muted'>API Key is read from <code>.env</code>; never paste it into code or chat.</p></div>
-        <div class='grid'>{login_info}<div class='stat'><b>Quick links</b><br><a href='/sales'>Recent sales</a><br><a href='/unread'>Unread messages</a><br><a href='/chats'>Buyer chats</a></div></div>
+        <div class='grid'>{login_info}{online_info}<div class='stat'><b>Quick links</b><br><a href='/sales'>Recent sales</a><br><a href='/unread'>Unread messages</a><br><a href='/chats'>Buyer chats</a></div></div>
         """
         self.send_html("Dashboard", body)
 
@@ -1451,9 +1522,11 @@ def main() -> None:
     host = os.getenv("DIGISELLER_ADMIN_HOST", "127.0.0.1")
     port = int(os.getenv("DIGISELLER_ADMIN_PORT", "8765"))
     start_auto_reload()
+    start_online_keepalive()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Digiseller admin running at http://{host}:{port}")
     print("Open the page and click 'Enable alerts' to allow sound/voice notifications.")
+    print("Online keepalive: enabled by default; set DIGISELLER_KEEP_ONLINE=0 to disable.")
     print("Background watcher: python3 digiseller_admin.py watch --interval 15")
     print("Press Ctrl+C to stop")
     server.serve_forever()
