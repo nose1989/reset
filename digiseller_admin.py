@@ -75,6 +75,18 @@ def short(value: Any, length: int = 110) -> str:
     return text if len(text) <= length else text[: length - 1] + "…"
 
 
+def sort_time(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M"):
+        try:
+            return dt.datetime.strptime(text[:19], fmt).timestamp()
+        except ValueError:
+            pass
+    return 0.0
+
+
 TRANSLATE_CACHE: dict[tuple[str, str, str], tuple[str, str]] = {}
 LANG_LABELS = {
     "zh": "中文",
@@ -298,6 +310,74 @@ class DigisellerClient:
     def online_setting(self) -> dict[str, Any]:
         data = self.session_get("/getonlinesetting/{session_id}")
         return data if isinstance(data, dict) else {"raw": data}
+
+    def guest_chats(self, limit: int = 10) -> list[dict[str, Any]]:
+        chats: list[dict[str, Any]] = []
+        errors = []
+        for corr_type in ("visitor", "anonym"):
+            try:
+                data = self.session_get(f"/chatlist/{{session_id}}/{corr_type}")
+            except Exception as exc:
+                errors.append(f"{corr_type}: {exc}")
+                continue
+            if not isinstance(data, dict):
+                continue
+            for item in data.get("chats") or []:
+                if not isinstance(item, dict):
+                    continue
+                chat = dict(item)
+                chat["CorrType"] = str(chat.get("Type") or corr_type)
+                chats.append(chat)
+        if errors and not chats:
+            raise RuntimeError("; ".join(errors))
+        chats.sort(key=lambda item: sort_time(item.get("DateWriteUtc") or item.get("DateWrite")), reverse=True)
+        return chats[:limit]
+
+    def guest_messages(self, corr_type: str, corr_id: int) -> list[dict[str, Any]]:
+        session_id = urllib.parse.quote(self.token, safe="")
+        r = self.http.get(
+            API_BASE + f"/messages/v3/{session_id}",
+            params={"corrType": corr_type, "corrID": corr_id, "lastID": 0, "getDeleted": "false"},
+        )
+        if r.status_code == 401:
+            self._token = None
+            session_id = urllib.parse.quote(self.token, safe="")
+            r = self.http.get(
+                API_BASE + f"/messages/v3/{session_id}",
+                params={"corrType": corr_type, "corrID": corr_id, "lastID": 0, "getDeleted": "false"},
+            )
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, list):
+            raw_messages = data
+        elif isinstance(data, dict):
+            raw_messages = data.get("messages") or data.get("Messages") or data.get("items") or data.get("Items") or []
+        else:
+            raw_messages = []
+        messages: list[dict[str, Any]] = []
+        for item in raw_messages:
+            if not isinstance(item, dict):
+                continue
+            messages.append(
+                {
+                    "id": item.get("ID") or item.get("id"),
+                    "seller": 1 if int(item.get("IsAuthor") or item.get("isAuthor") or 0) else 0,
+                    "message": item.get("Text") or item.get("text") or "",
+                    "date_written": item.get("DateWrite") or item.get("dateWrite") or item.get("DateWriteUtc") or "",
+                    "is_file": 1 if item.get("FileName") or item.get("fileName") else 0,
+                    "filename": item.get("FileName") or item.get("fileName") or "",
+                }
+            )
+        messages.sort(key=lambda item: sort_time(item.get("date_written")))
+        return messages
+
+    def mark_guest_read(self, corr_type: str, corr_id: int) -> None:
+        self.session_get(
+            "/messages/setviewed/{session_id}?corrID="
+            + urllib.parse.quote(str(corr_id), safe="")
+            + "&corrType="
+            + urllib.parse.quote(corr_type, safe="")
+        )
 
     def sales(self, days: int, rows: int, page: int = 1) -> dict[str, Any]:
         finish = dt.datetime.utcnow()
@@ -783,7 +863,15 @@ def unique_code_lookup(code: str) -> dict[str, Any]:
 
 def unread_summary() -> dict[str, Any]:
     buyer = [c for c in client.chats(only_unread=True) if int(c.get("cnt_new") or 0) > 0]
-    admin: list[dict[str, Any]] = []  # Digiseller admin notices endpoint returns historical items; only buyer chats are counted as unread.
+    try:
+        guest = [
+            c
+            for c in client.guest_chats(limit=10)
+            if not int(c.get("IsAuthor") or 0) and not int(c.get("IsViewed") or 0)
+        ]
+    except Exception:
+        guest = []
+    admin: list[dict[str, Any]] = []
     latest: dict[str, Any] | None = None
     for chat in buyer:
         rec = {
@@ -797,11 +885,26 @@ def unread_summary() -> dict[str, Any]:
         }
         if latest is None or str(rec.get("last_date") or "") > str(latest.get("last_date") or ""):
             latest = rec
-    total = sum(int(c.get("cnt_new") or 0) for c in buyer) + len(admin)
+    for chat in guest:
+        corr_id = int(chat.get("CorrID") or 0)
+        corr_type = str(chat.get("CorrType") or chat.get("Type") or "visitor")
+        rec = {
+            "type": "guest",
+            "order_id": "",
+            "email": chat.get("Name") or f"GUEST-{corr_id}",
+            "product": clean_text(chat.get("PurchaseName") or chat.get("Text")),
+            "last_date": chat.get("DateWriteUtc") or chat.get("DateWrite"),
+            "cnt_new": 1,
+            "url": f"/chats?kind=guest&corr_type={urllib.parse.quote(corr_type)}&corr_id={corr_id}",
+        }
+        if latest is None or sort_time(rec.get("last_date")) > sort_time(latest.get("last_date")):
+            latest = rec
+    total = sum(int(c.get("cnt_new") or 0) for c in buyer) + len(guest) + len(admin)
     return {
         "ok": True,
         "buyer_unread_chats": len(buyer),
         "buyer_unread_messages": sum(int(c.get("cnt_new") or 0) for c in buyer),
+        "guest_unread_chats": len(guest),
         "admin_unread": len(admin),
         "total": total,
         "latest": latest,
@@ -1249,7 +1352,54 @@ class Handler(BaseHTTPRequestHandler):
             return f"<div id='chat-panel' class='conversation-panel'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang)}</div>"
         return "<div id='chat-panel' class='conversation-panel'><div class='empty-state'>No chats found</div></div>"
 
+    def guest_chat_panel_html(self, chat: dict[str, Any], messages: list[dict[str, Any]]) -> str:
+        corr_id = int(chat.get("CorrID") or chat.get("corrID") or 0)
+        corr_type = str(chat.get("CorrType") or chat.get("Type") or "visitor")
+        name = str(chat.get("Name") or f"GUEST-{corr_id}")
+        purchase = chat.get("PurchaseName") or "Pre-order consultation"
+        header = (
+            f"<div><div class='conversation-header-title'>{h(name)}</div>"
+            f"<div class='muted'>Guest consultation · {h(corr_type)} #{corr_id} · {h(short(purchase, 110))} · Latest {len(messages)} messages</div></div>"
+            "<div class='toolbar'><span class='muted'>Pre-order chat</span></div>"
+        )
+        rows = []
+        total_messages = len(messages)
+        for idx, msg in enumerate(messages, 1):
+            is_seller = msg.get("seller") == 1
+            cls = "seller" if is_seller else "buyer"
+            author = "nose1989" if is_seller else name
+            text = clean_text(msg.get("message"))
+            if msg.get("is_file"):
+                text_html = attachment_html(msg, allow_guess_preview=True)
+            else:
+                text_html = translate_incoming_html(text, msg.get("id"))
+            msg_no = f"#{idx}/{total_messages}"
+            msg_id = f" · ID {h(msg.get('id'))}" if msg.get("id") else ""
+            rows.append(
+                f"<div class='chat-row {cls}'>"
+                f"<div class='chat-meta'><span class='chat-author'>{h(author)} <span class='muted'>{msg_no}{msg_id}</span></span><span>{h(msg.get('date_written'))}</span></div>"
+                f"<div class='chat-bubble'>{text_html}</div></div>"
+            )
+        if not rows:
+            rows.append("<div class='empty-state'>No guest messages loaded</div>")
+        return f"<div id='chat-panel' class='conversation-panel'><div class='conversation-header'>{header}</div><div class='conversation-body'>{''.join(rows)}</div></div>"
+
     def api_chat_panel(self) -> None:
+        if self.q("kind") == "guest":
+            corr_id = int(self.q("corr_id", "0") or 0)
+            corr_type = self.q("corr_type", "visitor")
+            if not corr_id:
+                return self.send_json({"ok": False, "error": "corr_id is required"}, 400)
+            client.mark_guest_read(corr_type, corr_id)
+            clear_unread_cache()
+            messages = client.guest_messages(corr_type, corr_id)[-10:]
+            chat = {
+                "CorrID": corr_id,
+                "CorrType": corr_type,
+                "Name": self.q("name", f"GUEST-{corr_id}"),
+                "PurchaseName": self.q("product", "Pre-order consultation"),
+            }
+            return self.send_json({"ok": True, "kind": "guest", "corr_id": corr_id, "count": len(messages), "read": True, "html": self.guest_chat_panel_html(chat, messages)})
         order_id = int(self.q("order_id", "0") or 0)
         if not order_id:
             return self.send_json({"ok": False, "error": "order_id is required"}, 400)
@@ -1288,30 +1438,71 @@ class Handler(BaseHTTPRequestHandler):
 
     def chats(self) -> None:
         chats = client.chats(page_size=100)
-        selected_order = int(self.q("order_id", "0") or 0)
-        if not selected_order and chats:
+        guest_error = ""
+        try:
+            guest_chats = client.guest_chats(limit=10)
+        except Exception as exc:
+            guest_chats = []
+            guest_error = str(exc)
+        selected_kind = self.q("kind", "order")
+        selected_order = 0 if selected_kind == "guest" else int(self.q("order_id", "0") or 0)
+        selected_corr_id = int(self.q("corr_id", "0") or 0) if selected_kind == "guest" else 0
+        selected_corr_type = self.q("corr_type", "visitor")
+        if selected_kind != "guest" and not selected_order and chats:
             selected_order = int(chats[0].get("id_i") or 0)
-        if selected_order:
+            selected_kind = "order"
+        elif not selected_corr_id and guest_chats:
+            selected_kind = "guest"
+            selected_corr_id = int(guest_chats[0].get("CorrID") or 0)
+            selected_corr_type = str(guest_chats[0].get("CorrType") or "visitor")
+        if selected_kind == "order" and selected_order:
             client.mark_chat_read(selected_order)
             clear_unread_cache()
 
         items = []
         selected_chat: dict[str, Any] | None = None
+        selected_guest_chat: dict[str, Any] | None = None
         for chat in chats:
             order_id = int(chat.get("id_i") or 0)
-            if order_id == selected_order:
+            if selected_kind == "order" and order_id == selected_order:
                 selected_chat = chat
             email = str(chat.get("email") or "unknown")
             name = email.split("@", 1)[0] or email
             initials = (name[:1] or "?").upper()
-            unread = 0 if order_id == selected_order else int(chat.get("cnt_new") or 0)
-            active = " active" if order_id == selected_order else ""
+            unread = 0 if selected_kind == "order" and order_id == selected_order else int(chat.get("cnt_new") or 0)
+            active = " active" if selected_kind == "order" and order_id == selected_order else ""
             preview = short(chat.get("product"), 80)
             when = str(chat.get("last_date") or "")
             short_when = when[11:16] if len(when) >= 16 else when
             badge = f"<div class='badge'>{unread}</div>" if unread else ""
             items.append(
-                f"<a class='conversation-item{active}' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(chat.get('product'))}' href='/chats?order_id={order_id}'>"
+                f"<a class='conversation-item{active}' data-kind='order' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(chat.get('product'))}' href='/chats?order_id={order_id}'>"
+                f"<div class='avatar'>{h(initials)}</div>"
+                f"<div><div class='conversation-name'>{h(name)}</div>"
+                f"<div class='preview'>{h(short(preview, 70))}</div></div>"
+                f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
+            )
+        if guest_chats or guest_error:
+            items.append("<div class='conversation-title' style='font-size:18px;padding-top:18px'>Guest consultations</div>")
+        if guest_error:
+            items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>Guest API error</div><div class='preview'>{h(short(guest_error, 100))}</div></div><div></div></div>")
+        for chat in guest_chats:
+            corr_id = int(chat.get("CorrID") or 0)
+            corr_type = str(chat.get("CorrType") or chat.get("Type") or "visitor")
+            if selected_kind == "guest" and corr_id == selected_corr_id and corr_type == selected_corr_type:
+                selected_guest_chat = chat
+            name = str(chat.get("Name") or f"GUEST-{corr_id}")
+            initials = (name.replace("GUEST-", "")[:1] or "G").upper()
+            is_selected_guest = selected_kind == "guest" and corr_id == selected_corr_id and corr_type == selected_corr_type
+            unread = 0 if is_selected_guest else (1 if not int(chat.get("IsAuthor") or 0) and not int(chat.get("IsViewed") or 0) else 0)
+            active = " active" if selected_kind == "guest" and corr_id == selected_corr_id and corr_type == selected_corr_type else ""
+            preview = chat.get("Text") or chat.get("PurchaseName") or ""
+            when = str(chat.get("DateWrite") or chat.get("DateWriteUtc") or "")
+            short_when = when[11:16] if len(when) >= 16 and "-" in when[:10] else when[-5:]
+            badge = f"<div class='badge'>{unread}</div>" if unread else ""
+            href = f"/chats?kind=guest&corr_type={urllib.parse.quote(corr_type)}&corr_id={corr_id}&name={urllib.parse.quote(name)}&product={urllib.parse.quote(str(chat.get('PurchaseName') or ''))}"
+            items.append(
+                f"<a class='conversation-item{active}' data-kind='guest' data-corr-id='{corr_id}' data-corr-type='{h(corr_type)}' data-name='{h(name)}' data-product='{h(chat.get('PurchaseName'))}' href='{h(href)}'>"
                 f"<div class='avatar'>{h(initials)}</div>"
                 f"<div><div class='conversation-name'>{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
@@ -1319,12 +1510,23 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         selected_messages: list[dict[str, Any]] = []
-        if selected_order:
+        if selected_kind == "guest" and selected_corr_id:
+            if selected_guest_chat is None:
+                selected_guest_chat = {
+                    "CorrID": selected_corr_id,
+                    "CorrType": selected_corr_type,
+                    "Name": self.q("name", f"GUEST-{selected_corr_id}"),
+                    "PurchaseName": self.q("product", "Pre-order consultation"),
+                }
+            client.mark_guest_read(selected_corr_type, selected_corr_id)
+            clear_unread_cache()
+            selected_messages = client.guest_messages(selected_corr_type, selected_corr_id)[-10:]
+        elif selected_order:
             selected_messages = client.all_chat_messages(selected_order)
             if selected_chat is None and selected_messages:
                 selected_chat = {"id_i": selected_order, "email": f"order-{selected_order}", "product": "Direct order lookup"}
 
-        panel = self.chat_panel_html(selected_order, selected_chat, selected_messages)
+        panel = self.guest_chat_panel_html(selected_guest_chat, selected_messages) if selected_kind == "guest" and selected_guest_chat else self.chat_panel_html(selected_order, selected_chat, selected_messages)
         ajax = """
         <script>
         (() => {
@@ -1344,8 +1546,10 @@ class Handler(BaseHTTPRequestHandler):
             event.preventDefault();
             const panel = document.getElementById('chat-panel');
             if (!panel) { location.href = link.href; return; }
-            const orderId = link.dataset.orderId || '';
-            const params = new URLSearchParams({order_id: orderId, email: link.dataset.email || '', product: link.dataset.product || ''});
+            const kind = link.dataset.kind || 'order';
+            const params = kind === 'guest'
+              ? new URLSearchParams({kind: 'guest', corr_id: link.dataset.corrId || '', corr_type: link.dataset.corrType || 'visitor', name: link.dataset.name || '', product: link.dataset.product || ''})
+              : new URLSearchParams({order_id: link.dataset.orderId || '', email: link.dataset.email || '', product: link.dataset.product || ''});
             list.querySelectorAll('.conversation-item.active').forEach((item) => item.classList.remove('active'));
             link.classList.add('active');
             const badge = link.querySelector('.badge');
@@ -1395,10 +1599,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def unread(self) -> None:
         buyer = [c for c in client.chats(only_unread=True) if int(c.get("cnt_new") or 0) > 0]
+        try:
+            guest = [
+                c
+                for c in client.guest_chats(limit=10)
+                if not int(c.get("IsAuthor") or 0) and not int(c.get("IsViewed") or 0)
+            ]
+        except Exception:
+            guest = []
         admin: list[dict[str, Any]] = []  # Do not count historical admin notices as unread.
         b_rows = [[f"<a href='/chats?order_id={h(c.get('id_i'))}'>{h(c.get('id_i'))}</a>", h(c.get("last_date")), h(c.get("cnt_new")), h(c.get("email")), h(short(c.get("product"), 100))] for c in buyer]
+        g_rows = [
+            [
+                f"<a href='/chats?kind=guest&corr_type={h(c.get('CorrType') or c.get('Type') or 'visitor')}&corr_id={h(c.get('CorrID'))}'>{h(c.get('Name') or ('GUEST-' + str(c.get('CorrID') or '')))}</a>",
+                h(c.get("DateWrite") or c.get("DateWriteUtc")),
+                h(c.get("CorrType") or c.get("Type") or "visitor"),
+                h(short(c.get("Text"), 120)),
+                h(short(c.get("PurchaseName"), 80)),
+            ]
+            for c in guest
+        ]
         a_rows = [[h(m.get("date")), h(m.get("id")), h(short(m.get("text") or m.get("message"), 180))] for m in admin]
-        body = f"<div class='card'><h2>Unread</h2><p>Buyer unread: {len(buyer)} | Admin unread: {len(admin)}</p></div><h3>Buyer chats</h3>{table(['Order','Last','New','Email','Product'], b_rows)}<h3>Admin messages</h3>{table(['Date','ID','Text'], a_rows)}"
+        body = f"<div class='card'><h2>Unread</h2><p>Buyer unread: {len(buyer)} | Guest unread: {len(guest)} | Admin unread: {len(admin)}</p></div><h3>Buyer chats</h3>{table(['Order','Last','New','Email','Product'], b_rows)}<h3>Guest consultations</h3>{table(['Guest','Last','Type','Text','Product'], g_rows)}<h3>Admin messages</h3>{table(['Date','ID','Text'], a_rows)}"
         self.send_html("Unread", body)
 
     def admin_messages_page(self) -> None:
