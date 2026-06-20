@@ -553,6 +553,17 @@ class DigisellerClient:
     def product(self, product_id: int) -> dict[str, Any]:
         return self.get(f"/products/{product_id}/data", params={"seller_id": self.seller_id, "lang": "en-US"})
 
+    def shop_products(self, page: int = 1, rows: int = 500) -> dict[str, Any]:
+        return self.post(
+            "/shop/products",
+            json_body={
+                "seller": {"id": self.seller_id},
+                "pages": {"num": page, "rows": rows},
+                "lang": "en-US",
+                "show_all": "0",
+            },
+        )
+
     def add_text_stock(self, product_id: int, items: list[dict[str, Any]]) -> dict[str, Any]:
         data = self.post("/product/content/add/text", json_body={"product_id": product_id, "content": items})
         if isinstance(data, dict) and int(data.get("retval") or 0) != 0:
@@ -2357,7 +2368,37 @@ class Handler(BaseHTTPRequestHandler):
         pid = self.q("product_id", "")
         form = f"<div class='card'><h2>Product</h2><form><input name='product_id' placeholder='5870983' value='{h(pid)}'><button>Lookup</button></form></div>"
         if not pid:
-            return self.send_html("Product", form)
+            try:
+                all_items: list[dict[str, Any]] = []
+                page = 1
+                while True:
+                    data = client.shop_products(page=page, rows=100)
+                    items = data.get("product", [])
+                    if not isinstance(items, list):
+                        break
+                    all_items.extend(items)
+                    total_pages = int(data.get("totalPages") or 1)
+                    if page >= total_pages:
+                        break
+                    page += 1
+                rows_html: list[list[Any]] = []
+                for item in all_items:
+                    pid_val = str(item.get("id") or "")
+                    name = clean_text(item.get("name"))
+                    price = f"{item.get('price') or ''} {item.get('currency') or ''}".strip()
+                    available = "Yes" if int(item.get("is_available") or 0) else "No"
+                    rows_html.append([
+                        f"<a href='/product?product_id={h(pid_val)}'>{h(pid_val)}</a>",
+                        h(name),
+                        h(price),
+                        f"<span class='{'ok' if available == 'Yes' else 'bad'}'>{available}</span>",
+                        f"<a href='/stock?product_id={h(pid_val)}'>Stock</a>",
+                    ])
+                products_table = table(["ID", "Name", "Price", "Available", "Actions"], rows_html)
+                summary = f"<div class='card'><h2>Active Products ({len(all_items)})</h2>{products_table}</div>"
+            except Exception as exc:
+                summary = f"<div class='card bad'>Failed to load products: {h(exc)}</div>"
+            return self.send_html("Product", form + summary)
         data = client.product(int(pid))
         product = data.get("product", data)
         summary = {k: product.get(k) for k in ["id", "name", "price", "currency", "is_available", "num_in_stock", "owner", "type_good"] if k in product}
