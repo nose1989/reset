@@ -654,6 +654,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .translated-message{white-space:normal}.translated-text,.original-text{white-space:pre-wrap}.toggle-original{margin-top:8px;background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.translation-label{display:inline-block;margin-left:8px;color:#64748b;font-size:12px}
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
 .phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:block;margin-top:8px}.phrase-manager.dragover textarea{border-color:#2563eb;background:#eff6ff}.phrase-pending{margin-top:8px}
+.chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}
 </style>
 """
 
@@ -686,6 +687,10 @@ def layout(title: str, body: str) -> bytes:
         online_label = "Online checking"
         online_class = ""
     online_title = f"Last verified: {online_last_ok or '-'} | Last set: {online_last_set or '-'} | Last chat heartbeat: {online_last_heartbeat or '-'} | API status: {online.get('status') if online.get('status') is not None else '-'} | Public online: {'yes' if online.get('public_online') else 'no'} | Set error: {online_set_error or '-'} | Chat heartbeat error: {online_heartbeat_error or '-'} | Setting error: {online_setting_error or '-'} | Verify error: {online_verify_error or '-'} | Public verify error: {online_public_error or '-'} | Recovering: {online_recovery_error or '-'} | Error: {online_error or '-'}"
+    chat_keepalive_url = os.getenv(
+        "DIGISELLER_CHAT_KEEPALIVE_URL",
+        "https://chat.digiseller.com/asp/messenger.asp?mode=s",
+    ).strip()
     nav = f"""
     <div class="top">
       <div class="top-nav">
@@ -707,6 +712,7 @@ def layout(title: str, body: str) -> bytes:
       </form>
       <span class="top-version">Digiseller Admin {APP_VERSION}</span>
       <span id="online-keepalive-pill" class="top-online {online_class}" title="{h(online_title)}">{h(online_label)}</span>
+      <button id="chat-keepalive-button" class="chat-keepalive-btn" type="button" data-url="{h(chat_keepalive_url)}" title="Open the seller chat window; Plati marks the buyer page online while this window stays open.">Open chat keepalive</button>
     </div>
     <script>
     (() => {{
@@ -821,6 +827,33 @@ def layout(title: str, body: str) -> bytes:
       }}
       refreshOnlineStatus();
       setInterval(refreshOnlineStatus, 15000);
+    }})();
+    (() => {{
+      const btn = document.getElementById('chat-keepalive-button');
+      if (!btn) return;
+      const url = btn.dataset.url || 'https://chat.digiseller.com/asp/messenger.asp?mode=s';
+      const windowName = 'digiseller-chat-keepalive';
+      let chatWindow = null;
+      function updateLabel() {{
+        const active = chatWindow && !chatWindow.closed;
+        btn.textContent = active ? 'Chat keepalive open' : 'Open chat keepalive';
+        btn.classList.toggle('ok', Boolean(active));
+      }}
+      function openChatKeepalive() {{
+        chatWindow = window.open(url, windowName, 'width=740,height=520,scrollbars=no,resizable=yes');
+        if (chatWindow) {{
+          try {{ localStorage.setItem('digisellerChatKeepalive', '1'); }} catch (e) {{}}
+        }}
+        updateLabel();
+      }}
+      btn.addEventListener('click', openChatKeepalive);
+      try {{
+        if (localStorage.getItem('digisellerChatKeepalive') === '1') {{
+          chatWindow = window.open(url, windowName, 'width=740,height=520,scrollbars=no,resizable=yes');
+        }}
+      }} catch (e) {{}}
+      updateLabel();
+      setInterval(updateLabel, 15000);
     }})();
     </script>
     """
