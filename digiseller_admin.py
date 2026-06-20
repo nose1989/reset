@@ -38,7 +38,7 @@ APP_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = APP_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.4-right-toggle"
+APP_VERSION = "v8.5-fast-alerts"
 
 
 @dataclass
@@ -259,6 +259,10 @@ class DigisellerClient:
         if auth:
             params["token"] = self.token
         r = self.http.get(API_BASE + path, params=params)
+        if auth and r.status_code == 401:
+            self._token = None
+            params["token"] = self.token
+            r = self.http.get(API_BASE + path, params=params)
         r.raise_for_status()
         return r.json()
 
@@ -273,6 +277,10 @@ class DigisellerClient:
         if auth:
             params["token"] = self.token
         r = self.http.post(API_BASE + path, params=params, json=json_body or {})
+        if auth and r.status_code == 401:
+            self._token = None
+            params["token"] = self.token
+            r = self.http.post(API_BASE + path, params=params, json=json_body or {})
         r.raise_for_status()
         if not r.content:
             return {}
@@ -387,6 +395,7 @@ class DigisellerClient:
 
 
 client = DigisellerClient()
+UNREAD_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 
 
 def start_auto_reload() -> None:
@@ -442,12 +451,14 @@ def layout(title: str, body: str) -> bytes:
     </div>
     <script>
     (() => {
-      const intervalMs = 15000;
+      const intervalMs = 60000;
       const btn = document.getElementById('enable-alerts');
       const pill = document.getElementById('unread-alert-pill');
       let enabled = localStorage.getItem('digisellerAlertsEnabled') === '1';
       let lastTotal = Number(localStorage.getItem('digisellerLastUnreadTotal') || '0');
       let audioCtx = null;
+      let inFlight = false;
+      let pollTimer = null;
       const baseTitle = document.title;
 
       function setButton() {
@@ -487,14 +498,22 @@ def layout(title: str, body: str) -> bytes:
         const latest = data.latest || {};
         const who = latest.email || '买家';
         const order = latest.order_id || '';
-        const text = `Digiseller 有新的未读消息，来自 ${who}，订单 ${order}`;
+        const text = `Digiseller 有新消息来自 ${who}，订单 ${order}`;
         beep();
         speak(text);
         browserNotify(text, latest.url);
       }
+      function schedulePoll() {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = enabled ? setInterval(() => poll(false), intervalMs) : null;
+      }
       async function poll(force=false) {
+        if ((!enabled && !force) || inFlight || (document.hidden && !force)) return;
+        inFlight = true;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
         try {
-          const res = await fetch('/api/unread-count', {cache: 'no-store'});
+          const res = await fetch('/api/unread-count', {cache: 'no-store', signal: controller.signal});
           const data = await res.json();
           const total = Number(data.total || 0);
           pill.textContent = total > 0 ? `Unread ${total}` : '';
@@ -503,22 +522,35 @@ def layout(title: str, body: str) -> bytes:
           if (enabled && total > 0 && (force || total > lastTotal)) alertUnread(data, force);
           lastTotal = total;
           localStorage.setItem('digisellerLastUnreadTotal', String(lastTotal));
-        } catch (e) {}
+        } catch (e) {
+        } finally {
+          clearTimeout(timeout);
+          inFlight = false;
+        }
       }
       btn.addEventListener('click', async () => {
-        enabled = true;
-        localStorage.setItem('digisellerAlertsEnabled', '1');
+        enabled = !enabled;
+        localStorage.setItem('digisellerAlertsEnabled', enabled ? '1' : '0');
+        if (!enabled) {
+          pill.classList.remove('show');
+          document.title = baseTitle;
+          setButton();
+          schedulePoll();
+          return;
+        }
         lastTotal = 0;
         localStorage.setItem('digisellerLastUnreadTotal', '0');
         if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
         setButton();
+        schedulePoll();
         beep();
         speak('Digiseller 消息提醒已开启');
         poll(true);
       });
+      document.addEventListener('visibilitychange', () => { if (!document.hidden && enabled) poll(false); });
       setButton();
-      poll(false);
-      setInterval(poll, intervalMs);
+      schedulePoll();
+      if (enabled) poll(false);
     })();
     </script>
     """
@@ -946,7 +978,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_html("Images", f"<div class='card'><h2>Images for order {order_id}</h2><p>Saved to {h(DOWNLOAD_DIR / str(order_id))}</p></div>" + table(["Date", "Filename", "Result"], rows))
 
     def api_unread_count(self) -> None:
-        self.send_json(unread_summary())
+        now = time.time()
+        cached = UNREAD_CACHE.get("data")
+        if cached is not None and now - float(UNREAD_CACHE.get("time") or 0) < 30:
+            return self.send_json(cached)
+        data = unread_summary()
+        UNREAD_CACHE["time"] = now
+        UNREAD_CACHE["data"] = data
+        self.send_json(data)
 
     def api_chat_debug(self) -> None:
         order_id = int(self.q("order_id", "0") or 0)
