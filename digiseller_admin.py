@@ -429,7 +429,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 
 .alert-controls{position:fixed;right:18px;bottom:18px;z-index:50;display:flex;gap:8px;align-items:center}.alert-button{background:#16a34a;color:#fff;border:0;border-radius:999px;padding:10px 14px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-button.off{background:#64748b}.alert-pill{display:none;background:#dc2626;color:#fff;border-radius:999px;padding:9px 12px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-pill.show{display:inline-block}.unread-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#ef4444;margin-left:6px}
 .thumb{max-width:220px;max-height:160px;border:1px solid #e5e7eb;border-radius:8px;display:block;margin-top:8px;background:#f8fafc}.file-preview{margin-top:6px}.file-name{font-weight:700}.image-note{font-size:12px;color:#6b7280;margin-top:4px}
-.reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-actions input[type=file]{background:white;max-width:480px}.reply-hint,.selected-files{font-size:13px;color:#64748b}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
+.reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-dropzone.dragover{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
 .translated-message{white-space:normal}.translated-text,.original-text{white-space:pre-wrap}.toggle-original{margin-top:8px;background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.translation-label{display:inline-block;margin-left:8px;color:#64748b;font-size:12px}
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
 </style>
@@ -883,7 +883,10 @@ class Handler(BaseHTTPRequestHandler):
             <button type="button" data-insert="{h(reference_template)}">&#25991;&#29486;&#35828;&#26126;</button>
           </div>
           <div class="reply-actions">
-            <input id="{editor_id}-files" name="files" type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.rtf,.zip,.rar,.7z">
+            <div id="{editor_id}-dropzone" class="reply-dropzone">
+              <input id="{editor_id}-files" name="files" type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.rtf,.zip,.rar,.7z">
+              <span class="reply-dropzone-text">&#25302;&#25341;&#22270;&#29255;/&#38468;&#20214;&#21040;&#36825;&#37324;&#65292;&#25110;&#28857;&#20987;&#36873;&#25321;&#25991;&#20214;</span>
+            </div>
             <button type="submit">&#21457;&#36865;&#22238;&#22797;</button>
             <span class="reply-hint">&#20013;&#25991;&#20250;&#33258;&#21160;&#32763;&#35793;&#20026; {h(lang_label(target_lang))} &#20877;&#21457;&#36865;&#12290;&#25903;&#25345;&#22270;&#29255;&#12289;&#38468;&#20214;&#21644;&#25991;&#26723;/&#25991;&#29486;&#12290;</span>
           </div>
@@ -894,7 +897,55 @@ class Handler(BaseHTTPRequestHandler):
           const root = document.getElementById('{editor_id}');
           const textarea = document.getElementById('{editor_id}-message');
           const input = document.getElementById('{editor_id}-files');
+          const dropzone = document.getElementById('{editor_id}-dropzone');
           const selected = document.getElementById('{editor_id}-selected');
+          let previewUrls = [];
+          function clearPreviews() {{
+            previewUrls.forEach((url) => URL.revokeObjectURL(url));
+            previewUrls = [];
+            selected.replaceChildren();
+          }}
+          function renderSelectedFiles() {{
+            clearPreviews();
+            const files = Array.from(input.files || []);
+            if (!files.length) return;
+            const summary = document.createElement('div');
+            summary.className = 'selected-summary';
+            summary.textContent = `\u5df2\u9009\u62e9\uff1a${{files.map((file) => file.name).join('\u3001')}}`;
+            selected.appendChild(summary);
+            const grid = document.createElement('div');
+            grid.className = 'file-preview-grid';
+            files.forEach((file) => {{
+              const chip = document.createElement('div');
+              chip.className = 'file-chip';
+              if (file.type.startsWith('image/')) {{
+                const img = document.createElement('img');
+                const url = URL.createObjectURL(file);
+                previewUrls.push(url);
+                img.src = url;
+                img.alt = file.name;
+                chip.appendChild(img);
+              }} else {{
+                const icon = document.createElement('span');
+                icon.className = 'file-chip-icon';
+                icon.textContent = 'FILE';
+                chip.appendChild(icon);
+              }}
+              const name = document.createElement('span');
+              name.className = 'file-chip-name';
+              name.title = file.name;
+              name.textContent = file.name;
+              chip.appendChild(name);
+              grid.appendChild(chip);
+            }});
+            selected.appendChild(grid);
+          }}
+          function assignDroppedFiles(files) {{
+            const dataTransfer = new DataTransfer();
+            Array.from(files || []).forEach((file) => dataTransfer.items.add(file));
+            input.files = dataTransfer.files;
+            renderSelectedFiles();
+          }}
           root.querySelectorAll('[data-insert]').forEach((button) => {{
             button.addEventListener('click', () => {{
               const text = button.dataset.insert || '';
@@ -903,9 +954,19 @@ class Handler(BaseHTTPRequestHandler):
               textarea.focus();
             }});
           }});
-          input.addEventListener('change', () => {{
-            const names = Array.from(input.files || []).map((file) => file.name);
-            selected.textContent = names.length ? `\u5df2\u9009\u62e9\uff1a${{names.join('\u3001')}}` : '';
+          input.addEventListener('change', renderSelectedFiles);
+          ['dragenter', 'dragover'].forEach((eventName) => {{
+            dropzone.addEventListener(eventName, (event) => {{
+              event.preventDefault();
+              dropzone.classList.add('dragover');
+            }});
+          }});
+          ['dragleave', 'drop'].forEach((eventName) => {{
+            dropzone.addEventListener(eventName, () => dropzone.classList.remove('dragover'));
+          }});
+          dropzone.addEventListener('drop', (event) => {{
+            event.preventDefault();
+            assignDroppedFiles(event.dataTransfer.files);
           }});
           root.addEventListener('submit', () => {{
             const button = root.querySelector('button[type="submit"]');
