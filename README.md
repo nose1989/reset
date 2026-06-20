@@ -54,7 +54,7 @@ http://127.0.0.1:8765
 Web 提醒：启动后台并打开 `http://127.0.0.1:8765` 后，点击右下角 `Enable alerts`。
 
 Online keepalive: every 15s calls `setonlinesetting` + chat heartbeat APIs, then verifies buyer-visible status with `getonlinestatus` and the public seller page; disable with `DIGISELLER_KEEP_ONLINE=0`.
-If the API token cannot set chat online status, click `Open chat keepalive` once. It opens the seller chat window because Plati marks the buyer page online while that chat window stays open.
+If the API token cannot set chat online status, the admin page automatically loads the seller chat keepalive URL in a hidden iframe. The `Auto chat keepalive` button is only a fallback for opening the visible chat window.
 
 开启后页面会每 15 秒检查一次未读消息；有新的未读时会：
 
