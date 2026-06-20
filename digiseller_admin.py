@@ -553,6 +553,12 @@ class DigisellerClient:
     def product(self, product_id: int) -> dict[str, Any]:
         return self.get(f"/products/{product_id}/data", params={"seller_id": self.seller_id, "lang": "en-US"})
 
+    def add_text_stock(self, product_id: int, items: list[dict[str, Any]]) -> dict[str, Any]:
+        data = self.post("/product/content/add/text", json_body={"product_id": product_id, "content": items})
+        if isinstance(data, dict) and int(data.get("retval") or 0) != 0:
+            raise RuntimeError(data.get("retdesc") or data.get("desc") or f"Stock upload failed: {data}")
+        return data if isinstance(data, dict) else {"raw": data}
+
     def unique_code(self, unique_code: str) -> dict[str, Any]:
         safe_code = urllib.parse.quote(unique_code, safe="")
         data = self.get(f"/purchases/unique-code/{safe_code}")
@@ -679,6 +685,7 @@ def layout(title: str, body: str) -> bytes:
         <a href="/admin-messages">Admin</a>
         <a href="/phrases">&#24120;&#29992;&#35821;</a>
         <a href="/product">Product</a>
+        <a href="/stock">Stock</a>
       </div>
       <form id="unique-code-form" class="unique-lookup" action="/unique-code" method="get">
         <input id="unique-code-input" name="code" maxlength="16" autocomplete="off" spellcheck="false" placeholder="Enter 16-digit verification code">
@@ -1049,6 +1056,26 @@ def unique_code_lookup(code: str) -> dict[str, Any]:
         "state_label": unique_code_label(state.get("state")) if isinstance(state, dict) else "unknown",
         "raw": data,
     }
+
+
+def parse_stock_lines(raw: str, variant_id: int = 0) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        serial = ""
+        if "\t" in value:
+            serial, value = [part.strip() for part in value.split("\t", 1)]
+        elif " | " in value:
+            serial, value = [part.strip() for part in value.split(" | ", 1)]
+        if not value:
+            continue
+        item: dict[str, Any] = {"serial": serial, "value": value}
+        if variant_id:
+            item["id_v"] = variant_id
+        items.append(item)
+    return items
 
 
 def unread_summary() -> dict[str, Any]:
@@ -1588,6 +1615,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.phrases_page()
             if path == "/product":
                 return self.product()
+            if path == "/stock":
+                return self.stock()
             if path == "/unique-code":
                 return self.unique_code_page()
             if path == "/download-images":
@@ -1623,6 +1652,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.delete_phrase()
             if path == "/phrases/file-delete":
                 return self.delete_phrase_file()
+            if path == "/stock/upload":
+                return self.upload_stock()
             if path == "/api/translate-batch":
                 return self.api_translate_batch()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
@@ -2263,6 +2294,65 @@ class Handler(BaseHTTPRequestHandler):
         body = "<div class='card'><h2>Admin messages</h2>" + controls + "<p class='muted'>Shows filename plus image preview. Default only renders 20 rows to keep the page fast.</p></div>" + table(["Date", "ID", "From", "Text / Image"], rows)
         self.send_html("Admin messages", body)
 
+    def stock(self) -> None:
+        pid = self.q("product_id", "").strip()
+        variant_id = self.q("variant_id", "0").strip()
+        count = self.q("uploaded", "").strip()
+        result = ""
+        if count:
+            result = f"<div class='card ok'>Uploaded {h(count)} stock item(s) to product {h(pid)}.</div>"
+        product_info = ""
+        if pid:
+            try:
+                data = client.product(int(pid))
+                product = data.get("product", data)
+                summary = {k: product.get(k) for k in ["id", "name", "is_available", "num_in_stock", "type_good"] if k in product}
+                product_info = f"<pre class='card code'>{h(json.dumps(summary, ensure_ascii=False, indent=2))}</pre>"
+            except Exception as exc:
+                product_info = f"<div class='card bad'>Product lookup failed: {h(exc)}</div>"
+        form = f"""
+        <div class='card'>
+          <h2>Bulk stock upload</h2>
+          <form action='/stock/upload' method='post'>
+            <p><input name='product_id' placeholder='Product ID' value='{h(pid)}' required>
+            <input name='variant_id' placeholder='Variant ID optional' value='{h(variant_id)}'></p>
+            <p><textarea name='stock' rows='14' style='width:100%;box-sizing:border-box' placeholder='One stock item per line. Use either value only, or serial<TAB>value, or serial | value.' required></textarea></p>
+            <label><input type='checkbox' name='confirm' value='1' required> Confirm upload these lines into this product stock</label>
+            <p><button type='submit'>Upload stock</button></p>
+          </form>
+          <p class='muted'>Adds Text/Url product content through Digiseller <code>/product/content/add/text</code>. Blank lines are ignored.</p>
+        </div>
+        """
+        self.send_html("Bulk stock upload", result + form + product_info)
+
+    def upload_stock(self) -> None:
+        fields, _ = self.read_form()
+        product_id = int(fields.get("product_id", "0") or 0)
+        variant_id = int(fields.get("variant_id", "0") or 0)
+        raw_stock = fields.get("stock", "")
+        if not product_id:
+            raise RuntimeError("Product ID is required")
+        if fields.get("confirm") != "1":
+            raise RuntimeError("Confirm the upload before submitting")
+        items = parse_stock_lines(raw_stock, variant_id=variant_id)
+        if not items:
+            raise RuntimeError("Paste at least one stock item")
+        if len(items) > 1000:
+            raise RuntimeError("Upload at most 1000 stock items at once")
+        response = client.add_text_stock(product_id, items)
+        rows = [
+            ["Product ID", h(product_id)],
+            ["Uploaded lines", h(len(items))],
+            ["Variant ID", h(variant_id or "-")],
+        ]
+        body = (
+            "<div class='card'><h2>Stock uploaded</h2>"
+            + table(["Field", "Value"], rows)
+            + f"<p><a href='/stock?product_id={product_id}&variant_id={variant_id}&uploaded={len(items)}'>Back to stock uploader</a></p></div>"
+            + f"<details class='card'><summary>API response</summary><pre class='code'>{h(json.dumps(response, ensure_ascii=False, indent=2))}</pre></details>"
+        )
+        self.send_html("Stock uploaded", body)
+
     def product(self) -> None:
         pid = self.q("product_id", "")
         form = f"<div class='card'><h2>Product</h2><form><input name='product_id' placeholder='5870983' value='{h(pid)}'><button>Lookup</button></form></div>"
@@ -2271,7 +2361,8 @@ class Handler(BaseHTTPRequestHandler):
         data = client.product(int(pid))
         product = data.get("product", data)
         summary = {k: product.get(k) for k in ["id", "name", "price", "currency", "is_available", "num_in_stock", "owner", "type_good"] if k in product}
-        self.send_html("Product", form + f"<pre class='card code'>{h(json.dumps(summary, ensure_ascii=False, indent=2))}</pre>")
+        stock_link = f"<div class='card'><a href='/stock?product_id={h(pid)}'>Bulk upload stock for this product</a></div>"
+        self.send_html("Product", form + stock_link + f"<pre class='card code'>{h(json.dumps(summary, ensure_ascii=False, indent=2))}</pre>")
 
     def unique_code_page(self) -> None:
         code = self.q("code", "").strip()
