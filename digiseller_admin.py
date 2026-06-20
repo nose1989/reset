@@ -1324,7 +1324,7 @@ class Handler(BaseHTTPRequestHandler):
               <span class="reply-dropzone-text">&#25302;&#25341;&#22270;&#29255;/&#38468;&#20214;&#21040;&#36825;&#37324;&#65292;&#25110;&#28857;&#20987;&#36873;&#25321;&#25991;&#20214;</span>
             </div>
             <button type="submit">&#21457;&#36865;&#22238;&#22797;</button>
-            <span class="reply-hint">&#20013;&#25991;&#20250;&#33258;&#21160;&#32763;&#35793;&#20026; {h(lang_label(target_lang))} &#20877;&#21457;&#36865;&#12290;&#25903;&#25345;&#22270;&#29255;&#12289;&#38468;&#20214;&#21644;&#25991;&#26723;/&#25991;&#29486;&#12290;</span>
+            <span class="reply-hint">&#20013;&#25991;&#20250;&#33258;&#21160;&#32763;&#35793;&#20026; {h(lang_label(target_lang))} &#20877;&#21457;&#36865;&#12290;&#25903;&#25345;&#22270;&#29255;&#12289;&#38468;&#20214;&#12289;&#25991;&#26723;/&#25991;&#29486;&#65292;&#20063;&#21487;&#30452;&#25509; Ctrl+V &#31896;&#36148;&#21098;&#36148;&#26495;&#22270;&#29255;&#12290;</span>
           </div>
           <div id="{editor_id}-selected" class="selected-files"></div>
         </form>
@@ -1411,6 +1411,29 @@ class Handler(BaseHTTPRequestHandler):
             syncInputFiles();
             renderSelectedFiles();
           }}
+          function clipboardImageFiles(event) {{
+            const clipboard = event.clipboardData;
+            if (!clipboard) return [];
+            const files = [];
+            const items = Array.from(clipboard.items || []);
+            items.forEach((item, index) => {{
+              if (item.kind !== 'file' || !item.type.startsWith('image/')) return;
+              const file = item.getAsFile();
+              if (!file) return;
+              const ext = (file.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'png';
+              const name = file.name && file.name !== 'image.png' ? file.name : `clipboard-${{Date.now()}}-${{index + 1}}.${{ext}}`;
+              files.push(new File([file], name, {{type: file.type || 'image/png'}}));
+            }});
+            if (!files.length) {{
+              Array.from(clipboard.files || []).forEach((file, index) => {{
+                if (!file.type.startsWith('image/')) return;
+                const ext = (file.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'png';
+                const name = file.name || `clipboard-${{Date.now()}}-${{index + 1}}.${{ext}}`;
+                files.push(new File([file], name, {{type: file.type || 'image/png'}}));
+              }});
+            }}
+            return files;
+          }}
           root.querySelectorAll('[data-insert]').forEach((button) => {{
             button.addEventListener('click', () => {{
               const text = button.dataset.insert || '';
@@ -1421,6 +1444,12 @@ class Handler(BaseHTTPRequestHandler):
           }});
           input.addEventListener('change', () => {{
             addFiles(input.files);
+          }});
+          textarea.addEventListener('paste', (event) => {{
+            const files = clipboardImageFiles(event);
+            if (!files.length) return;
+            event.preventDefault();
+            addFiles(files);
           }});
           function showDragTarget() {{
             root.classList.add('dragover');
