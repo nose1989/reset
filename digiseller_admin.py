@@ -293,9 +293,27 @@ class DigisellerClient:
         data = self.get("/debates/v2/chats", params=params)
         return data.get("chats", []) if isinstance(data, dict) else []
 
-    def chat_messages(self, order_id: int, count: int = 100) -> list[dict[str, Any]]:
-        data = self.get("/debates/v2", params={"id_i": order_id, "count": count})
+    def chat_messages(self, order_id: int, count: int = 200) -> list[dict[str, Any]]:
+        data = self.get("/debates/v2", params={"id_i": order_id, "count": min(count, 200)})
         return data if isinstance(data, list) else []
+
+    def all_chat_messages(self, order_id: int) -> list[dict[str, Any]]:
+        messages = self.chat_messages(order_id, count=200)
+        seen = {str(msg.get("id")) for msg in messages if msg.get("id")}
+        while messages:
+            oldest_id = messages[0].get("id")
+            if not oldest_id:
+                break
+            data = self.get("/debates/v2", params={"id_i": order_id, "count": 200, "old_id": oldest_id})
+            older = data if isinstance(data, list) else []
+            older = [msg for msg in older if str(msg.get("id")) not in seen]
+            if not older:
+                break
+            for msg in older:
+                if msg.get("id"):
+                    seen.add(str(msg.get("id")))
+            messages = older + messages
+        return messages
 
     def admin_messages(self, only_unread: bool = True) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"count": 100}
@@ -343,7 +361,7 @@ class DigisellerClient:
         order_dir = DOWNLOAD_DIR / str(order_id)
         order_dir.mkdir(parents=True, exist_ok=True)
         saved: list[dict[str, Any]] = []
-        for msg in self.chat_messages(order_id, count=150):
+        for msg in self.all_chat_messages(order_id):
             if msg.get("seller") == 1:
                 continue
             filename = msg.get("filename") or clean_text(msg.get("message")) or f"image_{msg.get('id')}.png"
@@ -761,7 +779,7 @@ class Handler(BaseHTTPRequestHandler):
             order_id = int(chat.get("id_i") or 0)
             if order_id == selected_order:
                 selected_chat = chat
-                selected_messages = client.chat_messages(order_id, count=150)
+                selected_messages = client.all_chat_messages(order_id)
             email = str(chat.get("email") or "unknown")
             name = email.split("@", 1)[0] or email
             initials = (name[:1] or "?").upper()
@@ -784,7 +802,7 @@ class Handler(BaseHTTPRequestHandler):
             buyer_lang = detect_buyer_language(selected_messages)
             header = (
                 f"<div><div class='conversation-header-title'>{h(buyer_name)}</div>"
-                f"<div class='muted'>Order {h(selected_chat.get('id_i'))} · {h(short(selected_chat.get('product'), 110))} · Reply language: {h(lang_label(buyer_lang))}</div></div>"
+                f"<div class='muted'>Order {h(selected_chat.get('id_i'))} · {h(short(selected_chat.get('product'), 110))} · Messages loaded: {len(selected_messages)} · Reply language: {h(lang_label(buyer_lang))}</div></div>"
                 f"<div class='toolbar'><a href='/chat?order_id={selected_order}'>Table view</a>"
                 f"<a href='/download-images?order_id={selected_order}'>Download images</a></div>"
             )
@@ -817,7 +835,7 @@ class Handler(BaseHTTPRequestHandler):
         order_id = int(self.q("order_id", "0"))
         if not order_id:
             return self.send_html("Chat", "<div class='card'>Pass ?order_id=...</div>")
-        msgs = client.chat_messages(order_id, count=150)
+        msgs = client.all_chat_messages(order_id)
         rows = []
         for m in msgs:
             who = "Seller" if m.get("seller") == 1 else "Buyer"

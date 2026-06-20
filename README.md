@@ -82,4 +82,8 @@ python3 digiseller_admin.py watch --interval 15
 - Each translated buyer message has a button to switch between Chinese and the original text.
 - The reply editor detects the buyer's recent language and translates Chinese replies to that language before sending.
 - Account strings, emails, URLs, and long access codes are protected during translation so credentials stay unchanged.
-# reset
+
+## v8 full history loading
+
+- Buyer chat pages now load all available dialog history by paging backward with `old_id`, instead of only the newest 150/200 API messages.
+- The selected chat header shows `Messages loaded: N` so you can compare the page with the API result.
