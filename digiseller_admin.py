@@ -38,7 +38,7 @@ APP_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = APP_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.5-fast-alerts"
+APP_VERSION = "v8.6-ajax-chats"
 
 
 @dataclass
@@ -764,6 +764,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_unread_count()
             if path == "/api/version":
                 return self.send_json({"version": APP_VERSION, "file": str(Path(__file__).resolve())})
+            if path == "/api/chat-panel":
+                return self.api_chat_panel()
             if path == "/api/chat-debug":
                 return self.api_chat_debug()
             if path.startswith("/downloads/"):
@@ -831,42 +833,7 @@ class Handler(BaseHTTPRequestHandler):
         body = f"<div class='card'><h2>Sales</h2>{form}<p>total_rows={h(data.get('total_rows'))} pages={h(data.get('pages'))}</p></div>" + table(["Paid", "Order", "Product ID", "Product", "Amount", "Partner", "Referer"], trs)
         self.send_html("Sales", body)
 
-    def chats(self) -> None:
-        chats = client.chats(page_size=100)
-        selected_order = int(self.q("order_id", "0") or 0)
-        if not selected_order and chats:
-            selected_order = int(chats[0].get("id_i") or 0)
-
-        items = []
-        selected_chat: dict[str, Any] | None = None
-        selected_messages: list[dict[str, Any]] = []
-        for chat in chats:
-            order_id = int(chat.get("id_i") or 0)
-            if order_id == selected_order:
-                selected_chat = chat
-                selected_messages = client.all_chat_messages(order_id)
-            email = str(chat.get("email") or "unknown")
-            name = email.split("@", 1)[0] or email
-            initials = (name[:1] or "?").upper()
-            unread = int(chat.get("cnt_new") or 0)
-            active = " active" if order_id == selected_order else ""
-            preview = short(chat.get("product"), 80)
-            when = str(chat.get("last_date") or "")
-            short_when = when[11:16] if len(when) >= 16 else when
-            badge = f"<div class='badge'>{unread}</div>" if unread else ""
-            items.append(
-                f"<a class='conversation-item{active}' href='/chats?order_id={order_id}'>"
-                f"<div class='avatar'>{h(initials)}</div>"
-                f"<div><div class='conversation-name'>{h(name)}</div>"
-                f"<div class='preview'>{h(short(preview, 70))}</div></div>"
-                f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
-            )
-
-        if selected_order and selected_chat is None:
-            selected_messages = client.all_chat_messages(selected_order)
-            if selected_messages:
-                selected_chat = {"id_i": selected_order, "email": f"order-{selected_order}", "product": "Direct order lookup"}
-
+    def chat_panel_html(self, selected_order: int, selected_chat: dict[str, Any] | None, selected_messages: list[dict[str, Any]]) -> str:
         if selected_chat:
             buyer_name = str(selected_chat.get("email") or "Buyer").split("@", 1)[0]
             buyer_lang = detect_buyer_language(selected_messages)
@@ -900,11 +867,97 @@ class Handler(BaseHTTPRequestHandler):
             notice = ""
             if self.q("sent") == "1":
                 notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
-            panel = f"<div class='conversation-panel'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang)}</div>"
-        else:
-            panel = "<div class='conversation-panel'><div class='empty-state'>No chats found</div></div>"
+            return f"<div id='chat-panel' class='conversation-panel'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang)}</div>"
+        return "<div id='chat-panel' class='conversation-panel'><div class='empty-state'>No chats found</div></div>"
 
-        body = f"<div class='messages-layout'><div class='conversation-list'><div class='conversation-title'>Messages</div>{''.join(items)}</div>{panel}</div>"
+    def api_chat_panel(self) -> None:
+        order_id = int(self.q("order_id", "0") or 0)
+        if not order_id:
+            return self.send_json({"ok": False, "error": "order_id is required"}, 400)
+        email = self.q("email", f"order-{order_id}")
+        product = self.q("product", "Direct order lookup")
+        messages = client.all_chat_messages(order_id)
+        selected_chat = {"id_i": order_id, "email": email, "product": product} if messages else None
+        self.send_json({"ok": True, "order_id": order_id, "count": len(messages), "html": self.chat_panel_html(order_id, selected_chat, messages)})
+
+    def chats(self) -> None:
+        chats = client.chats(page_size=100)
+        selected_order = int(self.q("order_id", "0") or 0)
+        if not selected_order and chats:
+            selected_order = int(chats[0].get("id_i") or 0)
+
+        items = []
+        selected_chat: dict[str, Any] | None = None
+        for chat in chats:
+            order_id = int(chat.get("id_i") or 0)
+            if order_id == selected_order:
+                selected_chat = chat
+            email = str(chat.get("email") or "unknown")
+            name = email.split("@", 1)[0] or email
+            initials = (name[:1] or "?").upper()
+            unread = int(chat.get("cnt_new") or 0)
+            active = " active" if order_id == selected_order else ""
+            preview = short(chat.get("product"), 80)
+            when = str(chat.get("last_date") or "")
+            short_when = when[11:16] if len(when) >= 16 else when
+            badge = f"<div class='badge'>{unread}</div>" if unread else ""
+            items.append(
+                f"<a class='conversation-item{active}' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(chat.get('product'))}' href='/chats?order_id={order_id}'>"
+                f"<div class='avatar'>{h(initials)}</div>"
+                f"<div><div class='conversation-name'>{h(name)}</div>"
+                f"<div class='preview'>{h(short(preview, 70))}</div></div>"
+                f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
+            )
+
+        selected_messages: list[dict[str, Any]] = []
+        if selected_order:
+            selected_messages = client.all_chat_messages(selected_order)
+            if selected_chat is None and selected_messages:
+                selected_chat = {"id_i": selected_order, "email": f"order-{selected_order}", "product": "Direct order lookup"}
+
+        panel = self.chat_panel_html(selected_order, selected_chat, selected_messages)
+        ajax = """
+        <script>
+        (() => {
+          const list = document.getElementById('conversation-list');
+          if (!list) return;
+          function runPanelScripts(panel) {
+            panel.querySelectorAll('script').forEach((oldScript) => {
+              const script = document.createElement('script');
+              script.textContent = oldScript.textContent;
+              document.body.appendChild(script);
+              script.remove();
+            });
+          }
+          list.addEventListener('click', async (event) => {
+            const link = event.target.closest('.conversation-item');
+            if (!link) return;
+            event.preventDefault();
+            const panel = document.getElementById('chat-panel');
+            if (!panel) { location.href = link.href; return; }
+            const orderId = link.dataset.orderId || '';
+            const params = new URLSearchParams({order_id: orderId, email: link.dataset.email || '', product: link.dataset.product || ''});
+            list.querySelectorAll('.conversation-item.active').forEach((item) => item.classList.remove('active'));
+            link.classList.add('active');
+            panel.classList.add('loading');
+            try {
+              const res = await fetch('/api/chat-panel?' + params.toString(), {cache: 'no-store'});
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const data = await res.json();
+              if (!data.ok) throw new Error(data.error || 'Load failed');
+              panel.outerHTML = data.html;
+              const newPanel = document.getElementById('chat-panel');
+              if (newPanel) runPanelScripts(newPanel);
+              history.pushState(null, '', link.href);
+            } catch (error) {
+              location.href = link.href;
+            }
+          });
+          window.addEventListener('popstate', () => location.reload());
+        })();
+        </script>
+        """
+        body = f"<div class='messages-layout'><div id='conversation-list' class='conversation-list'><div class='conversation-title'>Messages</div>{''.join(items)}</div>{panel}</div>{ajax}"
         self.send_html("Messages", body)
 
     def chat(self) -> None:
