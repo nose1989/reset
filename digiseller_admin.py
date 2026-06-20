@@ -38,6 +38,8 @@ APP_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = APP_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 COMMON_PHRASES_FILE = APP_DIR / "common_phrases.json"
+COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
+COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 API_BASE = "https://api.digiseller.com/api"
 APP_VERSION = "v8.7-async-translate"
 
@@ -538,6 +540,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.common-phrases{border-top:1px solid #e5e7eb;background:#f8fafc;padding:10px 18px 14px}.common-phrase-title{font-size:13px;font-weight:800;color:#334155;margin-bottom:8px}.common-phrase-buttons{display:flex;flex-wrap:wrap;gap:8px}.common-phrase-buttons form{margin:0}.common-phrase-buttons button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.phrase-manager textarea{width:100%;box-sizing:border-box;min-height:76px;resize:vertical}.phrase-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:start;margin-bottom:10px}.phrase-empty{color:#64748b;font-size:14px}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
 .translated-message{white-space:normal}.translated-text,.original-text{white-space:pre-wrap}.toggle-original{margin-top:8px;background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.translation-label{display:inline-block;margin-left:8px;color:#64748b;font-size:12px}
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
+.phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:block;margin-top:8px}
 </style>
 """
 
@@ -965,7 +968,7 @@ def phrase_user_key() -> str:
     return str(client.seller_id)
 
 
-def load_common_phrases() -> list[dict[str, str]]:
+def load_common_phrases() -> list[dict[str, Any]]:
     if not COMMON_PHRASES_FILE.exists():
         return []
     data = json.loads(COMMON_PHRASES_FILE.read_text(encoding="utf-8"))
@@ -974,19 +977,21 @@ def load_common_phrases() -> list[dict[str, str]]:
     values = data.get(phrase_user_key(), [])
     if not isinstance(values, list):
         return []
-    phrases: list[dict[str, str]] = []
+    phrases: list[dict[str, Any]] = []
     for item in values:
         if not isinstance(item, dict):
             continue
         phrase_id = str(item.get("id") or "").strip()
         text = str(item.get("text") or "").strip()
-        if phrase_id and text:
-            phrases.append({"id": phrase_id, "text": text})
+        raw_files = item.get("files") or []
+        files = [file for file in raw_files if isinstance(file, dict) and file.get("stored")]
+        if phrase_id and (text or files):
+            phrases.append({"id": phrase_id, "text": text, "files": files})
     return phrases
 
 
-def save_common_phrases(phrases: list[dict[str, str]]) -> None:
-    data: dict[str, list[dict[str, str]]] = {}
+def save_common_phrases(phrases: list[dict[str, Any]]) -> None:
+    data: dict[str, list[dict[str, Any]]] = {}
     if COMMON_PHRASES_FILE.exists():
         loaded = json.loads(COMMON_PHRASES_FILE.read_text(encoding="utf-8"))
         if isinstance(loaded, dict):
@@ -1002,6 +1007,46 @@ def save_common_phrases(phrases: list[dict[str, str]]) -> None:
 def new_phrase_id(text: str) -> str:
     seed = f"{time.time_ns()}:{text}"
     return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+
+
+def phrase_file_url(stored: str) -> str:
+    return "/phrase-files/" + urllib.parse.quote(stored)
+
+
+def save_phrase_uploads(phrase_id: str, uploads: list[UploadItem], existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    files = list(existing)
+    for upload in uploads:
+        suffix = Path(upload.filename).suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
+            suffix = ""
+        digest = hashlib.sha1(upload.data).hexdigest()[:16]
+        stored = f"{phrase_id}-{time.time_ns()}-{digest}{suffix}"
+        (COMMON_PHRASES_DIR / stored).write_bytes(upload.data)
+        files.append({"filename": upload.filename, "content_type": upload.content_type, "stored": stored})
+    return files
+
+
+def phrase_upload_items(phrase: dict[str, Any]) -> list[UploadItem]:
+    uploads: list[UploadItem] = []
+    for file in phrase.get("files") or []:
+        if not isinstance(file, dict):
+            continue
+        stored = str(file.get("stored") or "")
+        file_path = (COMMON_PHRASES_DIR / stored).resolve()
+        if not str(file_path).startswith(str(COMMON_PHRASES_DIR.resolve())) or not file_path.exists():
+            continue
+        uploads.append(UploadItem(str(file.get("filename") or file_path.name), str(file.get("content_type") or "application/octet-stream"), file_path.read_bytes()))
+    return uploads
+
+
+def remove_phrase_files(phrase: dict[str, Any]) -> None:
+    for file in phrase.get("files") or []:
+        if not isinstance(file, dict):
+            continue
+        stored = str(file.get("stored") or "")
+        file_path = (COMMON_PHRASES_DIR / stored).resolve()
+        if str(file_path).startswith(str(COMMON_PHRASES_DIR.resolve())):
+            file_path.unlink(missing_ok=True)
 
 
 def update_online_keepalive_status(**values: Any) -> None:
@@ -1131,14 +1176,17 @@ class Handler(BaseHTTPRequestHandler):
         editor_id = f"reply-{order_id}"
         phrase_forms = []
         for phrase in load_common_phrases():
-            text = phrase["text"]
-            label = short(text, 36)
+            text = str(phrase.get("text") or "")
+            files = phrase.get("files") or []
+            label = short(text, 36) if text else "Attachment phrase"
+            if files:
+                label = f"{label} +{len(files)} file"
             phrase_forms.append(
                 f"<form method='post' action='/chats/send'>"
                 f"<input type='hidden' name='order_id' value='{order_id}'>"
                 f"<input type='hidden' name='target_lang' value='{h(target_lang)}'>"
-                f"<input type='hidden' name='message' value='{h(text)}'>"
-                f"<button type='submit' title='{h(text)}'>{h(label)}</button></form>"
+                f"<input type='hidden' name='phrase_id' value='{h(phrase['id'])}'>"
+                f"<button type='submit' title='{h(text or label)}'>{h(label)}</button></form>"
             )
         if phrase_forms:
             phrases_html = (
@@ -1332,6 +1380,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_chat_debug()
             if path.startswith("/downloads/"):
                 return self.serve_download(path)
+            if path.startswith("/phrase-files/"):
+                return self.serve_phrase_file(path)
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
         except Exception as exc:
             self.send_html("Error", f"<div class='card bad'>Error</div><pre class='card code'>{h(exc)}</pre>", 500)
@@ -1345,6 +1395,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.save_phrase()
             if path == "/phrases/delete":
                 return self.delete_phrase()
+            if path == "/phrases/file-delete":
+                return self.delete_phrase_file()
             if path == "/api/translate-batch":
                 return self.api_translate_batch()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
@@ -1365,9 +1417,16 @@ class Handler(BaseHTTPRequestHandler):
         fields, uploads = self.read_form()
         order_id = int(fields.get("order_id", "0") or 0)
         message = fields.get("message", "").strip()
+        phrase_id = fields.get("phrase_id", "").strip()
         target_lang = fields.get("target_lang", "").strip() or "en"
         if not order_id:
             raise RuntimeError("Order ID is missing")
+        if phrase_id:
+            phrase = next((item for item in load_common_phrases() if item["id"] == phrase_id), None)
+            if phrase:
+                if not message:
+                    message = str(phrase.get("text") or "").strip()
+                uploads.extend(phrase_upload_items(phrase))
         if not message and not uploads:
             raise RuntimeError("Type a message or choose at least one file")
         if message and target_lang not in {"zh", "zh-CN"} and heuristic_language(message) in {"zh", "zh-CN"}:
@@ -1406,14 +1465,36 @@ class Handler(BaseHTTPRequestHandler):
         rows = []
         for phrase in phrases:
             phrase_id = phrase["id"]
-            text = phrase["text"]
+            text = str(phrase.get("text") or "")
+            file_rows = []
+            file_delete_forms = []
+            for file in phrase.get("files") or []:
+                stored = str(file.get("stored") or "")
+                filename = str(file.get("filename") or stored)
+                content_type = str(file.get("content_type") or "")
+                delete_form_id = "delete-file-" + re.sub(r"[^a-zA-Z0-9_-]", "-", stored)
+                preview = f"<img src='{h(phrase_file_url(stored))}' alt='{h(filename)}'>" if content_type.startswith("image/") else "<span class='file-chip-icon'>FILE</span>"
+                file_rows.append(
+                    f"<div class='phrase-file'>{preview}<span class='phrase-file-name'>{h(filename)}</span>"
+                    f"<button type='submit' form='{h(delete_form_id)}'>&#21024;&#38500;&#38468;&#20214;</button></div>"
+                )
+                file_delete_forms.append(
+                    f"<form id='{h(delete_form_id)}' method='post' action='/phrases/file-delete'>"
+                    f"<input type='hidden' name='id' value='{h(phrase_id)}'>"
+                    f"<input type='hidden' name='stored' value='{h(stored)}'>"
+                    f"</form>"
+                )
+            files_html = f"<div class='phrase-files'>{''.join(file_rows)}</div>" if file_rows else ""
             rows.append(
                 f"<div class='card phrase-manager'>"
-                f"<form method='post' action='/phrases/save'>"
+                f"<form method='post' action='/phrases/save' enctype='multipart/form-data'>"
                 f"<input type='hidden' name='id' value='{h(phrase_id)}'>"
                 f"<textarea name='text'>{h(text)}</textarea>"
+                f"{files_html}"
+                f"<label class='phrase-upload'>&#28155;&#21152;&#22270;&#29255;/&#38468;&#20214; <input name='files' type='file' multiple accept='image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.rtf,.zip,.rar,.7z'></label>"
                 f"<p><button type='submit'>&#20445;&#23384;</button></p>"
                 f"</form>"
+                f"{''.join(file_delete_forms)}"
                 f"<form method='post' action='/phrases/delete'>"
                 f"<input type='hidden' name='id' value='{h(phrase_id)}'>"
                 f"<button type='submit'>&#21024;&#38500;</button>"
@@ -1424,32 +1505,65 @@ class Handler(BaseHTTPRequestHandler):
             f"<div class='card'><h2>&#24120;&#29992;&#35821;</h2>"
             f"<p class='muted'>&#24403;&#21069;&#29992;&#25143;&#65306;{h(phrase_user_key())}&#12290;&#36825;&#37324;&#31649;&#29702;&#30340;&#24120;&#29992;&#35821;&#20250;&#26174;&#31034;&#22312;&#22238;&#22797;&#32534;&#36753;&#22120;&#19979;&#26041;&#65292;&#28857;&#20987;&#21363;&#21487;&#21457;&#36865;&#12290;</p></div>"
             f"<div class='card phrase-manager'><h3>&#26032;&#22686;&#24120;&#29992;&#35821;</h3>"
-            f"<form method='post' action='/phrases/save'><textarea name='text' placeholder='&#36755;&#20837;&#24120;&#29992;&#22238;&#22797;&#20869;&#23481;'></textarea>"
+            f"<form method='post' action='/phrases/save' enctype='multipart/form-data'><textarea name='text' placeholder='&#36755;&#20837;&#24120;&#29992;&#22238;&#22797;&#20869;&#23481;&#65292;&#25903;&#25345; emoji'></textarea>"
+            f"<label class='phrase-upload'>&#22270;&#29255;/&#38468;&#20214; <input name='files' type='file' multiple accept='image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.rtf,.zip,.rar,.7z'></label>"
             f"<p><button type='submit'>&#28155;&#21152;</button></p></form></div>"
             f"{existing}"
         )
         self.send_html("Common phrases", body)
 
     def save_phrase(self) -> None:
-        fields, _ = self.read_form()
+        fields, uploads = self.read_form()
         phrase_id = fields.get("id", "").strip()
         text = fields.get("text", "").strip()
         phrases = load_common_phrases()
         if phrase_id:
-            phrases = [
-                {"id": phrase["id"], "text": text if phrase["id"] == phrase_id else phrase["text"]}
-                for phrase in phrases
-            ]
-            phrases = [phrase for phrase in phrases if phrase["text"]]
-        elif text:
-            phrases.append({"id": new_phrase_id(text), "text": text})
+            updated = []
+            for phrase in phrases:
+                if phrase["id"] == phrase_id:
+                    files = save_phrase_uploads(phrase_id, uploads, phrase.get("files") or [])
+                    if text or files:
+                        updated.append({"id": phrase_id, "text": text, "files": files})
+                    else:
+                        remove_phrase_files(phrase)
+                else:
+                    updated.append(phrase)
+            phrases = updated
+        elif text or uploads:
+            phrase_id = new_phrase_id(text)
+            phrases.append({"id": phrase_id, "text": text, "files": save_phrase_uploads(phrase_id, uploads, [])})
         save_common_phrases(phrases)
         self.redirect("/phrases")
 
     def delete_phrase(self) -> None:
         fields, _ = self.read_form()
         phrase_id = fields.get("id", "").strip()
+        for phrase in load_common_phrases():
+            if phrase["id"] == phrase_id:
+                remove_phrase_files(phrase)
         phrases = [phrase for phrase in load_common_phrases() if phrase["id"] != phrase_id]
+        save_common_phrases(phrases)
+        self.redirect("/phrases")
+
+    def delete_phrase_file(self) -> None:
+        fields, _ = self.read_form()
+        phrase_id = fields.get("id", "").strip()
+        stored = fields.get("stored", "").strip()
+        phrases = []
+        for phrase in load_common_phrases():
+            if phrase["id"] != phrase_id:
+                phrases.append(phrase)
+                continue
+            files = []
+            for file in phrase.get("files") or []:
+                if str(file.get("stored") or "") == stored:
+                    file_path = (COMMON_PHRASES_DIR / stored).resolve()
+                    if str(file_path).startswith(str(COMMON_PHRASES_DIR.resolve())):
+                        file_path.unlink(missing_ok=True)
+                else:
+                    files.append(file)
+            if phrase.get("text") or files:
+                phrases.append({"id": phrase_id, "text": phrase.get("text") or "", "files": files})
         save_common_phrases(phrases)
         self.redirect("/phrases")
 
@@ -1903,6 +2017,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Disposition", f"attachment; filename={file_path.name}")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def serve_phrase_file(self, path: str) -> None:
+        rel = urllib.parse.unquote(path.removeprefix("/phrase-files/"))
+        file_path = (COMMON_PHRASES_DIR / rel).resolve()
+        if not str(file_path).startswith(str(COMMON_PHRASES_DIR.resolve())) or not file_path.exists():
+            return self.send_html("Not found", "Not found", 404)
+        content_type = "application/octet-stream"
+        for phrase in load_common_phrases():
+            for file in phrase.get("files") or []:
+                if str(file.get("stored") or "") == rel:
+                    content_type = str(file.get("content_type") or content_type)
+                    break
+        data = file_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
