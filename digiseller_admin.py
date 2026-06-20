@@ -38,6 +38,7 @@ APP_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = APP_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 API_BASE = "https://api.digiseller.com/api"
+APP_VERSION = "v8.1-full-history"
 
 
 @dataclass
@@ -418,7 +419,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 
 
 def layout(title: str, body: str) -> bytes:
-    nav = """
+    nav = f"""
     <div class="top">
       <a href="/">Dashboard</a>
       <a href="/sales">Sales</a>
@@ -426,6 +427,7 @@ def layout(title: str, body: str) -> bytes:
       <a href="/unread">Unread</a>
       <a href="/admin-messages">Admin</a>
       <a href="/product">Product</a>
+      <span style="float:right;font-weight:700">Digiseller Admin {APP_VERSION}</span>
     </div>
     """
     alert_ui = """
@@ -721,6 +723,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.download_images()
             if path == "/api/unread-count":
                 return self.api_unread_count()
+            if path == "/api/version":
+                return self.send_json({"version": APP_VERSION, "file": str(Path(__file__).resolve())})
             if path.startswith("/downloads/"):
                 return self.serve_download(path)
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
@@ -816,6 +820,11 @@ class Handler(BaseHTTPRequestHandler):
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
             )
+
+        if selected_order and selected_chat is None:
+            selected_messages = client.all_chat_messages(selected_order)
+            if selected_messages:
+                selected_chat = {"id_i": selected_order, "email": f"order-{selected_order}", "product": "Direct order lookup"}
 
         if selected_chat:
             buyer_name = str(selected_chat.get("email") or "Buyer").split("@", 1)[0]
