@@ -673,12 +673,12 @@ def layout(title: str, body: str) -> bytes:
     online_verify_error = str(online.get("verify_error") or "")
     online_public_error = str(online.get("public_error") or "")
     online_recovery_error = str(online.get("recovery_error") or "")
-    if online_error and online_error != "disabled":
-        online_label = "Online error"
-        online_class = "bad"
-    elif online.get("verified_online") or online.get("public_online"):
+    if online.get("verified_online") or online.get("public_online"):
         online_label = "Online verified"
         online_class = "ok"
+    elif online_error and online_error != "disabled":
+        online_label = "Online error"
+        online_class = "bad"
     elif online_last_set or online_last_heartbeat:
         online_label = "Online heartbeat"
         online_class = ""
@@ -807,12 +807,12 @@ def layout(title: str, body: str) -> bytes:
         const recoveryError = status.recovery_error || '';
         let label = 'Online checking';
         let cls = '';
-        if (error && error !== 'disabled') {{
-          label = 'Online error';
-          cls = 'bad';
-        }} else if (status.verified_online || status.public_online) {{
+        if (status.verified_online || status.public_online) {{
           label = 'Online verified';
           cls = 'ok';
+        }} else if (error && error !== 'disabled') {{
+          label = 'Online error';
+          cls = 'bad';
         }} else if (lastSet || lastHeartbeat) {{
           label = 'Online heartbeat';
         }} else if (lastOk) {{
