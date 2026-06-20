@@ -1038,6 +1038,11 @@ def bool_value(value: Any) -> bool:
 
 
 def delivery_mode(product: dict[str, Any]) -> tuple[str, str]:
+    unique_code_verification = product.get("unique_code_verification")
+    if isinstance(unique_code_verification, dict):
+        if bool_value(unique_code_verification.get("automatic")):
+            return "\u81ea\u52a8\u53d1\u8d27\uff08\u81ea\u52a8\u6838\u9a8c16\u4f4d\u7801\uff09", "ok"
+        return "\u624b\u52a8\u53d1\u8d27\uff08\u9700\u4e70\u5bb616\u4f4d\u7801\uff09", "bad"
     values = [
         str(product.get("content_type") or ""),
         str(product.get("type") or ""),
