@@ -809,19 +809,22 @@ def layout(title: str, body: str) -> bytes:
           window.speechSynthesis.speak(u);
         } catch (e) {}
       }
-      function browserNotify(text, url) {
+      function browserNotify(title, body, url) {
         if (!('Notification' in window) || Notification.permission !== 'granted') return;
-        const n = new Notification('Digiseller new message', {body: text});
+        const n = new Notification(title, {body});
         n.onclick = () => { window.focus(); if (url) location.href = url; };
       }
       function alertUnread(data, force=false) {
         const latest = data.latest || {};
-        const who = latest.email || 'buyer';
+        const who = latest.email || '';
         const order = latest.order_id || '';
-        const text = `Digiseller new message from ${who}, order ${order}`;
+        const title = '老板来新的消息了';
+        const details = [];
+        if (who) details.push(`来自 ${who}`);
+        if (order) details.push(`订单 ${order}`);
         beep();
-        speak(text);
-        browserNotify(text, latest.url);
+        speak(title);
+        browserNotify(title, details.join('，') || title, latest.url);
       }
       function schedulePoll() {
         if (pollTimer) clearInterval(pollTimer);
