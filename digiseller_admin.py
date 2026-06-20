@@ -38,7 +38,7 @@ APP_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = APP_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.1-full-history"
+APP_VERSION = "v8.2-raw-visible"
 
 
 @dataclass
@@ -176,12 +176,16 @@ def detect_buyer_language(messages: list[dict[str, Any]]) -> str:
 
 
 def translate_incoming_html(text: str, message_id: Any) -> str:
-    translated, source_lang = google_translate(text, "zh-CN")
+    try:
+        translated, source_lang = google_translate(text, "zh-CN")
+    except Exception:
+        return h(text)
     if not translated or translated == text or source_lang in {"zh", "zh-CN"}:
         return h(text)
     return (
         f"<div class='translated-message' id='msg-{h(message_id)}'>"
         f"<div class='translated-text'>{h(translated)}</div>"
+        f"<div class='original-inline'>原文：{h(text)}</div>"
         f"<div class='original-text' hidden>{h(text)}</div>"
         f"<button class='toggle-original' type='button'>&#26597;&#30475;&#21407;&#25991;</button>"
         f"<span class='translation-label'>{h(lang_label(source_lang))} → &#20013;&#25991;</span>"
@@ -414,6 +418,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .thumb{max-width:220px;max-height:160px;border:1px solid #e5e7eb;border-radius:8px;display:block;margin-top:8px;background:#f8fafc}.file-preview{margin-top:6px}.file-name{font-weight:700}.image-note{font-size:12px;color:#6b7280;margin-top:4px}
 .reply-editor{border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-actions input[type=file]{background:white;max-width:480px}.reply-hint,.selected-files{font-size:13px;color:#64748b}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
 .translated-message{white-space:normal}.translated-text,.original-text{white-space:pre-wrap}.toggle-original{margin-top:8px;background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.translation-label{display:inline-block;margin-left:8px;color:#64748b;font-size:12px}
+.original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
 </style>
 """
 
@@ -525,9 +530,11 @@ def layout(title: str, body: str) -> bytes:
       const wrap = button.closest('.translated-message');
       const translated = wrap.querySelector('.translated-text');
       const original = wrap.querySelector('.original-text');
+      const originalInline = wrap.querySelector('.original-inline');
       const showingOriginal = !original.hidden;
       original.hidden = showingOriginal;
       translated.hidden = !showingOriginal;
+      if (originalInline) originalInline.hidden = !showingOriginal;
       button.textContent = showingOriginal ? '查看原文' : '显示中文';
     });
     </script>
@@ -725,6 +732,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_unread_count()
             if path == "/api/version":
                 return self.send_json({"version": APP_VERSION, "file": str(Path(__file__).resolve())})
+            if path == "/api/chat-debug":
+                return self.api_chat_debug()
             if path.startswith("/downloads/"):
                 return self.serve_download(path)
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
@@ -836,18 +845,24 @@ class Handler(BaseHTTPRequestHandler):
                 f"<a href='/download-images?order_id={selected_order}'>Download images</a></div>"
             )
             rows = []
-            for msg in selected_messages:
+            total_messages = len(selected_messages)
+            for idx, msg in enumerate(selected_messages, 1):
                 is_seller = msg.get("seller") == 1
                 cls = "seller" if is_seller else "buyer"
                 author = "nose1989" if is_seller else buyer_name
                 text = clean_text(msg.get("message"))
-                if msg.get("is_file"):
-                    text_html = attachment_html(msg)
-                else:
-                    text_html = h(text) if is_seller else translate_incoming_html(text, msg.get("id"))
+                try:
+                    if msg.get("is_file"):
+                        text_html = attachment_html(msg)
+                    else:
+                        text_html = h(text) if is_seller else translate_incoming_html(text, msg.get("id"))
+                except Exception as exc:
+                    text_html = h(text or f"Message render error: {exc}")
+                msg_no = f"#{idx}/{total_messages}"
+                msg_id = f" · ID {h(msg.get('id'))}" if msg.get("id") else ""
                 rows.append(
                     f"<div class='chat-row {cls}'>"
-                    f"<div class='chat-meta'><span class='chat-author'>{h(author)}</span><span>{h(msg.get('date_written'))}</span></div>"
+                    f"<div class='chat-meta'><span class='chat-author'>{h(author)} <span class='muted'>{msg_no}{msg_id}</span></span><span>{h(msg.get('date_written'))}</span></div>"
                     f"<div class='chat-bubble'>{text_html}</div></div>"
                 )
             notice = ""
@@ -932,6 +947,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_unread_count(self) -> None:
         self.send_json(unread_summary())
+
+    def api_chat_debug(self) -> None:
+        order_id = int(self.q("order_id", "0") or 0)
+        if not order_id:
+            return self.send_json({"error": "order_id is required"}, 400)
+        messages = client.all_chat_messages(order_id)
+        self.send_json(
+            {
+                "version": APP_VERSION,
+                "order_id": order_id,
+                "count": len(messages),
+                "ids": [msg.get("id") for msg in messages],
+                "messages": messages,
+            }
+        )
 
     def serve_download(self, path: str) -> None:
         rel = urllib.parse.unquote(path.removeprefix("/downloads/"))
