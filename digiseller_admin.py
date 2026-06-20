@@ -800,28 +800,48 @@ def layout(title: str, body: str) -> bytes:
           osc.stop(audioCtx.currentTime + 0.6);
         } catch (e) {}
       }
+      let sweetVoice = null;
+      function findSweetVoice() {
+        const voices = window.speechSynthesis?.getVoices?.() || [];
+        const chineseVoices = voices.filter((voice) => /zh|Chinese|Mandarin|\u666e\u901a\u8bdd|\u4e2d\u6587/i.test(`${voice.lang} ${voice.name}`));
+        const sweetHints = ['Xiaoxiao', 'Xiaochen', 'Xiaoyi', 'Tingting', 'Meijia', 'Yaoyao', 'Hanhan', 'Huihui'];
+        sweetVoice = sweetHints.map((hint) => chineseVoices.find((voice) => voice.name.includes(hint))).find(Boolean)
+          || chineseVoices.find((voice) => /female|woman|girl|\u5973/i.test(voice.name))
+          || chineseVoices[0]
+          || null;
+      }
+      if ('speechSynthesis' in window) {
+        findSweetVoice();
+        window.speechSynthesis.onvoiceschanged = findSweetVoice;
+      }
       function speak(text) {
         try {
           const u = new SpeechSynthesisUtterance(text);
-          u.lang = 'zh-CN';
-          u.rate = 1;
+          if (sweetVoice) u.voice = sweetVoice;
+          u.lang = sweetVoice?.lang || 'zh-CN';
+          u.pitch = 1.35;
+          u.rate = 0.92;
+          u.volume = 1;
           window.speechSynthesis.cancel();
           window.speechSynthesis.speak(u);
         } catch (e) {}
       }
-      function browserNotify(text, url) {
+      function browserNotify(title, body, url) {
         if (!('Notification' in window) || Notification.permission !== 'granted') return;
-        const n = new Notification('Digiseller new message', {body: text});
+        const n = new Notification(title, {body});
         n.onclick = () => { window.focus(); if (url) location.href = url; };
       }
       function alertUnread(data, force=false) {
         const latest = data.latest || {};
-        const who = latest.email || 'buyer';
+        const who = latest.email || '';
         const order = latest.order_id || '';
-        const text = `Digiseller new message from ${who}, order ${order}`;
+        const title = '老板来新的消息了';
+        const details = [];
+        if (who) details.push(`来自 ${who}`);
+        if (order) details.push(`订单 ${order}`);
         beep();
-        speak(text);
-        browserNotify(text, latest.url);
+        speak(title);
+        browserNotify(title, details.join('，') || title, latest.url);
       }
       function schedulePoll() {
         if (pollTimer) clearInterval(pollTimer);
