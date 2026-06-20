@@ -17,6 +17,8 @@ DIGISELLER_SELLER_ID=1437041
 DIGISELLER_API_KEY=这里填 WebMoney Keeper 里的完整 API Key
 DIGISELLER_ADMIN_HOST=127.0.0.1
 DIGISELLER_ADMIN_PORT=8765
+DIGISELLER_KEEP_ONLINE=1
+DIGISELLER_KEEP_ONLINE_INTERVAL=60
 ```
 
 建议：如果 API Key 曾经发到聊天或公开地方，先在 Digiseller 后台重新生成新 key，再写入 `.env`。
@@ -46,6 +48,8 @@ http://127.0.0.1:8765
 ## 实时提醒
 
 Web 提醒：启动后台并打开 `http://127.0.0.1:8765` 后，点击右下角 `Enable alerts`。
+
+默认启动后会每 60 秒调用一次 Digiseller 在线状态接口，尽量保持店铺/客服在线；如需关闭，设置 `DIGISELLER_KEEP_ONLINE=0`。
 
 开启后页面会每 15 秒检查一次未读消息；有新的未读时会：
 
