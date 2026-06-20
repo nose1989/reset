@@ -37,6 +37,7 @@ except ImportError:
 APP_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = APP_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
+COMMON_PHRASES_FILE = APP_DIR / "common_phrases.json"
 API_BASE = "https://api.digiseller.com/api"
 APP_VERSION = "v8.7-async-translate"
 
@@ -454,7 +455,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 
 .alert-controls{position:fixed;right:18px;bottom:18px;z-index:50;display:flex;gap:8px;align-items:center}.alert-button{background:#16a34a;color:#fff;border:0;border-radius:999px;padding:10px 14px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-button.off{background:#64748b}.alert-pill{display:none;background:#dc2626;color:#fff;border-radius:999px;padding:9px 12px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-pill.show{display:inline-block}.unread-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#ef4444;margin-left:6px}
 .thumb{max-width:220px;max-height:160px;border:1px solid #e5e7eb;border-radius:8px;display:block;margin-top:8px;background:#f8fafc}.file-preview{margin-top:6px}.file-name{font-weight:700}.image-note{font-size:12px;color:#6b7280;margin-top:4px}
-.reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
+.reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.common-phrases{border-top:1px solid #e5e7eb;background:#f8fafc;padding:10px 18px 14px}.common-phrase-title{font-size:13px;font-weight:800;color:#334155;margin-bottom:8px}.common-phrase-buttons{display:flex;flex-wrap:wrap;gap:8px}.common-phrase-buttons form{margin:0}.common-phrase-buttons button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.phrase-manager textarea{width:100%;box-sizing:border-box;min-height:76px;resize:vertical}.phrase-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:start;margin-bottom:10px}.phrase-empty{color:#64748b;font-size:14px}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
 .translated-message{white-space:normal}.translated-text,.original-text{white-space:pre-wrap}.toggle-original{margin-top:8px;background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.translation-label{display:inline-block;margin-left:8px;color:#64748b;font-size:12px}
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
 </style>
@@ -470,6 +471,7 @@ def layout(title: str, body: str) -> bytes:
         <a href="/chats">Messages</a>
         <a href="/unread">Unread</a>
         <a href="/admin-messages">Admin</a>
+        <a href="/phrases">&#24120;&#29992;&#35821;</a>
         <a href="/product">Product</a>
       </div>
       <form id="unique-code-form" class="unique-lookup" action="/unique-code" method="get">
@@ -814,6 +816,49 @@ def clear_unread_cache() -> None:
     UNREAD_CACHE["data"] = None
 
 
+def phrase_user_key() -> str:
+    return str(client.seller_id)
+
+
+def load_common_phrases() -> list[dict[str, str]]:
+    if not COMMON_PHRASES_FILE.exists():
+        return []
+    data = json.loads(COMMON_PHRASES_FILE.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return []
+    values = data.get(phrase_user_key(), [])
+    if not isinstance(values, list):
+        return []
+    phrases: list[dict[str, str]] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        phrase_id = str(item.get("id") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if phrase_id and text:
+            phrases.append({"id": phrase_id, "text": text})
+    return phrases
+
+
+def save_common_phrases(phrases: list[dict[str, str]]) -> None:
+    data: dict[str, list[dict[str, str]]] = {}
+    if COMMON_PHRASES_FILE.exists():
+        loaded = json.loads(COMMON_PHRASES_FILE.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            for key, values in loaded.items():
+                if isinstance(key, str) and isinstance(values, list):
+                    data[key] = values
+    data[phrase_user_key()] = phrases
+    tmp = COMMON_PHRASES_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(COMMON_PHRASES_FILE)
+
+
+def new_phrase_id(text: str) -> str:
+    seed = f"{time.time_ns()}:{text}"
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+
+
 def update_online_keepalive_status(**values: Any) -> None:
     values.setdefault("last_checked", dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
     ONLINE_KEEPALIVE_STATUS.update(values)
@@ -939,19 +984,29 @@ class Handler(BaseHTTPRequestHandler):
 
     def reply_editor(self, order_id: int, target_lang: str) -> str:
         editor_id = f"reply-{order_id}"
-        member_template = "\u4f1a\u5458\u4fe1\u606f\uff1a\n\u8d26\u53f7\uff1a\n\u5bc6\u7801\uff1a\n\u767b\u5f55\u5730\u5740\uff1a\n\u4f7f\u7528\u8bf4\u660e\uff1a"
-        attachment_template = "\u9644\u4ef6\u8bf4\u660e\uff1a\u8bf7\u67e5\u770b\u672c\u6d88\u606f\u9644\u5e26\u7684\u56fe\u7247\u3001\u9644\u4ef6\u6216\u6587\u6863\u3002"
-        reference_template = "\u6587\u732e\u8d44\u6599\uff1a\u8bf7\u67e5\u770b\u9644\u4ef6\u4e2d\u7684\u8d44\u6599\uff0c\u5982\u6709\u95ee\u9898\u8bf7\u7ee7\u7eed\u7559\u8a00\u3002"
+        phrase_forms = []
+        for phrase in load_common_phrases():
+            text = phrase["text"]
+            label = short(text, 36)
+            phrase_forms.append(
+                f"<form method='post' action='/chats/send'>"
+                f"<input type='hidden' name='order_id' value='{order_id}'>"
+                f"<input type='hidden' name='target_lang' value='{h(target_lang)}'>"
+                f"<input type='hidden' name='message' value='{h(text)}'>"
+                f"<button type='submit' title='{h(text)}'>{h(label)}</button></form>"
+            )
+        if phrase_forms:
+            phrases_html = (
+                "<div class='common-phrases'><div class='common-phrase-title'>&#24120;&#29992;&#35821;&#65288;&#28857;&#20987;&#31435;&#21363;&#21457;&#36865;&#65289;</div>"
+                f"<div class='common-phrase-buttons'>{''.join(phrase_forms)}</div></div>"
+            )
+        else:
+            phrases_html = "<div class='common-phrases'><div class='phrase-empty'>&#36824;&#27809;&#26377;&#24120;&#29992;&#35821;&#65292;<a href='/phrases'>&#21435;&#28155;&#21152;</a></div></div>"
         return f"""
         <form id="{editor_id}" class="reply-editor" method="post" action="/chats/send" enctype="multipart/form-data">
           <input type="hidden" name="order_id" value="{order_id}">
           <input type="hidden" name="target_lang" value="{h(target_lang)}">
           <textarea id="{editor_id}-message" name="message" placeholder="&#22312;&#36825;&#37324;&#22238;&#22797;&#20250;&#21592;&#20449;&#24687;&#65292;&#21487;&#22635;&#20889;&#36134;&#21495;&#12289;&#23494;&#30721;&#12289;&#38142;&#25509;&#12289;&#20351;&#29992;&#35828;&#26126;&#31561;&#12290;"></textarea>
-          <div class="reply-toolbar">
-            <button type="button" data-insert="{h(member_template)}">&#20250;&#21592;&#20449;&#24687;&#27169;&#26495;</button>
-            <button type="button" data-insert="{h(attachment_template)}">&#38468;&#20214;&#35828;&#26126;</button>
-            <button type="button" data-insert="{h(reference_template)}">&#25991;&#29486;&#35828;&#26126;</button>
-          </div>
           <div class="reply-actions">
             <div id="{editor_id}-dropzone" class="reply-dropzone">
               <input id="{editor_id}-files" name="files" type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.rtf,.zip,.rar,.7z">
@@ -962,6 +1017,7 @@ class Handler(BaseHTTPRequestHandler):
           </div>
           <div id="{editor_id}-selected" class="selected-files"></div>
         </form>
+        {phrases_html}
         <script>
         (() => {{
           const root = document.getElementById('{editor_id}');
@@ -1109,6 +1165,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.unread()
             if path == "/admin-messages":
                 return self.admin_messages_page()
+            if path == "/phrases":
+                return self.phrases_page()
             if path == "/product":
                 return self.product()
             if path == "/unique-code":
@@ -1136,6 +1194,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/chats/send":
                 return self.send_chat_reply()
+            if path == "/phrases/save":
+                return self.save_phrase()
+            if path == "/phrases/delete":
+                return self.delete_phrase()
             if path == "/api/translate-batch":
                 return self.api_translate_batch()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
@@ -1191,6 +1253,58 @@ class Handler(BaseHTTPRequestHandler):
         <div class='grid'>{login_info}{online_info}<div class='stat'><b>Quick links</b><br><a href='/sales'>Recent sales</a><br><a href='/unread'>Unread messages</a><br><a href='/chats'>Buyer chats</a></div></div>
         """
         self.send_html("Dashboard", body)
+
+    def phrases_page(self) -> None:
+        phrases = load_common_phrases()
+        rows = []
+        for phrase in phrases:
+            phrase_id = phrase["id"]
+            text = phrase["text"]
+            rows.append(
+                f"<div class='card phrase-manager'>"
+                f"<form method='post' action='/phrases/save'>"
+                f"<input type='hidden' name='id' value='{h(phrase_id)}'>"
+                f"<textarea name='text'>{h(text)}</textarea>"
+                f"<p><button type='submit'>&#20445;&#23384;</button></p>"
+                f"</form>"
+                f"<form method='post' action='/phrases/delete'>"
+                f"<input type='hidden' name='id' value='{h(phrase_id)}'>"
+                f"<button type='submit'>&#21024;&#38500;</button>"
+                f"</form></div>"
+            )
+        existing = "".join(rows) if rows else "<div class='card phrase-empty'>&#24403;&#21069;&#29992;&#25143;&#36824;&#27809;&#26377;&#24120;&#29992;&#35821;&#12290;</div>"
+        body = (
+            f"<div class='card'><h2>&#24120;&#29992;&#35821;</h2>"
+            f"<p class='muted'>&#24403;&#21069;&#29992;&#25143;&#65306;{h(phrase_user_key())}&#12290;&#36825;&#37324;&#31649;&#29702;&#30340;&#24120;&#29992;&#35821;&#20250;&#26174;&#31034;&#22312;&#22238;&#22797;&#32534;&#36753;&#22120;&#19979;&#26041;&#65292;&#28857;&#20987;&#21363;&#21487;&#21457;&#36865;&#12290;</p></div>"
+            f"<div class='card phrase-manager'><h3>&#26032;&#22686;&#24120;&#29992;&#35821;</h3>"
+            f"<form method='post' action='/phrases/save'><textarea name='text' placeholder='&#36755;&#20837;&#24120;&#29992;&#22238;&#22797;&#20869;&#23481;'></textarea>"
+            f"<p><button type='submit'>&#28155;&#21152;</button></p></form></div>"
+            f"{existing}"
+        )
+        self.send_html("Common phrases", body)
+
+    def save_phrase(self) -> None:
+        fields, _ = self.read_form()
+        phrase_id = fields.get("id", "").strip()
+        text = fields.get("text", "").strip()
+        phrases = load_common_phrases()
+        if phrase_id:
+            phrases = [
+                {"id": phrase["id"], "text": text if phrase["id"] == phrase_id else phrase["text"]}
+                for phrase in phrases
+            ]
+            phrases = [phrase for phrase in phrases if phrase["text"]]
+        elif text:
+            phrases.append({"id": new_phrase_id(text), "text": text})
+        save_common_phrases(phrases)
+        self.redirect("/phrases")
+
+    def delete_phrase(self) -> None:
+        fields, _ = self.read_form()
+        phrase_id = fields.get("id", "").strip()
+        phrases = [phrase for phrase in load_common_phrases() if phrase["id"] != phrase_id]
+        save_common_phrases(phrases)
+        self.redirect("/phrases")
 
     def sales(self) -> None:
         days = int(self.q("days", "7"))
