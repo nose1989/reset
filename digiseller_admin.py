@@ -370,6 +370,11 @@ class DigisellerClient:
     def product(self, product_id: int) -> dict[str, Any]:
         return self.get(f"/products/{product_id}/data", params={"seller_id": self.seller_id, "lang": "en-US"})
 
+    def unique_code(self, unique_code: str) -> dict[str, Any]:
+        safe_code = urllib.parse.quote(unique_code, safe="")
+        data = self.get(f"/purchases/unique-code/{safe_code}")
+        return data if isinstance(data, dict) else {}
+
     def download_images(self, order_id: int) -> list[dict[str, Any]]:
         order_dir = DOWNLOAD_DIR / str(order_id)
         order_dir.mkdir(parents=True, exist_ok=True)
@@ -418,7 +423,7 @@ def start_auto_reload() -> None:
 
 STYLE = """
 <style>
-body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;margin:0;background:#f6f8fb;color:#1f2937}a{color:#0b65c2;text-decoration:none}.top{background:#1f7acb;color:white;padding:14px 22px}.top a{color:white;margin-right:18px;font-weight:600}.wrap{padding:22px;max-width:1280px;margin:auto}.card{background:white;border:1px solid #d9e2ec;border-radius:10px;padding:18px;margin:0 0 18px 0;box-shadow:0 1px 2px #0001}table{border-collapse:collapse;width:100%;background:white}th,td{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left;vertical-align:top;font-size:14px}th{background:#f3f6fa}.muted{color:#6b7280}.ok{color:#047857;font-weight:700}.bad{color:#b91c1c;font-weight:700}input,button{font-size:14px;padding:8px;border:1px solid #cbd5e1;border-radius:6px}button{background:#1f7acb;color:white;cursor:pointer}.msg-seller{background:#eef6ff}.msg-buyer{background:#fff}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px}
+body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;margin:0;background:#f6f8fb;color:#1f2937}a{color:#0b65c2;text-decoration:none}.top{background:#1f7acb;color:white;padding:10px 22px;display:flex;align-items:center;gap:16px}.top a{color:white;font-weight:600}.top-nav{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.top-version{margin-left:auto;font-weight:700;white-space:nowrap}.unique-lookup{position:relative;flex:1 1 320px;max-width:520px}.unique-lookup input{width:100%;box-sizing:border-box;border-color:#7db5e8;border-radius:3px;background:#fff;color:#1f2937;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.unique-results{position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:80;background:#fff;color:#1f2937;border:1px solid #9eb8ce;border-radius:0 0 4px 4px;box-shadow:0 8px 16px #0002;overflow:hidden}.unique-results[hidden]{display:none}.unique-title{background:#eef3f7;color:#5b6b7a;font-size:12px;font-weight:800;padding:8px 12px;text-transform:uppercase}.unique-result{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;padding:12px;background:#fff;color:#1f2937;border:0;border-radius:0;text-align:left}.unique-result:hover{background:#eef6ff}.unique-icon{width:28px;height:28px;flex:0 0 auto;border:1px solid #cbd5e1;background:#f8fafc;color:#64748b;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}.unique-main{min-width:0}.unique-product{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700}.unique-meta{display:block;color:#6b7280;font-size:12px;margin-top:2px}.unique-message{padding:12px;color:#6b7280;font-size:14px}.unique-error{color:#b91c1c}.wrap{padding:22px;max-width:1280px;margin:auto}.card{background:white;border:1px solid #d9e2ec;border-radius:10px;padding:18px;margin:0 0 18px 0;box-shadow:0 1px 2px #0001}table{border-collapse:collapse;width:100%;background:white}th,td{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left;vertical-align:top;font-size:14px}th{background:#f3f6fa}.muted{color:#6b7280}.ok{color:#047857;font-weight:700}.bad{color:#b91c1c;font-weight:700}input,button{font-size:14px;padding:8px;border:1px solid #cbd5e1;border-radius:6px}button{background:#1f7acb;color:white;cursor:pointer}.msg-seller{background:#eef6ff}.msg-buyer{background:#fff}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px}
 
 .messages-layout{display:grid;grid-template-columns:360px minmax(0,1fr);height:calc(100vh - 120px);min-height:0;background:white;border:1px solid #d9e2ec;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px #0001}.conversation-list{border-right:1px solid #e5e7eb;overflow-y:scroll;min-height:0;background:#fff}.conversation-title{font-size:34px;font-weight:800;padding:22px 22px 14px}.conversation-item{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;padding:12px 14px;border-bottom:1px solid #eef2f7;color:#1f2937}.conversation-item:hover{background:#f4f8ff}.conversation-item.active{background:#3f85d6;color:#fff}.conversation-item.active .muted,.conversation-item.active .preview{color:#eaf2ff}.avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#111827;color:#fff;font-weight:800}.conversation-name{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.preview{color:#9ca3af;line-height:1.25;max-height:38px;overflow:hidden}.conversation-time{font-size:14px;white-space:nowrap}.badge{display:inline-block;min-width:18px;padding:2px 6px;border-radius:999px;background:#ef4444;color:white;font-size:12px;text-align:center;margin-top:6px}.conversation-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:#fff}.conversation-header{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid #e5e7eb}.conversation-header-title{font-size:18px;font-weight:800}.conversation-body{padding:20px 24px;overflow-y:scroll;min-height:0;flex:1 1 auto;scrollbar-gutter:stable}.chat-row{margin:0 0 18px}.chat-meta{display:flex;justify-content:space-between;gap:12px;color:#6b7280;font-size:13px;margin-bottom:6px}.chat-author{font-weight:800;color:#1f2937}.chat-bubble{display:inline-block;max-width:78%;border-radius:10px;padding:10px 12px;line-height:1.45;background:#f3f4f6;white-space:pre-wrap;text-align:left}.chat-row.seller{text-align:right}.chat-row.seller .chat-meta{justify-content:flex-end}.chat-row.seller .chat-bubble{background:#eef6ff}.chat-row.buyer .chat-bubble{background:#fff;border:1px solid #e5e7eb}.toolbar a{margin-left:12px}.empty-state{padding:40px;color:#6b7280;text-align:center}.conversation-list::-webkit-scrollbar,.conversation-body::-webkit-scrollbar,.reply-editor::-webkit-scrollbar{width:12px}.conversation-list::-webkit-scrollbar-thumb,.conversation-body::-webkit-scrollbar-thumb,.reply-editor::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:999px;border:3px solid #f8fafc}@media(max-width:850px){.messages-layout{grid-template-columns:1fr;height:calc(100vh - 110px)}.conversation-panel{min-height:0}.conversation-list{max-height:260px;border-right:0;border-bottom:1px solid #e5e7eb}}
 
@@ -434,14 +439,97 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 def layout(title: str, body: str) -> bytes:
     nav = f"""
     <div class="top">
-      <a href="/">Dashboard</a>
-      <a href="/sales">Sales</a>
-      <a href="/chats">Messages</a>
-      <a href="/unread">Unread</a>
-      <a href="/admin-messages">Admin</a>
-      <a href="/product">Product</a>
-      <span style="float:right;font-weight:700">Digiseller Admin {APP_VERSION}</span>
+      <div class="top-nav">
+        <a href="/">Dashboard</a>
+        <a href="/sales">Sales</a>
+        <a href="/chats">Messages</a>
+        <a href="/unread">Unread</a>
+        <a href="/admin-messages">Admin</a>
+        <a href="/product">Product</a>
+      </div>
+      <form id="unique-code-form" class="unique-lookup" action="/unique-code" method="get">
+        <input id="unique-code-input" name="code" maxlength="16" autocomplete="off" spellcheck="false" placeholder="Enter 16-digit verification code">
+        <div id="unique-code-results" class="unique-results" hidden>
+          <div class="unique-title">GUID</div>
+          <div id="unique-code-result-body" class="unique-message">Enter a 16-character code</div>
+        </div>
+      </form>
+      <span class="top-version">Digiseller Admin {APP_VERSION}</span>
     </div>
+    <script>
+    (() => {{
+      const form = document.getElementById('unique-code-form');
+      const input = document.getElementById('unique-code-input');
+      const results = document.getElementById('unique-code-results');
+      const body = document.getElementById('unique-code-result-body');
+      if (!form || !input || !results || !body) return;
+      let timer = null;
+      let controller = null;
+      const codePattern = /^[A-Za-z0-9]{{16}}$/;
+
+      function show(message, isError=false) {{
+        body.className = isError ? 'unique-message unique-error' : 'unique-message';
+        body.textContent = message;
+        results.hidden = false;
+      }}
+      function hideSoon() {{
+        setTimeout(() => {{ results.hidden = true; }}, 140);
+      }}
+      function openCode(code) {{
+        if (!codePattern.test(code)) return;
+        location.href = '/unique-code?code=' + encodeURIComponent(code);
+      }}
+      async function lookup(code) {{
+        if (controller) controller.abort();
+        controller = new AbortController();
+        show('Checking...');
+        try {{
+          const res = await fetch('/api/unique-code?code=' + encodeURIComponent(code), {{cache: 'no-store', signal: controller.signal}});
+          const data = await res.json();
+          if (!res.ok || !data.ok) {{
+            show(data.error || 'No matching GUID found', true);
+            return;
+          }}
+          const item = data.item || {{}};
+          body.className = '';
+          body.innerHTML = `
+            <button class="unique-result" type="button" data-code="${{code}}">
+              <span class="unique-icon">ID</span>
+              <span class="unique-main">
+                <span class="unique-product">${{escapeHtml(item.product_name || 'Matched order')}}</span>
+                <span class="unique-meta">Order ${{escapeHtml(String(item.invoice || ''))}} · ${{escapeHtml(item.state_label || '')}}</span>
+              </span>
+            </button>`;
+          const button = body.querySelector('.unique-result');
+          if (button) button.addEventListener('mousedown', (event) => {{ event.preventDefault(); openCode(code); }});
+          results.hidden = false;
+        }} catch (error) {{
+          if (error.name !== 'AbortError') show('Lookup failed', true);
+        }}
+      }}
+      function escapeHtml(value) {{
+        return String(value).replace(/[&<>"']/g, (char) => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[char]));
+      }}
+      input.addEventListener('input', () => {{
+        const code = input.value.trim();
+        clearTimeout(timer);
+        if (!code) {{ results.hidden = true; return; }}
+        if (code.length < 16) {{ show('Enter a 16-character code'); return; }}
+        if (!codePattern.test(code)) {{ show('Code must be 16 letters or digits', true); return; }}
+        timer = setTimeout(() => lookup(code), 200);
+      }});
+      input.addEventListener('focus', () => {{ if (input.value.trim()) results.hidden = false; }});
+      input.addEventListener('blur', hideSoon);
+      form.addEventListener('submit', (event) => {{
+        const code = input.value.trim();
+        if (!codePattern.test(code)) {{
+          event.preventDefault();
+          show('Code must be 16 letters or digits', true);
+          return;
+        }}
+      }});
+    }})();
+    </script>
     """
     alert_ui = """
     <div class="alert-controls">
@@ -606,6 +694,65 @@ def table(headers: list[str], rows: list[list[Any]]) -> str:
     head = "".join(f"<th>{h(x)}</th>" for x in headers)
     body = "".join("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows)
     return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+UNIQUE_CODE_RE = re.compile(r"^[A-Za-z0-9]{16}$")
+
+
+def valid_unique_code(code: str) -> bool:
+    return bool(UNIQUE_CODE_RE.fullmatch(code.strip()))
+
+
+def unique_code_label(state: Any) -> str:
+    labels = {
+        1: "not verified",
+        2: "delivered, waiting confirmation",
+        3: "delivery confirmed",
+        4: "delivery refuted",
+        5: "verified, goods not delivered",
+    }
+    try:
+        return labels.get(int(state), str(state or "unknown"))
+    except (TypeError, ValueError):
+        return str(state or "unknown")
+
+
+def unique_code_lookup(code: str) -> dict[str, Any]:
+    if not valid_unique_code(code):
+        raise ValueError("Unique code must be exactly 16 letters or digits")
+    data = client.unique_code(code)
+    retval = data.get("retval")
+    if retval not in (None, 0, "0"):
+        raise RuntimeError(data.get("retdesc") or f"Lookup failed: {retval}")
+    product_id = data.get("id_goods") or data.get("product_id")
+    product_name = str(
+        data.get("product")
+        or data.get("product_name")
+        or data.get("name")
+        or data.get("goods_name")
+        or ""
+    ).strip()
+    if not product_name and product_id:
+        try:
+            product_data = client.product(int(product_id))
+            product = product_data.get("product", product_data)
+            product_name = str(product.get("name") or "").strip()
+        except Exception:
+            product_name = ""
+    state = data.get("unique_code_state") if isinstance(data.get("unique_code_state"), dict) else {}
+    return {
+        "code": code,
+        "invoice": data.get("inv") or data.get("invoice_id"),
+        "product_id": product_id,
+        "product_name": product_name or (f"Product {product_id}" if product_id else "Unknown product"),
+        "amount": data.get("amount"),
+        "currency": data.get("type_curr") or data.get("currency_type"),
+        "date_pay": data.get("date_pay"),
+        "email": data.get("email"),
+        "state": state.get("state") if isinstance(state, dict) else None,
+        "state_label": unique_code_label(state.get("state")) if isinstance(state, dict) else "unknown",
+        "raw": data,
+    }
 
 
 def unread_summary() -> dict[str, Any]:
@@ -785,8 +932,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.admin_messages_page()
             if path == "/product":
                 return self.product()
+            if path == "/unique-code":
+                return self.unique_code_page()
             if path == "/download-images":
                 return self.download_images()
+            if path == "/api/unique-code":
+                return self.api_unique_code()
             if path == "/api/unread-count":
                 return self.api_unread_count()
             if path == "/api/version":
@@ -1079,6 +1230,47 @@ class Handler(BaseHTTPRequestHandler):
         product = data.get("product", data)
         summary = {k: product.get(k) for k in ["id", "name", "price", "currency", "is_available", "num_in_stock", "owner", "type_good"] if k in product}
         self.send_html("Product", form + f"<pre class='card code'>{h(json.dumps(summary, ensure_ascii=False, indent=2))}</pre>")
+
+    def unique_code_page(self) -> None:
+        code = self.q("code", "").strip()
+        form = f"""
+        <div class='card'>
+          <h2>GUID / unique code lookup</h2>
+          <form>
+            <input name='code' maxlength='16' placeholder='808CD67F03894103' value='{h(code)}'>
+            <button>Verify</button>
+          </form>
+          <p class='muted'>Use the 16-character Digiseller buyer verification code.</p>
+        </div>
+        """
+        if not code:
+            return self.send_html("GUID lookup", form)
+        if not valid_unique_code(code):
+            return self.send_html("GUID lookup", form + "<div class='card bad'>Code must be exactly 16 letters or digits.</div>", 400)
+        item = unique_code_lookup(code)
+        rows = [
+            ["Code", h(item.get("code"))],
+            ["Order", f"<a href='/chats?order_id={h(item.get('invoice'))}'>{h(item.get('invoice'))}</a>" if item.get("invoice") else ""],
+            ["Product", h(item.get("product_name"))],
+            ["Product ID", f"<a href='/product?product_id={h(item.get('product_id'))}'>{h(item.get('product_id'))}</a>" if item.get("product_id") else ""],
+            ["Amount", h(f"{item.get('amount') or ''} {item.get('currency') or ''}".strip())],
+            ["Paid", h(item.get("date_pay"))],
+            ["Buyer email", h(item.get("email"))],
+            ["State", h(item.get("state_label"))],
+        ]
+        details = "<div class='card'><h2>Verification result</h2>" + table(["Field", "Value"], rows) + "</div>"
+        raw = f"<details class='card'><summary>Raw API response</summary><pre class='code'>{h(json.dumps(item.get('raw'), ensure_ascii=False, indent=2))}</pre></details>"
+        self.send_html("GUID lookup", form + details + raw)
+
+    def api_unique_code(self) -> None:
+        code = self.q("code", "").strip()
+        if not valid_unique_code(code):
+            return self.send_json({"ok": False, "error": "Code must be exactly 16 letters or digits"}, 400)
+        try:
+            item = unique_code_lookup(code)
+        except Exception as exc:
+            return self.send_json({"ok": False, "error": str(exc)}, 404)
+        self.send_json({"ok": True, "item": {key: value for key, value in item.items() if key != "raw"}})
 
     def download_images(self) -> None:
         order_id = int(self.q("order_id", "0"))
