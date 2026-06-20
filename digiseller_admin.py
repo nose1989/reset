@@ -598,7 +598,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.common-phrases{border-top:1px solid #e5e7eb;background:#f8fafc;padding:10px 18px 14px}.common-phrase-title{font-size:13px;font-weight:800;color:#334155;margin-bottom:8px}.common-phrase-buttons{display:flex;flex-wrap:wrap;gap:8px}.common-phrase-buttons form{margin:0}.common-phrase-buttons button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.phrase-manager textarea{width:100%;box-sizing:border-box;min-height:76px;resize:vertical}.phrase-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:start;margin-bottom:10px}.phrase-empty{color:#64748b;font-size:14px}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
 .translated-message{white-space:normal}.translated-text,.original-text{white-space:pre-wrap}.toggle-original{margin-top:8px;background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.translation-label{display:inline-block;margin-left:8px;color:#64748b;font-size:12px}
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
-.phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:block;margin-top:8px}
+.phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:block;margin-top:8px}.phrase-manager.dragover textarea{border-color:#2563eb;background:#eff6ff}.phrase-pending{margin-top:8px}
 </style>
 """
 
@@ -1651,7 +1651,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"<input type='hidden' name='id' value='{h(phrase_id)}'>"
                 f"<textarea name='text'>{h(text)}</textarea>"
                 f"{files_html}"
-                f"<label class='phrase-upload'>&#28155;&#21152;&#22270;&#29255;/&#38468;&#20214; <input name='files' type='file' multiple accept='image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.rtf,.zip,.rar,.7z'></label>"
+                f"<label class='phrase-upload'>&#28155;&#21152;&#22270;&#29255;/&#38468;&#20214;&#65288;&#21487;&#25302;&#25341;&#25110; Ctrl+V &#31896;&#36148;&#22270;&#29255;&#65289; <input name='files' type='file' multiple accept='image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.rtf,.zip,.rar,.7z'></label>"
                 f"<p><button type='submit'>&#20445;&#23384;</button></p>"
                 f"</form>"
                 f"{''.join(file_delete_forms)}"
@@ -1661,14 +1661,120 @@ class Handler(BaseHTTPRequestHandler):
                 f"</form></div>"
             )
         existing = "".join(rows) if rows else "<div class='card phrase-empty'>&#24403;&#21069;&#29992;&#25143;&#36824;&#27809;&#26377;&#24120;&#29992;&#35821;&#12290;</div>"
+        phrase_editor_js = """
+        <script>
+        (() => {
+          function clipboardImageFiles(event) {
+            const clipboard = event.clipboardData;
+            if (!clipboard) return [];
+            const files = [];
+            Array.from(clipboard.items || []).forEach((item, index) => {
+              if (item.kind !== 'file' || !item.type.startsWith('image/')) return;
+              const file = item.getAsFile();
+              if (!file) return;
+              const ext = (file.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'png';
+              const name = file.name && file.name !== 'image.png' ? file.name : `clipboard-${Date.now()}-${index + 1}.${ext}`;
+              files.push(new File([file], name, {type: file.type || 'image/png'}));
+            });
+            if (!files.length) {
+              Array.from(clipboard.files || []).forEach((file, index) => {
+                if (!file.type.startsWith('image/')) return;
+                const ext = (file.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'png';
+                const name = file.name || `clipboard-${Date.now()}-${index + 1}.${ext}`;
+                files.push(new File([file], name, {type: file.type || 'image/png'}));
+              });
+            }
+            return files;
+          }
+          function setupPhraseForm(form) {
+            const input = form.querySelector('input[type="file"][name="files"]');
+            const textarea = form.querySelector('textarea[name="text"]');
+            if (!input || !textarea) return;
+            let selectedFiles = [];
+            const pending = document.createElement('div');
+            pending.className = 'phrase-pending selected-files';
+            input.closest('label').after(pending);
+            function syncFiles() {
+              const dataTransfer = new DataTransfer();
+              selectedFiles.forEach((file) => dataTransfer.items.add(file));
+              input.files = dataTransfer.files;
+            }
+            function render() {
+              pending.replaceChildren();
+              if (!selectedFiles.length) return;
+              const summary = document.createElement('div');
+              summary.className = 'selected-summary';
+              summary.textContent = `待上传：${selectedFiles.map((file) => file.name).join('、')}`;
+              pending.appendChild(summary);
+              const grid = document.createElement('div');
+              grid.className = 'file-preview-grid';
+              selectedFiles.forEach((file) => {
+                const chip = document.createElement('div');
+                chip.className = 'file-chip';
+                if (file.type.startsWith('image/')) {
+                  const img = document.createElement('img');
+                  img.src = URL.createObjectURL(file);
+                  img.alt = file.name;
+                  chip.appendChild(img);
+                } else {
+                  const icon = document.createElement('span');
+                  icon.className = 'file-chip-icon';
+                  icon.textContent = 'FILE';
+                  chip.appendChild(icon);
+                }
+                const name = document.createElement('span');
+                name.className = 'file-chip-name';
+                name.title = file.name;
+                name.textContent = file.name;
+                chip.appendChild(name);
+                grid.appendChild(chip);
+              });
+              pending.appendChild(grid);
+            }
+            function addFiles(files) {
+              selectedFiles = [...selectedFiles, ...Array.from(files || [])];
+              syncFiles();
+              render();
+            }
+            input.addEventListener('change', () => addFiles(input.files));
+            textarea.addEventListener('paste', (event) => {
+              const files = clipboardImageFiles(event);
+              if (!files.length) return;
+              event.preventDefault();
+              addFiles(files);
+            });
+            [form, textarea].forEach((target) => {
+              target.addEventListener('dragenter', (event) => {
+                event.preventDefault();
+                form.closest('.phrase-manager')?.classList.add('dragover');
+              });
+              target.addEventListener('dragover', (event) => {
+                event.preventDefault();
+                form.closest('.phrase-manager')?.classList.add('dragover');
+              });
+              target.addEventListener('dragleave', (event) => {
+                if (!form.contains(event.relatedTarget)) form.closest('.phrase-manager')?.classList.remove('dragover');
+              });
+              target.addEventListener('drop', (event) => {
+                event.preventDefault();
+                form.closest('.phrase-manager')?.classList.remove('dragover');
+                addFiles(event.dataTransfer.files);
+              });
+            });
+          }
+          document.querySelectorAll('.phrase-manager form[action="/phrases/save"]').forEach(setPhraseForm);
+        })();
+        </script>
+        """
         body = (
             f"<div class='card'><h2>&#24120;&#29992;&#35821;</h2>"
-            f"<p class='muted'>&#24403;&#21069;&#29992;&#25143;&#65306;{h(phrase_user_key())}&#12290;&#36825;&#37324;&#31649;&#29702;&#30340;&#24120;&#29992;&#35821;&#20250;&#26174;&#31034;&#22312;&#22238;&#22797;&#32534;&#36753;&#22120;&#19979;&#26041;&#65292;&#28857;&#20987;&#21363;&#21487;&#21457;&#36865;&#12290;</p></div>"
+            f"<p class='muted'>&#24403;&#21069;&#29992;&#25143;&#65306;{h(phrase_user_key())}&#12290;&#36825;&#37324;&#31649;&#29702;&#30340;&#24120;&#29992;&#35821;&#20250;&#26174;&#31034;&#22312;&#22238;&#22797;&#32534;&#36753;&#22120;&#19979;&#26041;&#65292;&#28857;&#20987;&#21363;&#21487;&#21457;&#36865;&#12290;&#32534;&#36753;&#24120;&#29992;&#35821;&#26102;&#25903;&#25345;&#25302;&#25341;&#38468;&#20214;&#12289;Ctrl+V &#31896;&#36148;&#21098;&#36148;&#26495;&#22270;&#29255;&#12290;</p></div>"
             f"<div class='card phrase-manager'><h3>&#26032;&#22686;&#24120;&#29992;&#35821;</h3>"
             f"<form method='post' action='/phrases/save' enctype='multipart/form-data'><textarea name='text' placeholder='&#36755;&#20837;&#24120;&#29992;&#22238;&#22797;&#20869;&#23481;&#65292;&#25903;&#25345; emoji'></textarea>"
-            f"<label class='phrase-upload'>&#22270;&#29255;/&#38468;&#20214; <input name='files' type='file' multiple accept='image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.rtf,.zip,.rar,.7z'></label>"
+            f"<label class='phrase-upload'>&#22270;&#29255;/&#38468;&#20214;&#65288;&#21487;&#25302;&#25341;&#25110; Ctrl+V &#31896;&#36148;&#22270;&#29255;&#65289; <input name='files' type='file' multiple accept='image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.rtf,.zip,.rar,.7z'></label>"
             f"<p><button type='submit'>&#28155;&#21152;</button></p></form></div>"
             f"{existing}"
+            f"{phrase_editor_js}"
         )
         self.send_html("Common phrases", body)
 
