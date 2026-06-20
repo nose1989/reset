@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -381,6 +382,25 @@ class DigisellerClient:
 
 
 client = DigisellerClient()
+
+
+def start_auto_reload() -> None:
+    watched = [Path(__file__).resolve()]
+    mtimes = {path: path.stat().st_mtime for path in watched if path.exists()}
+
+    def watch() -> None:
+        while True:
+            time.sleep(2)
+            for path, old_mtime in list(mtimes.items()):
+                try:
+                    new_mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                if new_mtime != old_mtime:
+                    print(f"Detected update in {path.name}; restarting...", flush=True)
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    threading.Thread(target=watch, daemon=True).start()
 
 
 STYLE = """
@@ -932,6 +952,7 @@ def main() -> None:
         return
     host = os.getenv("DIGISELLER_ADMIN_HOST", "127.0.0.1")
     port = int(os.getenv("DIGISELLER_ADMIN_PORT", "8765"))
+    start_auto_reload()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Digiseller admin running at http://{host}:{port}")
     print("Open the page and click 'Enable alerts' to allow sound/voice notifications.")
