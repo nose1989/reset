@@ -314,6 +314,33 @@ class DigisellerClient:
         data = self.session_get("/getonlinesetting/{session_id}")
         return data if isinstance(data, dict) else {"raw": data}
 
+    def public_seller_url(self) -> str:
+        configured = os.getenv("DIGISELLER_PUBLIC_SELLER_URL", "").strip()
+        if configured:
+            return configured
+        if self.seller_id == 1437041:
+            return f"https://plati.market/seller/hello1989/{self.seller_id}/?lang=en-US"
+        return ""
+
+    def public_seller_online_status(self) -> dict[str, Any]:
+        url = self.public_seller_url()
+        if not url:
+            return {"enabled": False}
+        r = self.http.get(
+            url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "Cache-Control": "no-cache",
+                "User-Agent": "Mozilla/5.0",
+            },
+            follow_redirects=True,
+        )
+        r.raise_for_status()
+        text = r.text
+        online = bool(re.search(r">\s*Online\s*<", text, flags=re.I)) and "color-text-success" in text
+        offline = bool(re.search(r">\s*Offline\s*<", text, flags=re.I))
+        return {"enabled": True, "url": str(r.url), "online": online, "offline": offline}
+
     def set_online(self) -> dict[str, Any]:
         try:
             value = int(os.getenv("DIGISELLER_ONLINE_VALUE", "1") or "1")
@@ -350,7 +377,13 @@ class DigisellerClient:
 
     def messenger_heartbeat(self) -> dict[str, Any]:
         errors = []
-        for path in ("/checknewchats/{session_id}/0/0/-1/0", "/checknewchats/{session_id}/-1/-1/-1/-1"):
+        for path in (
+            "/checknewchats/{session_id}/-1/0/-1/0",
+            "/checknewchats/{session_id}/0/0/-1/0",
+            "/checknewchats/{session_id}/-1/-1/-1/-1",
+            "/unreadchats/{session_id}/buyer",
+            "/chatlist/{session_id}/buyer",
+        ):
             try:
                 data = self.session_get(path)
             except Exception as exc:
@@ -561,10 +594,15 @@ ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
     "period": None,
     "status": None,
     "verified_online": False,
+    "public_online": False,
+    "public_url": "",
     "set_error": "",
     "heartbeat_error": "",
     "setting_error": "",
     "verify_error": "",
+    "public_error": "",
+    "recovery_error": "",
+    "failure_count": 0,
 }
 
 
@@ -613,10 +651,12 @@ def layout(title: str, body: str) -> bytes:
     online_heartbeat_error = str(online.get("heartbeat_error") or "")
     online_setting_error = str(online.get("setting_error") or "")
     online_verify_error = str(online.get("verify_error") or "")
+    online_public_error = str(online.get("public_error") or "")
+    online_recovery_error = str(online.get("recovery_error") or "")
     if online_error and online_error != "disabled":
         online_label = "Online error"
         online_class = "bad"
-    elif online.get("verified_online"):
+    elif online.get("verified_online") or online.get("public_online"):
         online_label = "Online verified"
         online_class = "ok"
     elif online_last_set or online_last_heartbeat:
@@ -628,7 +668,7 @@ def layout(title: str, body: str) -> bytes:
     else:
         online_label = "Online checking"
         online_class = ""
-    online_title = f"Last verified: {online_last_ok or '-'} | Last set: {online_last_set or '-'} | Last chat heartbeat: {online_last_heartbeat or '-'} | Status: {online.get('status') if online.get('status') is not None else '-'} | Set error: {online_set_error or '-'} | Chat heartbeat error: {online_heartbeat_error or '-'} | Setting error: {online_setting_error or '-'} | Verify error: {online_verify_error or '-'} | Error: {online_error or '-'}"
+    online_title = f"Last verified: {online_last_ok or '-'} | Last set: {online_last_set or '-'} | Last chat heartbeat: {online_last_heartbeat or '-'} | API status: {online.get('status') if online.get('status') is not None else '-'} | Public online: {'yes' if online.get('public_online') else 'no'} | Set error: {online_set_error or '-'} | Chat heartbeat error: {online_heartbeat_error or '-'} | Setting error: {online_setting_error or '-'} | Verify error: {online_verify_error or '-'} | Public verify error: {online_public_error or '-'} | Recovering: {online_recovery_error or '-'} | Error: {online_error or '-'}"
     nav = f"""
     <div class="top">
       <div class="top-nav">
@@ -735,12 +775,14 @@ def layout(title: str, body: str) -> bytes:
         const heartbeatError = status.heartbeat_error || '';
         const settingError = status.setting_error || '';
         const verifyError = status.verify_error || '';
+        const publicError = status.public_error || '';
+        const recoveryError = status.recovery_error || '';
         let label = 'Online checking';
         let cls = '';
         if (error && error !== 'disabled') {{
           label = 'Online error';
           cls = 'bad';
-        }} else if (status.verified_online) {{
+        }} else if (status.verified_online || status.public_online) {{
           label = 'Online verified';
           cls = 'ok';
         }} else if (lastSet || lastHeartbeat) {{
@@ -751,7 +793,7 @@ def layout(title: str, body: str) -> bytes:
         }}
         pill.textContent = label;
         pill.className = `top-online ${{cls}}`;
-        pill.title = `Last verified: ${{lastOk || '-'}} | Last set: ${{lastSet || '-'}} | Last chat heartbeat: ${{lastHeartbeat || '-'}} | Status: ${{status.status ?? '-'}} | Set error: ${{setError || '-'}} | Chat heartbeat error: ${{heartbeatError || '-'}} | Setting error: ${{settingError || '-'}} | Verify error: ${{verifyError || '-'}} | Error: ${{error || '-'}}`;
+        pill.title = `Last verified: ${{lastOk || '-'}} | Last set: ${{lastSet || '-'}} | Last chat heartbeat: ${{lastHeartbeat || '-'}} | API status: ${{status.status ?? '-'}} | Public online: ${{status.public_online ? 'yes' : 'no'}} | Set error: ${{setError || '-'}} | Chat heartbeat error: ${{heartbeatError || '-'}} | Setting error: ${{settingError || '-'}} | Verify error: ${{verifyError || '-'}} | Public verify error: ${{publicError || '-'}} | Recovering: ${{recoveryError || '-'}} | Error: ${{error || '-'}}`;
       }}
       async function refreshOnlineStatus() {{
         try {{
@@ -760,7 +802,7 @@ def layout(title: str, body: str) -> bytes:
         }} catch (e) {{}}
       }}
       refreshOnlineStatus();
-      setInterval(refreshOnlineStatus, 60000);
+      setInterval(refreshOnlineStatus, 15000);
     }})();
     </script>
     """
@@ -1166,10 +1208,12 @@ def run_online_keepalive(interval: int) -> None:
         heartbeat_data: dict[str, Any] = {}
         setting_data: dict[str, Any] = {}
         status_data: dict[str, Any] = {}
+        public_data: dict[str, Any] = {}
         set_error = ""
         heartbeat_error = ""
         setting_error = ""
         verify_error = ""
+        public_error = ""
         try:
             set_data = client.set_online()
         except Exception as exc:
@@ -1186,30 +1230,45 @@ def run_online_keepalive(interval: int) -> None:
             status_data = client.seller_online_status()
         except Exception as exc:
             verify_error = str(exc)
+        try:
+            public_data = client.public_seller_online_status()
+        except Exception as exc:
+            public_error = str(exc)
         status = status_data.get("status")
         try:
             status_value = int(status or 0)
-        except ValueError:
+        except (TypeError, ValueError):
             status_value = 0
-        verified_online = status_value > 0
-        heartbeat_ok = not heartbeat_error or not set_error
+        public_online = bool(public_data.get("online"))
+        verified_online = status_value > 0 or public_online
+        keepalive_ok = not set_error or not heartbeat_error
+        cycle_error = "" if (verified_online or keepalive_ok) else " | ".join(item for item in (set_error, heartbeat_error) if item)
+        failure_count = int(ONLINE_KEEPALIVE_STATUS.get("failure_count") or 0)
+        failure_count = failure_count + 1 if cycle_error else 0
+        visible_error = cycle_error if failure_count >= 3 else ""
         update_online_keepalive_status(
             enabled=True,
             last_checked=checked_at,
             last_ok=checked_at if verified_online else "",
             last_set=checked_at if not set_error else ONLINE_KEEPALIVE_STATUS.get("last_set", ""),
             last_heartbeat=checked_at if not heartbeat_error else ONLINE_KEEPALIVE_STATUS.get("last_heartbeat", ""),
-            last_error="" if heartbeat_ok else " | ".join(item for item in (set_error, heartbeat_error) if item),
+            last_error=visible_error,
             setting=setting_data.get("setting", ONLINE_KEEPALIVE_STATUS.get("setting")),
             period=setting_data.get("period", ONLINE_KEEPALIVE_STATUS.get("period")),
             status=status,
             verified_online=verified_online,
+            public_online=public_online,
+            public_url=public_data.get("url") or ONLINE_KEEPALIVE_STATUS.get("public_url", ""),
             set_error=set_error,
             heartbeat_error=heartbeat_error,
             setting_error=setting_error,
             verify_error=verify_error,
+            public_error=public_error,
+            recovery_error=cycle_error if cycle_error and not visible_error else "",
+            failure_count=failure_count,
             set_response=set_data,
             heartbeat_response=heartbeat_data,
+            public_response=public_data,
         )
         time.sleep(interval)
 
@@ -1220,9 +1279,9 @@ def start_online_keepalive() -> None:
         update_online_keepalive_status(enabled=False, last_error="disabled")
         return
     try:
-        interval = max(15, int(os.getenv("DIGISELLER_KEEP_ONLINE_INTERVAL", "30") or "30"))
+        interval = max(5, int(os.getenv("DIGISELLER_KEEP_ONLINE_INTERVAL", "15") or "15"))
     except ValueError:
-        interval = 30
+        interval = 15
     threading.Thread(target=run_online_keepalive, args=(interval,), daemon=True).start()
 
 
@@ -1614,7 +1673,7 @@ class Handler(BaseHTTPRequestHandler):
         online = ONLINE_KEEPALIVE_STATUS.copy()
         if online.get("last_error"):
             online_state = "<span class='bad'>error</span>"
-        elif online.get("verified_online"):
+        elif online.get("verified_online") or online.get("public_online"):
             online_state = "<span class='ok'>verified online</span>"
         elif online.get("last_set") or online.get("last_heartbeat"):
             online_state = "<span class='muted'>heartbeat sent, not verified</span>"
@@ -1626,12 +1685,16 @@ class Handler(BaseHTTPRequestHandler):
             f"<br>Last set: {h(online.get('last_set') or '-')}"
             f"<br>Last chat heartbeat: {h(online.get('last_heartbeat') or '-')}"
             f"<br>Buyer-visible status: {h(online.get('status') if online.get('status') is not None else '-')}"
+            f"<br>Public seller page: {h('online' if online.get('public_online') else 'not online')}"
+            f"<br>Public URL: {h(online.get('public_url') or '-')}"
             f"<br>Setting: {h(online.get('setting') if online.get('setting') is not None else '-')}"
             f" · period: {h(online.get('period') if online.get('period') is not None else '-')}"
             f"<br>Set error: {h(online.get('set_error') or '-')}"
             f"<br>Chat heartbeat error: {h(online.get('heartbeat_error') or '-')}"
             f"<br>Setting error: {h(online.get('setting_error') or '-')}"
             f"<br>Verify error: {h(online.get('verify_error') or '-')}"
+            f"<br>Public verify error: {h(online.get('public_error') or '-')}"
+            f"<br>Recovering: {h(online.get('recovery_error') or '-')}"
             f"<br>Error: {h(online.get('last_error') or '-')}</div>"
         )
         body = f"""
