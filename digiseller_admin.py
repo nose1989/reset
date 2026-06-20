@@ -38,7 +38,7 @@ APP_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = APP_DIR / "downloads"
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.6-ajax-chats"
+APP_VERSION = "v8.7-async-translate"
 
 
 @dataclass
@@ -176,21 +176,20 @@ def detect_buyer_language(messages: list[dict[str, Any]]) -> str:
 
 
 def translate_incoming_html(text: str, message_id: Any) -> str:
-    try:
-        translated, source_lang = google_translate(text, "zh-CN")
-    except Exception:
+    source_lang = heuristic_language(text)
+    if source_lang in {"zh", "zh-CN"}:
         return h(text)
-    if not translated or translated == text or source_lang in {"zh", "zh-CN"}:
-        return h(text)
+    message_key = h(message_id or hashlib.sha1(text.encode("utf-8")).hexdigest()[:12])
     return (
-        f"<div class='translated-message' id='msg-{h(message_id)}'>"
-        f"<div class='translated-text'>{h(translated)}</div>"
-        f"<div class='original-inline'>原文：{h(text)}</div>"
+        f"<div class='translated-message' id='msg-{message_key}' data-pending='1'>"
+        f"<div class='translated-text'>&#32763;&#35793;&#20013;...</div>"
+        f"<div class='original-inline'>&#21407;&#25991;&#65306;{h(text)}</div>"
         f"<div class='original-text' hidden>{h(text)}</div>"
         f"<button class='toggle-original' type='button'>&#26597;&#30475;&#21407;&#25991;</button>"
-        f"<span class='translation-label'>{h(lang_label(source_lang))} → &#20013;&#25991;</span>"
+        f"<span class='translation-label'>{h(lang_label(source_lang or 'auto'))} → &#20013;&#25991;</span>"
         f"</div>"
     )
+
 
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
@@ -491,14 +490,14 @@ def layout(title: str, body: str) -> bytes:
       }
       function browserNotify(text, url) {
         if (!('Notification' in window) || Notification.permission !== 'granted') return;
-        const n = new Notification('Digiseller 新消息', {body: text});
+        const n = new Notification('Digiseller new message', {body: text});
         n.onclick = () => { window.focus(); if (url) location.href = url; };
       }
       function alertUnread(data, force=false) {
         const latest = data.latest || {};
-        const who = latest.email || '买家';
+        const who = latest.email || 'buyer';
         const order = latest.order_id || '';
-        const text = `Digiseller 有新消息来自 ${who}，订单 ${order}`;
+        const text = `Digiseller new message from ${who}, order ${order}`;
         beep();
         speak(text);
         browserNotify(text, latest.url);
@@ -544,7 +543,7 @@ def layout(title: str, body: str) -> bytes:
         setButton();
         schedulePoll();
         beep();
-        speak('Digiseller 消息提醒已开启');
+        speak('Digiseller alerts enabled');
         poll(true);
       });
       document.addEventListener('visibilitychange', () => { if (!document.hidden && enabled) poll(false); });
@@ -569,6 +568,34 @@ def layout(title: str, body: str) -> bytes:
       if (originalInline) originalInline.hidden = !showingOriginal;
       button.textContent = showingOriginal ? '查看原文' : '显示中文';
     });
+    window.loadDigisellerTranslations = async function(root=document) {
+      const nodes = Array.from(root.querySelectorAll(".translated-message[data-pending='1']"));
+      if (!nodes.length) return;
+      const messages = nodes.map((node) => ({
+        id: node.id.replace(/^msg-/, ''),
+        text: (node.querySelector('.original-text') || {}).textContent || ''
+      })).filter((item) => item.text);
+      if (!messages.length) return;
+      try {
+        const res = await fetch('/api/translate-batch', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({messages})
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        (data.results || []).forEach((item) => {
+          const node = root.querySelector(`#msg-${CSS.escape(String(item.id))}`);
+          if (!node) return;
+          const translated = node.querySelector('.translated-text');
+          const label = node.querySelector('.translation-label');
+          if (translated) translated.textContent = item.translated || item.text || '';
+          if (label) label.textContent = `${item.label || item.source_lang || 'auto'} → 中文`;
+          node.dataset.pending = '0';
+        });
+      } catch (e) {}
+    };
+    window.loadDigisellerTranslations(document);
     </script>
     """
     html_doc = f"<!doctype html><html><head><meta charset='utf-8'><title>{h(title)}</title>{STYLE}</head><body>{nav}{alert_ui}{translation_ui}<div class='wrap'>{body}</div></body></html>"
@@ -779,9 +806,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/chats/send":
                 return self.send_chat_reply()
+            if path == "/api/translate-batch":
+                return self.api_translate_batch()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
         except Exception as exc:
             self.send_html("Error", f"<div class='card bad'>Error</div><pre class='card code'>{h(exc)}</pre>", 500)
+
+    def read_json_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length > 1024 * 1024:
+            raise RuntimeError("JSON body is too large")
+        raw = self.rfile.read(length)
+        if not raw:
+            return {}
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else {}
 
     def send_chat_reply(self) -> None:
         fields, uploads = self.read_form()
@@ -880,6 +919,31 @@ class Handler(BaseHTTPRequestHandler):
         selected_chat = {"id_i": order_id, "email": email, "product": product} if messages else None
         self.send_json({"ok": True, "order_id": order_id, "count": len(messages), "html": self.chat_panel_html(order_id, selected_chat, messages)})
 
+    def api_translate_batch(self) -> None:
+        payload = self.read_json_body()
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return self.send_json({"ok": False, "error": "messages must be a list"}, 400)
+        results = []
+        for item in messages[:100]:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "")
+            text = clean_text(item.get("text"))
+            if not text:
+                continue
+            translated, source_lang = google_translate(text, "zh-CN")
+            results.append(
+                {
+                    "id": item_id,
+                    "text": text,
+                    "translated": translated,
+                    "source_lang": source_lang,
+                    "label": lang_label(source_lang),
+                }
+            )
+        self.send_json({"ok": True, "results": results})
+
     def chats(self) -> None:
         chats = client.chats(page_size=100)
         selected_order = int(self.q("order_id", "0") or 0)
@@ -948,6 +1012,7 @@ class Handler(BaseHTTPRequestHandler):
               panel.outerHTML = data.html;
               const newPanel = document.getElementById('chat-panel');
               if (newPanel) runPanelScripts(newPanel);
+              if (newPanel && window.loadDigisellerTranslations) window.loadDigisellerTranslations(newPanel);
               history.pushState(null, '', link.href);
             } catch (error) {
               location.href = link.href;
