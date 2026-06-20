@@ -41,7 +41,7 @@ COMMON_PHRASES_FILE = APP_DIR / "common_phrases.json"
 COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.7-async-translate"
+APP_VERSION = "v8.8-delivery-mode"
 
 
 @dataclass
@@ -827,7 +827,7 @@ def layout(title: str, body: str) -> bytes:
     alert_ui = """
     <div class="alert-controls">
       <span id="unread-alert-pill" class="alert-pill"></span>
-      <button id="enable-alerts" class="alert-button off" type="button">Enable alerts</button>
+      <button id="enable-alerts" class="alert-button off" type="button">&#24320;&#21551;&#25552;&#37266;</button>
     </div>
     <script>
     (() => {
@@ -842,7 +842,7 @@ def layout(title: str, body: str) -> bytes:
       const baseTitle = document.title;
 
       function setButton() {
-        btn.textContent = enabled ? 'Alerts on' : 'Enable alerts';
+        btn.textContent = enabled ? '\u63d0\u9192\u5df2\u5f00\u542f' : '\u5f00\u542f\u63d0\u9192';
         btn.classList.toggle('off', !enabled);
       }
       function beep() {
@@ -895,13 +895,13 @@ def layout(title: str, body: str) -> bytes:
         const latest = data.latest || {};
         const who = latest.email || '';
         const order = latest.order_id || '';
-        const title = '老板来新的消息了';
+        const title = '\u6709\u65b0\u7684\u4e70\u5bb6\u6d88\u606f\u4e86';
         const details = [];
-        if (who) details.push(`来自 ${who}`);
-        if (order) details.push(`订单 ${order}`);
+        if (who) details.push(`\u6765\u81ea ${who}`);
+        if (order) details.push(`\u8ba2\u5355 ${order}`);
         beep();
         speak(title);
-        browserNotify(title, details.join('，') || title, latest.url);
+        browserNotify(title, details.join('\uff0c') || title, latest.url);
       }
       function schedulePoll() {
         if (pollTimer) clearInterval(pollTimer);
@@ -916,7 +916,7 @@ def layout(title: str, body: str) -> bytes:
           const res = await fetch('/api/unread-count', {cache: 'no-store', signal: controller.signal});
           const data = await res.json();
           const total = Number(data.total || 0);
-          pill.textContent = total > 0 ? `Unread ${total}` : '';
+          pill.textContent = total > 0 ? `\u672a\u8bfb ${total}` : '';
           pill.classList.toggle('show', total > 0);
           document.title = total > 0 ? `(${total}) ${baseTitle}` : baseTitle;
           if (enabled && total > 0 && (force || total > lastTotal)) alertUnread(data, force);
@@ -944,7 +944,7 @@ def layout(title: str, body: str) -> bytes:
         setButton();
         schedulePoll();
         beep();
-        speak('Digiseller alerts enabled');
+        speak('\u63d0\u9192\u5df2\u7ecf\u5f00\u542f');
         poll(true);
       });
       document.addEventListener('visibilitychange', () => { if (!document.hidden && enabled) poll(false); });
@@ -1029,6 +1029,32 @@ def unique_code_label(state: Any) -> str:
         return labels.get(int(state), str(state or "unknown"))
     except (TypeError, ValueError):
         return str(state or "unknown")
+
+
+def bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def delivery_mode(product: dict[str, Any]) -> tuple[str, str]:
+    values = [
+        str(product.get("content_type") or ""),
+        str(product.get("type") or ""),
+        str(product.get("good_type") or ""),
+    ]
+    if any("digiseller" in value.lower() and "code" in value.lower() for value in values):
+        verify_code = product.get("verify_code")
+        auto_verify = verify_code.get("auto_verify") if isinstance(verify_code, dict) else None
+        if bool_value(auto_verify):
+            return "\u81ea\u52a8\u53d1\u8d27\uff08\u81ea\u52a8\u6838\u9a8c16\u4f4d\u7801\uff09", "ok"
+        return "\u624b\u52a8\u53d1\u8d27\uff08\u9700\u4e70\u5bb616\u4f4d\u7801\uff09", "bad"
+    return "\u81ea\u52a8\u53d1\u8d27", "ok"
+
+
+def delivery_mode_html(product: dict[str, Any]) -> str:
+    label, css_class = delivery_mode(product)
+    return f"<span class='{css_class}'>{h(label)}</span>"
 
 
 def unique_code_lookup(code: str) -> dict[str, Any]:
@@ -1340,9 +1366,9 @@ def run_watch(interval: int = 15) -> None:
             latest = summary.get("latest") or {}
             print(f"[{summary['checked_at']}] unread={total}", flush=True)
             if total > previous_total:
-                who = latest.get("email") or "买家"
+                who = latest.get("email") or "\u4e70\u5bb6"
                 order_id = latest.get("order_id") or ""
-                notify_desktop(f"Digiseller 有新的未读消息，来自 {who}，订单 {order_id}")
+                notify_desktop(f"\u6709\u65b0\u7684\u4e70\u5bb6\u6d88\u606f\u4e86\uff0c\u6765\u81ea {who}\uff0c\u8ba2\u5355 {order_id}")
             previous_total = total
         except Exception as exc:
             print(f"watch error: {exc}", flush=True)
@@ -2318,6 +2344,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = client.product(int(pid))
                 product = data.get("product", data)
                 summary = {k: product.get(k) for k in ["id", "name", "is_available", "num_in_stock", "type_good"] if k in product}
+                summary["delivery_mode"] = delivery_mode(product)[0]
                 product_info = f"<pre class='card code'>{h(json.dumps(summary, ensure_ascii=False, indent=2))}</pre>"
             except Exception as exc:
                 product_info = f"<div class='card bad'>Product lookup failed: {h(exc)}</div>"
@@ -2387,14 +2414,24 @@ class Handler(BaseHTTPRequestHandler):
                     name = clean_text(item.get("name"))
                     price = f"{item.get('price') or ''} {item.get('currency') or ''}".strip()
                     available = "Yes" if int(item.get("is_available") or 0) else "No"
+                    delivery = "<span class='muted'>Unknown</span>"
+                    if pid_val:
+                        try:
+                            product_data = client.product(int(pid_val))
+                            product_detail = product_data.get("product", product_data)
+                            if isinstance(product_detail, dict):
+                                delivery = delivery_mode_html(product_detail)
+                        except Exception as exc:
+                            delivery = f"<span class='bad'>{h(short(exc, 60))}</span>"
                     rows_html.append([
                         f"<a href='/product?product_id={h(pid_val)}'>{h(pid_val)}</a>",
                         h(name),
                         h(price),
                         f"<span class='{'ok' if available == 'Yes' else 'bad'}'>{available}</span>",
+                        delivery,
                         f"<a href='/stock?product_id={h(pid_val)}'>Stock</a>",
                     ])
-                products_table = table(["ID", "Name", "Price", "Available", "Actions"], rows_html)
+                products_table = table(["ID", "Name", "Price", "Available", "Delivery", "Actions"], rows_html)
                 summary = f"<div class='card'><h2>Active Products ({len(all_items)})</h2>{products_table}</div>"
             except Exception as exc:
                 summary = f"<div class='card bad'>Failed to load products: {h(exc)}</div>"
@@ -2402,6 +2439,7 @@ class Handler(BaseHTTPRequestHandler):
         data = client.product(int(pid))
         product = data.get("product", data)
         summary = {k: product.get(k) for k in ["id", "name", "price", "currency", "is_available", "num_in_stock", "owner", "type_good"] if k in product}
+        summary["delivery_mode"] = delivery_mode(product)[0]
         stock_link = f"<div class='card'><a href='/stock?product_id={h(pid)}'>Bulk upload stock for this product</a></div>"
         self.send_html("Product", form + stock_link + f"<pre class='card code'>{h(json.dumps(summary, ensure_ascii=False, indent=2))}</pre>")
 
@@ -2539,7 +2577,7 @@ def main() -> None:
     start_online_keepalive()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Digiseller admin running at http://{host}:{port}")
-    print("Open the page and click 'Enable alerts' to allow sound/voice notifications.")
+    print("Open the page and click the alerts button to allow sound/voice notifications.")
     print("Online keepalive: enabled by default; set DIGISELLER_KEEP_ONLINE=0 to disable.")
     print("Background watcher: python3 digiseller_admin.py watch --interval 15")
     print("Press Ctrl+C to stop")
