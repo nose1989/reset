@@ -328,6 +328,9 @@ class DigisellerClient:
             messages = older + messages
         return messages
 
+    def mark_chat_read(self, order_id: int) -> None:
+        self.post("/debates/v2/seen", params={"id_i": order_id})
+
     def admin_messages(self, only_unread: bool = True) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"count": 100}
         if only_unread:
@@ -637,6 +640,7 @@ def layout(title: str, body: str) -> bytes:
       document.addEventListener('visibilitychange', () => { if (!document.hidden && enabled) poll(false); });
       setButton();
       schedulePoll();
+      window.refreshDigisellerUnread = poll;
       if (enabled) poll(false);
     })();
     </script>
@@ -781,6 +785,11 @@ def unread_summary() -> dict[str, Any]:
         "latest": latest,
         "checked_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
+
+
+def clear_unread_cache() -> None:
+    UNREAD_CACHE["time"] = 0.0
+    UNREAD_CACHE["data"] = None
 
 
 def notify_desktop(text: str) -> None:
@@ -1157,9 +1166,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": False, "error": "order_id is required"}, 400)
         email = self.q("email", f"order-{order_id}")
         product = self.q("product", "Direct order lookup")
+        client.mark_chat_read(order_id)
+        clear_unread_cache()
         messages = client.all_chat_messages(order_id)
         selected_chat = {"id_i": order_id, "email": email, "product": product} if messages else None
-        self.send_json({"ok": True, "order_id": order_id, "count": len(messages), "html": self.chat_panel_html(order_id, selected_chat, messages)})
+        self.send_json({"ok": True, "order_id": order_id, "count": len(messages), "read": True, "html": self.chat_panel_html(order_id, selected_chat, messages)})
 
     def api_translate_batch(self) -> None:
         payload = self.read_json_body()
@@ -1191,6 +1202,9 @@ class Handler(BaseHTTPRequestHandler):
         selected_order = int(self.q("order_id", "0") or 0)
         if not selected_order and chats:
             selected_order = int(chats[0].get("id_i") or 0)
+        if selected_order:
+            client.mark_chat_read(selected_order)
+            clear_unread_cache()
 
         items = []
         selected_chat: dict[str, Any] | None = None
@@ -1201,7 +1215,7 @@ class Handler(BaseHTTPRequestHandler):
             email = str(chat.get("email") or "unknown")
             name = email.split("@", 1)[0] or email
             initials = (name[:1] or "?").upper()
-            unread = int(chat.get("cnt_new") or 0)
+            unread = 0 if order_id == selected_order else int(chat.get("cnt_new") or 0)
             active = " active" if order_id == selected_order else ""
             preview = short(chat.get("product"), 80)
             when = str(chat.get("last_date") or "")
@@ -1245,6 +1259,8 @@ class Handler(BaseHTTPRequestHandler):
             const params = new URLSearchParams({order_id: orderId, email: link.dataset.email || '', product: link.dataset.product || ''});
             list.querySelectorAll('.conversation-item.active').forEach((item) => item.classList.remove('active'));
             link.classList.add('active');
+            const badge = link.querySelector('.badge');
+            if (badge) badge.remove();
             panel.classList.add('loading');
             try {
               const res = await fetch('/api/chat-panel?' + params.toString(), {cache: 'no-store'});
@@ -1255,6 +1271,7 @@ class Handler(BaseHTTPRequestHandler):
               const newPanel = document.getElementById('chat-panel');
               if (newPanel) runPanelScripts(newPanel);
               if (newPanel && window.loadDigisellerTranslations) window.loadDigisellerTranslations(newPanel);
+              if (window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
               history.pushState(null, '', link.href);
             } catch (error) {
               location.href = link.href;
@@ -1271,6 +1288,8 @@ class Handler(BaseHTTPRequestHandler):
         order_id = int(self.q("order_id", "0"))
         if not order_id:
             return self.send_html("Chat", "<div class='card'>Pass ?order_id=...</div>")
+        client.mark_chat_read(order_id)
+        clear_unread_cache()
         msgs = client.all_chat_messages(order_id)
         rows = []
         for m in msgs:
