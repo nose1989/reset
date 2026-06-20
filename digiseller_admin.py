@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import webbrowser
 from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
@@ -623,6 +624,12 @@ ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
     "recovery_error": "",
     "failure_count": 0,
 }
+CHAT_KEEPALIVE_BROWSER_STATUS: dict[str, Any] = {
+    "enabled": False,
+    "opened": False,
+    "last_open": "",
+    "error": "",
+}
 
 
 def start_auto_reload() -> None:
@@ -656,7 +663,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .translated-message{white-space:normal}.translated-text,.original-text{white-space:pre-wrap}.toggle-original{margin-top:8px;background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.translation-label{display:inline-block;margin-left:8px;color:#64748b;font-size:12px}
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
 .phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:block;margin-top:8px}.phrase-manager.dragover textarea{border-color:#2563eb;background:#eff6ff}.phrase-pending{margin-top:8px}
-.chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.chat-keepalive-frame{position:fixed;left:-10000px;top:auto;width:1px;height:1px;border:0;opacity:.01;pointer-events:none}
+.chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.chat-keepalive-btn.warn{background:#fef3c7;color:#92400e;border-color:#fde68a}
 </style>
 """
 
@@ -689,10 +696,10 @@ def layout(title: str, body: str) -> bytes:
         online_label = "Online checking"
         online_class = ""
     online_title = f"Last verified: {online_last_ok or '-'} | Last set: {online_last_set or '-'} | Last chat heartbeat: {online_last_heartbeat or '-'} | API status: {online.get('status') if online.get('status') is not None else '-'} | Public online: {'yes' if online.get('public_online') else 'no'} | Set error: {online_set_error or '-'} | Chat heartbeat error: {online_heartbeat_error or '-'} | Setting error: {online_setting_error or '-'} | Verify error: {online_verify_error or '-'} | Public verify error: {online_public_error or '-'} | Recovering: {online_recovery_error or '-'} | Error: {online_error or '-'}"
-    chat_keepalive_url = os.getenv(
-        "DIGISELLER_CHAT_KEEPALIVE_URL",
-        "https://chat.digiseller.com/asp/messenger.asp?mode=s",
-    ).strip()
+    chat_keepalive_url = get_chat_keepalive_url()
+    chat_browser = CHAT_KEEPALIVE_BROWSER_STATUS.copy()
+    chat_button_label = "Chat auto-opened" if chat_browser.get("opened") else "Open chat window"
+    chat_button_class = "ok" if chat_browser.get("opened") else "warn"
     nav = f"""
     <div class="top">
       <a href="/" aria-label="Home"><img class="brand-logo" src="/assets/shinchan-logo.png" alt="Crayon Shin-chan"></a>
@@ -715,8 +722,7 @@ def layout(title: str, body: str) -> bytes:
       </form>
       <span class="top-version">Digiseller Admin {APP_VERSION}</span>
       <span id="online-keepalive-pill" class="top-online {online_class}" title="{h(online_title)}">{h(online_label)}</span>
-      <button id="chat-keepalive-button" class="chat-keepalive-btn" type="button" data-url="{h(chat_keepalive_url)}" title="Seller chat is loaded automatically in the background; click only if you need to see the window.">Auto chat keepalive</button>
-      <iframe id="chat-keepalive-frame" class="chat-keepalive-frame" src="{h(chat_keepalive_url)}" title="Digiseller chat keepalive" aria-hidden="true"></iframe>
+      <button id="chat-keepalive-button" class="chat-keepalive-btn {chat_button_class}" type="button" data-url="{h(chat_keepalive_url)}" title="The app opens the seller chat as a top-level browser window on startup; click only if it is closed.">{h(chat_button_label)}</button>
     </div>
     <script>
     (() => {{
@@ -834,32 +840,25 @@ def layout(title: str, body: str) -> bytes:
     }})();
     (() => {{
       const btn = document.getElementById('chat-keepalive-button');
-      const frame = document.getElementById('chat-keepalive-frame');
-      if (!btn || !frame) return;
+      if (!btn) return;
       const url = btn.dataset.url || 'https://chat.digiseller.com/asp/messenger.asp?mode=s';
       const windowName = 'digiseller-chat-keepalive';
       let chatWindow = null;
-      let frameLoaded = false;
       function updateLabel() {{
         const popupActive = chatWindow && !chatWindow.closed;
-        btn.textContent = popupActive ? 'Chat window open' : (frameLoaded ? 'Auto keepalive loaded' : 'Auto keepalive loading');
-        btn.classList.toggle('ok', Boolean(frameLoaded || popupActive));
-      }}
-      function ensureFrameLoaded() {{
-        if (!frame.getAttribute('src')) frame.setAttribute('src', url);
+        if (popupActive) {{
+          btn.textContent = 'Chat window open';
+          btn.classList.add('ok');
+          btn.classList.remove('warn');
+        }}
       }}
       function openChatKeepalive() {{
         chatWindow = window.open(url, windowName, 'width=740,height=520,scrollbars=no,resizable=yes');
         updateLabel();
       }}
-      frame.addEventListener('load', () => {{
-        frameLoaded = true;
-        updateLabel();
-      }});
       btn.addEventListener('click', openChatKeepalive);
-      ensureFrameLoaded();
       updateLabel();
-      setInterval(() => {{ ensureFrameLoaded(); updateLabel(); }}, 15000);
+      setInterval(updateLabel, 15000);
     }})();
     </script>
     """
@@ -1379,6 +1378,38 @@ def run_online_keepalive(interval: int) -> None:
             public_response=public_data,
         )
         time.sleep(interval)
+
+
+def get_chat_keepalive_url() -> str:
+    return os.getenv(
+        "DIGISELLER_CHAT_KEEPALIVE_URL",
+        "https://chat.digiseller.com/asp/messenger.asp?mode=s",
+    ).strip()
+
+
+def start_chat_keepalive_browser() -> None:
+    enabled = os.getenv("DIGISELLER_CHAT_OPEN_BROWSER", "1").strip().lower() not in {"0", "false", "no", "off"}
+    CHAT_KEEPALIVE_BROWSER_STATUS.update({"enabled": enabled, "opened": False, "error": ""})
+    if not enabled:
+        return
+
+    def open_chat() -> None:
+        opened_at = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        try:
+            opened = webbrowser.open_new(get_chat_keepalive_url())
+        except Exception as exc:
+            CHAT_KEEPALIVE_BROWSER_STATUS.update({"opened": False, "last_open": opened_at, "error": str(exc)})
+            print(f"Chat keepalive browser open failed: {exc}", flush=True)
+            return
+        CHAT_KEEPALIVE_BROWSER_STATUS.update(
+            {"opened": bool(opened), "last_open": opened_at, "error": "" if opened else "browser open returned false"}
+        )
+        if opened:
+            print("Chat keepalive browser window opened.", flush=True)
+        else:
+            print("Chat keepalive browser window was not opened; use the top-bar fallback button.", flush=True)
+
+    threading.Timer(2.0, open_chat).start()
 
 
 def start_online_keepalive() -> None:
@@ -2556,7 +2587,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(data)
 
     def api_online_keepalive(self) -> None:
-        self.send_json(ONLINE_KEEPALIVE_STATUS.copy())
+        data = ONLINE_KEEPALIVE_STATUS.copy()
+        data["chat_browser"] = CHAT_KEEPALIVE_BROWSER_STATUS.copy()
+        self.send_json(data)
 
     def api_chat_debug(self) -> None:
         order_id = int(self.q("order_id", "0") or 0)
@@ -2632,10 +2665,12 @@ def main() -> None:
     port = int(os.getenv("DIGISELLER_ADMIN_PORT", "8765"))
     start_auto_reload()
     start_online_keepalive()
+    start_chat_keepalive_browser()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Digiseller admin running at http://{host}:{port}")
     print("Open the page and click the alerts button to allow sound/voice notifications.")
     print("Online keepalive: enabled by default; set DIGISELLER_KEEP_ONLINE=0 to disable.")
+    print("Chat keepalive window: opens automatically by default; set DIGISELLER_CHAT_OPEN_BROWSER=0 to disable.")
     print("Background watcher: python3 digiseller_admin.py watch --interval 15")
     print("Press Ctrl+C to stop")
     server.serve_forever()
