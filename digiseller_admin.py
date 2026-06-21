@@ -47,6 +47,7 @@ SHINCHAN_LOGO = ASSET_DIR / "shinchan-logo.png"
 COMMON_PHRASES_FILE = APP_DIR / "common_phrases.json"
 COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
+SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 API_BASE = "https://api.digiseller.com/api"
 APP_VERSION = "v8.11-chat-refresh"
 
@@ -736,6 +737,7 @@ class DigisellerClient:
 
 client = DigisellerClient()
 UNREAD_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
+SALES_ORDER_BADGE_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 PURCHASE_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
 ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
     "enabled": False,
@@ -838,12 +840,15 @@ def layout(title: str, body: str) -> bytes:
     chat_browser = CHAT_KEEPALIVE_BROWSER_STATUS.copy()
     chat_button_label = "Chat window active" if chat_browser.get("opened") else "Open chat window"
     chat_button_class = "ok" if chat_browser.get("opened") else "warn"
+    sales_badge = sales_order_badge_summary()
+    sales_badge_count = int(sales_badge.get("count") or 0)
+    sales_badge_hidden = " hidden" if sales_badge_count <= 0 else ""
     nav = f"""
     <div class="top">
       <a href="/" aria-label="Home"><img class="brand-logo" src="/assets/shinchan-logo.png" alt="Crayon Shin-chan"></a>
       <div class="top-nav">
         <a href="/">Dashboard</a>
-        <a href="/sales">Sales</a>
+        <a href="/sales" style="display:inline-flex;align-items:center;gap:5px">Sales<span id="sales-order-badge" style="display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:#ef4444;color:#fff;font-size:11px;font-weight:900;line-height:1;box-shadow:0 0 0 2px #1f7acb"{sales_badge_hidden}>{h(sales_badge_count)}</span></a>
         <a href="/chats">Messages</a>
         <a href="/unread">Unread</a>
         <a href="/admin-messages">Admin</a>
@@ -999,6 +1004,24 @@ def layout(title: str, body: str) -> bytes:
       btn.addEventListener('click', openChatKeepalive);
       updateLabel();
       setInterval(updateLabel, 15000);
+    }})();
+    (() => {{
+      const badge = document.getElementById('sales-order-badge');
+      if (!badge) return;
+      function setBadge(count) {{
+        const value = Number(count || 0);
+        badge.textContent = String(value);
+        badge.hidden = value <= 0;
+      }}
+      async function refreshSalesBadge() {{
+        try {{
+          const res = await fetch('/api/sales-order-count', {{cache: 'no-store'}});
+          if (!res.ok) return;
+          const data = await res.json();
+          setBadge(data.count || 0);
+        }} catch (e) {{}}
+      }}
+      setInterval(refreshSalesBadge, 30000);
     }})();
     </script>
     """
@@ -1385,6 +1408,88 @@ def unread_summary() -> dict[str, Any]:
 def clear_unread_cache() -> None:
     UNREAD_CACHE["time"] = 0.0
     UNREAD_CACHE["data"] = None
+
+
+def load_sales_order_state() -> dict[str, Any]:
+    if not SALES_ORDER_SEEN_FILE.exists():
+        return {"initialized": False, "seen_invoice_ids": []}
+    try:
+        data = json.loads(SALES_ORDER_SEEN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"initialized": False, "seen_invoice_ids": []}
+    if not isinstance(data, dict):
+        return {"initialized": False, "seen_invoice_ids": []}
+    seen = [str(item) for item in data.get("seen_invoice_ids") or [] if str(item)]
+    return {"initialized": bool(data.get("initialized")), "seen_invoice_ids": seen}
+
+
+def save_sales_order_state(state: dict[str, Any]) -> None:
+    seen = [str(item) for item in state.get("seen_invoice_ids") or [] if str(item)]
+    payload = {
+        "initialized": bool(state.get("initialized")),
+        "seen_invoice_ids": seen[:500],
+        "updated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
+    SALES_ORDER_SEEN_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def sales_invoice_id(row: dict[str, Any]) -> str:
+    return str(row.get("invoice_id") or row.get("id_i") or row.get("id") or "").strip()
+
+
+def sales_order_badge_summary(force: bool = False) -> dict[str, Any]:
+    now = time.time()
+    cached = SALES_ORDER_BADGE_CACHE.get("data")
+    if not force and cached is not None and now - float(SALES_ORDER_BADGE_CACHE.get("time") or 0) < 45:
+        return cached
+    try:
+        rows = [row for row in client.sales(3, 50).get("rows", []) if isinstance(row, dict)]
+        invoice_ids: list[str] = []
+        for row in rows:
+            invoice_id = sales_invoice_id(row)
+            if invoice_id and invoice_id not in invoice_ids:
+                invoice_ids.append(invoice_id)
+        state = load_sales_order_state()
+        if not state.get("initialized"):
+            save_sales_order_state({"initialized": True, "seen_invoice_ids": invoice_ids})
+            unseen_ids: list[str] = []
+        else:
+            seen = set(str(item) for item in state.get("seen_invoice_ids") or [])
+            unseen_ids = [invoice_id for invoice_id in invoice_ids if invoice_id not in seen]
+        data = {
+            "ok": True,
+            "count": len(unseen_ids),
+            "invoice_ids": unseen_ids,
+            "latest_invoice_id": invoice_ids[0] if invoice_ids else "",
+            "checked_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        }
+    except Exception as exc:
+        data = {"ok": False, "count": 0, "error": short(exc, 160)}
+    SALES_ORDER_BADGE_CACHE["time"] = now
+    SALES_ORDER_BADGE_CACHE["data"] = data
+    return data
+
+
+def mark_sales_orders_seen(rows: list[dict[str, Any]]) -> None:
+    invoice_ids: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        invoice_id = sales_invoice_id(row)
+        if invoice_id and invoice_id not in invoice_ids:
+            invoice_ids.append(invoice_id)
+    state = load_sales_order_state()
+    existing = [str(item) for item in state.get("seen_invoice_ids") or [] if str(item)]
+    merged = invoice_ids + [invoice_id for invoice_id in existing if invoice_id not in invoice_ids]
+    save_sales_order_state({"initialized": True, "seen_invoice_ids": merged})
+    SALES_ORDER_BADGE_CACHE["time"] = time.time()
+    SALES_ORDER_BADGE_CACHE["data"] = {
+        "ok": True,
+        "count": 0,
+        "invoice_ids": [],
+        "latest_invoice_id": invoice_ids[0] if invoice_ids else "",
+        "checked_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
 
 
 def phrase_user_key() -> str:
@@ -2265,6 +2370,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_unique_code()
             if path == "/api/unread-count":
                 return self.api_unread_count()
+            if path == "/api/sales-order-count":
+                return self.api_sales_order_count()
             if path == "/api/online-keepalive":
                 return self.api_online_keepalive()
             if path == "/api/version":
@@ -2641,6 +2748,7 @@ class Handler(BaseHTTPRequestHandler):
         rows = min(max(int(self.q("rows", "50")), 1), 50)
         page = int(self.q("page", "1"))
         data = client.sales(days, rows, page)
+        mark_sales_orders_seen(data.get("rows", []))
         trs = []
         for r in data.get("rows", []):
             trs.append([
@@ -3269,6 +3377,10 @@ class Handler(BaseHTTPRequestHandler):
         UNREAD_CACHE["time"] = now
         UNREAD_CACHE["data"] = data
         self.send_json(data)
+
+    def api_sales_order_count(self) -> None:
+        force = self.q("force", "0") in {"1", "true", "yes"}
+        self.send_json(sales_order_badge_summary(force=force))
 
     def api_online_keepalive(self) -> None:
         self.send_json(refresh_public_online_status(force=True))
