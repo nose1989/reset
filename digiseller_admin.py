@@ -684,6 +684,7 @@ ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
 CHAT_KEEPALIVE_BROWSER_STATUS: dict[str, Any] = {
     "enabled": False,
     "opened": False,
+    "reused": False,
     "last_open": "",
     "error": "",
 }
@@ -756,7 +757,7 @@ def layout(title: str, body: str) -> bytes:
     online_title = f"Last verified: {online_last_ok or '-'} | Last set: {online_last_set or '-'} | Last chat heartbeat: {online_last_heartbeat or '-'} | API status: {online.get('status') if online.get('status') is not None else '-'} | Public online: {'yes' if online.get('public_online') else 'no'} | Set error: {online_set_error or '-'} | Chat heartbeat error: {online_heartbeat_error or '-'} | Setting error: {online_setting_error or '-'} | Verify error: {online_verify_error or '-'} | Public checked: {online_public_checked_at or '-'} | Public verify error: {online_public_error or '-'} | Recovering: {online_recovery_error or '-'} | Error: {online_error or '-'}"
     chat_keepalive_url = get_chat_keepalive_url()
     chat_browser = CHAT_KEEPALIVE_BROWSER_STATUS.copy()
-    chat_button_label = "Chat auto-opened" if chat_browser.get("opened") else "Open chat window"
+    chat_button_label = "Chat window active" if chat_browser.get("opened") else "Open chat window"
     chat_button_class = "ok" if chat_browser.get("opened") else "warn"
     nav = f"""
     <div class="top">
@@ -1667,22 +1668,78 @@ def get_chat_keepalive_url() -> str:
     ).strip()
 
 
+def chat_keepalive_window_exists(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    if not host:
+        return False
+    if sys.platform == "darwin":
+        script = f"""
+        if application "Google Chrome" is not running then return "0"
+        tell application "Google Chrome"
+            repeat with chromeWindow in windows
+                repeat with chromeTab in tabs of chromeWindow
+                    set tabUrl to URL of chromeTab
+                    if tabUrl contains "{host}" and tabUrl contains "{path}" then return "1"
+                end repeat
+            end repeat
+        end tell
+        return "0"
+        """
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.stdout.strip() == "1"
+    if sys.platform.startswith("linux"):
+        try:
+            result = subprocess.run(
+                ["wmctrl", "-l"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        windows = result.stdout.lower()
+        return "digiseller" in windows and ("chat" in windows or "messenger" in windows)
+    return False
+
+
 def start_chat_keepalive_browser() -> None:
     enabled = os.getenv("DIGISELLER_CHAT_OPEN_BROWSER", "1").strip().lower() not in {"0", "false", "no", "off"}
-    CHAT_KEEPALIVE_BROWSER_STATUS.update({"enabled": enabled, "opened": False, "error": ""})
+    CHAT_KEEPALIVE_BROWSER_STATUS.update({"enabled": enabled, "opened": False, "reused": False, "error": ""})
     if not enabled:
         return
 
     def open_chat() -> None:
         opened_at = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        chat_url = get_chat_keepalive_url()
+        if chat_keepalive_window_exists(chat_url):
+            CHAT_KEEPALIVE_BROWSER_STATUS.update({"opened": True, "reused": True, "last_open": opened_at, "error": ""})
+            print("Chat keepalive browser window already exists; skipping auto-open.", flush=True)
+            return
         try:
-            opened = webbrowser.open_new(get_chat_keepalive_url())
+            opened = webbrowser.open_new(chat_url)
         except Exception as exc:
-            CHAT_KEEPALIVE_BROWSER_STATUS.update({"opened": False, "last_open": opened_at, "error": str(exc)})
+            CHAT_KEEPALIVE_BROWSER_STATUS.update({"opened": False, "reused": False, "last_open": opened_at, "error": str(exc)})
             print(f"Chat keepalive browser open failed: {exc}", flush=True)
             return
         CHAT_KEEPALIVE_BROWSER_STATUS.update(
-            {"opened": bool(opened), "last_open": opened_at, "error": "" if opened else "browser open returned false"}
+            {
+                "opened": bool(opened),
+                "reused": False,
+                "last_open": opened_at,
+                "error": "" if opened else "browser open returned false",
+            }
         )
         if opened:
             print("Chat keepalive browser window opened.", flush=True)
