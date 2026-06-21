@@ -176,14 +176,14 @@ def google_translate(text: str, target_lang: str, source_lang: str = "auto") -> 
 
 def detect_buyer_language(messages: list[dict[str, Any]]) -> str:
     for msg in reversed(messages):
-        if msg.get("seller") == 1 or msg.get("is_file"):
+        if msg.get("seller") == 1 or is_attachment_message(msg):
             continue
         text = clean_text(msg.get("message"))
         lang = heuristic_language(text)
         if lang and lang not in {"zh", "zh-CN"}:
             return lang
     for msg in reversed(messages):
-        if msg.get("seller") == 1 or msg.get("is_file"):
+        if msg.get("seller") == 1 or is_attachment_message(msg):
             continue
         text = clean_text(msg.get("message"))
         if text:
@@ -212,9 +212,20 @@ def message_text_html(text: str, allow_save: bool = False) -> str:
     )
 
 
+def should_translate_text(text: str) -> bool:
+    value = clean_text(text)
+    if not value:
+        return False
+    if looks_like_image_name(value):
+        return False
+    if re.fullmatch(r"[\d\s.,:+#/_-]+", value):
+        return False
+    return bool(heuristic_language(value))
+
+
 def translate_incoming_html(text: str, message_id: Any, should_translate: bool = True) -> str:
     source_lang = heuristic_language(text)
-    if not should_translate or source_lang in {"zh", "zh-CN"}:
+    if not should_translate or source_lang in {"zh", "zh-CN"} or not should_translate_text(text):
         return message_text_html(text, allow_save=not should_translate)
     message_key = h(message_id or hashlib.sha1(text.encode("utf-8")).hexdigest()[:12])
     return (
@@ -238,6 +249,14 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 def looks_like_image_name(value: Any) -> bool:
     text = clean_text(value).lower().split("?", 1)[0]
     return text.endswith(IMAGE_EXTENSIONS)
+
+
+def is_attachment_message(msg: dict[str, Any]) -> bool:
+    if msg.get("is_file") or msg.get("is_img") == 1:
+        return True
+    if msg.get("url") or msg.get("preview"):
+        return True
+    return looks_like_image_name(msg.get("filename") or msg.get("message") or msg.get("text"))
 
 
 def attachment_html(msg: dict[str, Any], allow_guess_preview: bool = False) -> str:
@@ -693,10 +712,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 
 .alert-controls{position:fixed;right:18px;bottom:18px;z-index:50;display:flex;gap:8px;align-items:center}.alert-button{background:#16a34a;color:#fff;border:0;border-radius:999px;padding:10px 14px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-button.off{background:#64748b}.alert-pill{display:none;background:#dc2626;color:#fff;border-radius:999px;padding:9px 12px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-pill.show{display:inline-block}.unread-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#ef4444;margin-left:6px}
 .thumb{max-width:220px;max-height:160px;border:1px solid #e5e7eb;border-radius:8px;display:block;margin-top:8px;background:#f8fafc}.file-preview{margin-top:6px}.file-name{font-weight:700}.image-note{font-size:12px;color:#6b7280;margin-top:4px}
-.reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.common-phrases{border-top:1px solid #e5e7eb;background:#f8fafc;padding:10px 18px 14px}.common-phrase-title{font-size:13px;font-weight:800;color:#334155;margin-bottom:8px}.common-phrase-buttons{display:flex;flex-wrap:wrap;gap:8px}.common-phrase-buttons form{margin:0}.common-phrase-buttons button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.phrase-manager textarea{width:100%;box-sizing:border-box;min-height:76px;resize:vertical}.phrase-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:start;margin-bottom:10px}.phrase-empty{color:#64748b;font-size:14px}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
+.reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.common-phrases{border-top:1px solid #e5e7eb;background:#f8fafc;padding:10px 18px 14px}.common-phrase-title{font-size:13px;font-weight:800;color:#334155;margin-bottom:8px}.common-phrase-buttons{display:flex;flex-wrap:wrap;gap:8px}.common-phrase-buttons form{margin:0}.common-phrase-buttons button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.phrase-manager form[action='/phrases/save']{border:1px dashed #cbd5e1;border-radius:10px;padding:12px;background:#fff}.phrase-manager textarea{width:100%;box-sizing:border-box;min-height:130px;resize:vertical}.phrase-manager.dragover form[action='/phrases/save']{border-color:#2563eb;background:#eff6ff}.phrase-manager.dragover textarea{border-color:#2563eb;background:#eff6ff}.phrase-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:start;margin-bottom:10px}.phrase-empty{color:#64748b;font-size:14px}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
 .translated-message,.plain-message{white-space:normal}.translated-text,.original-text,.plain-text{white-space:pre-wrap}.message-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}.toggle-original,.save-common-phrase{background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.save-common-phrase.saved{background:#dcfce7;color:#166534;border-color:#bbf7d0}.save-common-phrase.failed{background:#fee2e2;color:#991b1b;border-color:#fecaca}.translation-label{display:inline-block;color:#64748b;font-size:12px}
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
-.phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:block;margin-top:8px}.phrase-manager.dragover textarea{border-color:#2563eb;background:#eff6ff}.phrase-pending{margin-top:8px}
+.phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:flex;align-items:center;justify-content:center;gap:10px;min-height:68px;margin-top:10px;border:1px dashed #93c5fd;border-radius:10px;background:#eff6ff;color:#0f3b66;font-weight:700;padding:10px;cursor:pointer}.phrase-upload input{background:white}.phrase-image-preview,.common-phrase-buttons .common-phrase-preview{border:0;background:transparent;padding:0;cursor:pointer}.phrase-image-preview img,.common-phrase-preview img{display:block;width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1}.common-phrase-item{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.common-phrase-previews{display:flex;gap:6px;align-items:center}.common-phrase-file-chip{display:inline-flex;align-items:center;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;color:#475569;padding:4px 6px;font-size:12px}.phrase-pending{margin-top:8px}
 .chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.chat-keepalive-btn.warn{background:#fef3c7;color:#92400e;border-color:#fde68a}
 </style>
 """
@@ -1715,12 +1734,29 @@ class Handler(BaseHTTPRequestHandler):
             label = short(text, 36) if text else "Attachment phrase"
             if files:
                 label = f"{label} +{len(files)} file"
+            preview_items = []
+            for file in files:
+                if not isinstance(file, dict):
+                    continue
+                stored = str(file.get("stored") or "")
+                filename = str(file.get("filename") or stored)
+                content_type = str(file.get("content_type") or "")
+                if content_type.startswith("image/"):
+                    file_url = phrase_file_url(stored)
+                    preview_items.append(
+                        f"<button class='common-phrase-preview' type='button' data-preview-src='{h(file_url)}' data-preview-name='{h(filename)}'>"
+                        f"<img src='{h(file_url)}' alt='{h(filename)}'></button>"
+                    )
+                else:
+                    preview_items.append(f"<span class='common-phrase-file-chip'>{h(filename or 'FILE')}</span>")
+            previews_html = f"<div class='common-phrase-previews'>{''.join(preview_items)}</div>" if preview_items else ""
             phrase_forms.append(
+                f"<div class='common-phrase-item'>{previews_html}"
                 f"<form method='post' action='/chats/send'>"
                 f"<input type='hidden' name='order_id' value='{order_id}'>"
                 f"<input type='hidden' name='target_lang' value='{h(target_lang)}'>"
                 f"<input type='hidden' name='phrase_id' value='{h(phrase['id'])}'>"
-                f"<button type='submit' title='{h(text or label)}'>{h(label)}</button></form>"
+                f"<button type='submit' title='{h(text or label)}'>{h(label)}</button></form></div>"
             )
         if phrase_forms:
             phrases_html = (
@@ -1774,6 +1810,13 @@ class Handler(BaseHTTPRequestHandler):
           }});
           document.addEventListener('keydown', (event) => {{
             if (event.key === 'Escape' && !previewModal.hidden) closeImagePreview();
+          }});
+          document.querySelectorAll('.common-phrase-preview').forEach((button) => {{
+            if (button.dataset.previewReady) return;
+            button.dataset.previewReady = '1';
+            button.addEventListener('click', () => {{
+              openImagePreview(button.dataset.previewSrc || '', button.dataset.previewName || '');
+            }});
           }});
           function syncInputFiles() {{
             const dataTransfer = new DataTransfer();
@@ -2061,7 +2104,13 @@ class Handler(BaseHTTPRequestHandler):
                 filename = str(file.get("filename") or stored)
                 content_type = str(file.get("content_type") or "")
                 delete_form_id = "delete-file-" + re.sub(r"[^a-zA-Z0-9_-]", "-", stored)
-                preview = f"<img src='{h(phrase_file_url(stored))}' alt='{h(filename)}'>" if content_type.startswith("image/") else "<span class='file-chip-icon'>FILE</span>"
+                file_url = phrase_file_url(stored)
+                preview = (
+                    f"<button class='phrase-image-preview' type='button' data-preview-src='{h(file_url)}' data-preview-name='{h(filename)}'>"
+                    f"<img src='{h(file_url)}' alt='{h(filename)}'></button>"
+                    if content_type.startswith("image/")
+                    else "<span class='file-chip-icon'>FILE</span>"
+                )
                 file_rows.append(
                     f"<div class='phrase-file'>{preview}<span class='phrase-file-name'>{h(filename)}</span>"
                     f"<button type='submit' form='{h(delete_form_id)}'>&#21024;&#38500;&#38468;&#20214;</button></div>"
@@ -2092,6 +2141,30 @@ class Handler(BaseHTTPRequestHandler):
         phrase_editor_js = """
         <script>
         (() => {
+          const previewModal = document.createElement('div');
+          previewModal.className = 'preview-modal';
+          previewModal.hidden = true;
+          previewModal.innerHTML = '<button class="preview-modal-close" type="button" aria-label="Close">×</button><img alt="">';
+          document.body.appendChild(previewModal);
+          const modalImage = previewModal.querySelector('img');
+          function openImagePreview(url, name) {
+            modalImage.src = url;
+            modalImage.alt = name || '';
+            previewModal.hidden = false;
+          }
+          function closeImagePreview() {
+            previewModal.hidden = true;
+            modalImage.removeAttribute('src');
+          }
+          previewModal.addEventListener('click', (event) => {
+            if (event.target === previewModal || event.target.closest('.preview-modal-close')) closeImagePreview();
+          });
+          document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !previewModal.hidden) closeImagePreview();
+          });
+          document.querySelectorAll('.phrase-image-preview').forEach((button) => {
+            button.addEventListener('click', () => openImagePreview(button.dataset.previewSrc || '', button.dataset.previewName || ''));
+          });
           function clipboardImageFiles(event) {
             const clipboard = event.clipboardData;
             if (!clipboard) return [];
@@ -2119,6 +2192,7 @@ class Handler(BaseHTTPRequestHandler):
             const textarea = form.querySelector('textarea[name="text"]');
             if (!input || !textarea) return;
             let selectedFiles = [];
+            let selectedPreviewUrls = [];
             const pending = document.createElement('div');
             pending.className = 'phrase-pending selected-files';
             input.closest('label').after(pending);
@@ -2128,11 +2202,13 @@ class Handler(BaseHTTPRequestHandler):
               input.files = dataTransfer.files;
             }
             function render() {
+              selectedPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+              selectedPreviewUrls = [];
               pending.replaceChildren();
               if (!selectedFiles.length) return;
               const summary = document.createElement('div');
               summary.className = 'selected-summary';
-              summary.textContent = `待上传：${selectedFiles.map((file) => file.name).join('、')}`;
+              summary.textContent = `\u5f85\u4e0a\u4f20\uff1a${selectedFiles.map((file) => file.name).join('\u3001')}`;
               pending.appendChild(summary);
               const grid = document.createElement('div');
               grid.className = 'file-preview-grid';
@@ -2141,8 +2217,12 @@ class Handler(BaseHTTPRequestHandler):
                 chip.className = 'file-chip';
                 if (file.type.startsWith('image/')) {
                   const img = document.createElement('img');
-                  img.src = URL.createObjectURL(file);
+                  const url = URL.createObjectURL(file);
+                  selectedPreviewUrls.push(url);
+                  img.src = url;
                   img.alt = file.name;
+                  img.title = '\u70b9\u51fb\u67e5\u770b\u5927\u56fe';
+                  img.addEventListener('click', () => openImagePreview(url, file.name));
                   chip.appendChild(img);
                 } else {
                   const icon = document.createElement('span');
@@ -2171,20 +2251,26 @@ class Handler(BaseHTTPRequestHandler):
               event.preventDefault();
               addFiles(files);
             });
-            [form, textarea].forEach((target) => {
+            const uploadLabel = input.closest('label');
+            [form, textarea, uploadLabel].filter(Boolean).forEach((target) => {
               target.addEventListener('dragenter', (event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 form.closest('.phrase-manager')?.classList.add('dragover');
               });
               target.addEventListener('dragover', (event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 form.closest('.phrase-manager')?.classList.add('dragover');
               });
               target.addEventListener('dragleave', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
                 if (!form.contains(event.relatedTarget)) form.closest('.phrase-manager')?.classList.remove('dragover');
               });
               target.addEventListener('drop', (event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 form.closest('.phrase-manager')?.classList.remove('dragover');
                 addFiles(event.dataTransfer.files);
               });
@@ -2316,7 +2402,7 @@ class Handler(BaseHTTPRequestHandler):
                 author = "nose1989" if is_seller else buyer_name
                 text = clean_text(msg.get("message"))
                 try:
-                    if msg.get("is_file"):
+                    if is_attachment_message(msg):
                         text_html = attachment_html(msg)
                     else:
                         text_html = translate_incoming_html(text, msg.get("id"), should_translate=not is_seller)
@@ -2353,7 +2439,7 @@ class Handler(BaseHTTPRequestHandler):
             cls = "seller" if is_seller else "buyer"
             author = "nose1989" if is_seller else name
             text = clean_text(msg.get("message"))
-            if msg.get("is_file"):
+            if is_attachment_message(msg):
                 text_html = attachment_html(msg, allow_guess_preview=True)
             else:
                 text_html = translate_incoming_html(text, msg.get("id"), should_translate=not is_seller)
