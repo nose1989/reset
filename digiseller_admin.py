@@ -584,13 +584,14 @@ class DigisellerClient:
             return self.post("/seller-sells/v2", json_body={**body, "page": page_number})
 
         data = fetch_page(1)
-        all_rows = list(data.get("rows") or [])
         pages = int(data.get("pages") or 1)
-        for page_number in range(2, pages + 1):
+        page_rows: dict[int, list[dict[str, Any]]] = {1: list(data.get("rows") or [])}
+        if pages > 1:
             try:
-                all_rows.extend(fetch_page(page_number).get("rows") or [])
+                page_rows[pages] = list(fetch_page(pages).get("rows") or [])
             except Exception:
-                break
+                pass
+        all_rows = [item for rows_for_page in page_rows.values() for item in rows_for_page]
         unique_rows: list[dict[str, Any]] = []
         seen: set[str] = set()
         for item in all_rows:
@@ -603,9 +604,7 @@ class DigisellerClient:
             unique_rows.append(item)
         unique_rows.sort(key=lambda item: sort_time(item.get("date_pay") or item.get("date")), reverse=True)
         total_rows = int(data.get("total_rows") or len(unique_rows))
-        page_count = max(1, (len(unique_rows) + rows - 1) // rows)
-        start_index = max(page - 1, 0) * rows
-        return {**data, "rows": unique_rows[start_index : start_index + rows], "total_rows": total_rows, "pages": page_count}
+        return {**data, "rows": unique_rows[:rows], "total_rows": total_rows, "pages": 1}
 
     def chats(self, page_size: int = 50, only_unread: bool = False) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"pageSize": page_size, "page": 1}
@@ -2634,8 +2633,8 @@ class Handler(BaseHTTPRequestHandler):
         self.redirect("/phrases")
 
     def sales(self) -> None:
-        days = int(self.q("days", "50"))
-        rows = min(max(int(self.q("rows", "100")), 1), 100)
+        days = int(self.q("days", "3"))
+        rows = min(max(int(self.q("rows", "50")), 1), 50)
         page = int(self.q("page", "1"))
         data = client.sales(days, rows, page)
         trs = []
