@@ -1500,6 +1500,24 @@ def phrase_file_url(stored: str) -> str:
     return "/phrase-files/" + urllib.parse.quote(stored, safe="")
 
 
+def phrase_file_reference(file: dict[str, Any]) -> tuple[str, str, str]:
+    filename = str(file.get("filename") or file.get("name") or "")
+    stored = str(file.get("stored") or file.get("file") or "")
+    if not stored and filename:
+        candidate = (COMMON_PHRASES_DIR / filename).resolve()
+        if str(candidate).startswith(str(COMMON_PHRASES_DIR.resolve())) and candidate.exists():
+            stored = filename
+    file_url = phrase_file_url(stored) if stored else str(file.get("preview") or file.get("url") or "")
+    return filename or stored or "file", stored, file_url
+
+
+def phrase_file_is_image(file: dict[str, Any], filename: str, file_url: str) -> bool:
+    content_type = str(file.get("content_type") or file.get("type") or "")
+    if content_type.startswith("image/"):
+        return True
+    return looks_like_image_name(filename) or looks_like_image_name(file_url)
+
+
 def save_phrase_uploads(phrase_id: str, uploads: list[UploadItem], existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
     files = list(existing)
     for upload in uploads:
@@ -1518,7 +1536,9 @@ def phrase_upload_items(phrase: dict[str, Any]) -> list[UploadItem]:
     for file in phrase.get("files") or []:
         if not isinstance(file, dict):
             continue
-        stored = str(file.get("stored") or "")
+        _, stored, _ = phrase_file_reference(file)
+        if not stored:
+            continue
         file_path = (COMMON_PHRASES_DIR / stored).resolve()
         if not str(file_path).startswith(str(COMMON_PHRASES_DIR.resolve())) or not file_path.exists():
             continue
@@ -1530,7 +1550,9 @@ def remove_phrase_files(phrase: dict[str, Any]) -> None:
     for file in phrase.get("files") or []:
         if not isinstance(file, dict):
             continue
-        stored = str(file.get("stored") or "")
+        _, stored, _ = phrase_file_reference(file)
+        if not stored:
+            continue
         file_path = (COMMON_PHRASES_DIR / stored).resolve()
         if str(file_path).startswith(str(COMMON_PHRASES_DIR.resolve())):
             file_path.unlink(missing_ok=True)
@@ -1856,13 +1878,10 @@ class Handler(BaseHTTPRequestHandler):
             for file in files:
                 if not isinstance(file, dict):
                     continue
-                stored = str(file.get("stored") or "")
-                filename = str(file.get("filename") or stored)
-                content_type = str(file.get("content_type") or "")
+                filename, _, file_url = phrase_file_reference(file)
                 if filename:
                     file_names.append(filename)
-                if (content_type.startswith("image/") or looks_like_image_name(filename)) and stored:
-                    file_url = phrase_file_url(stored)
+                if phrase_file_is_image(file, filename, file_url) and file_url:
                     preview_items.append(
                         f"<button class='common-phrase-preview' type='button' data-preview-src='{h(file_url)}' data-preview-name='{h(filename)}'>"
                         f"<img src='{h(file_url)}' alt='{h(filename)}' loading='lazy'></button>"
@@ -2233,15 +2252,12 @@ class Handler(BaseHTTPRequestHandler):
             file_rows = []
             file_delete_forms = []
             for file in phrase.get("files") or []:
-                stored = str(file.get("stored") or "")
-                filename = str(file.get("filename") or stored)
-                content_type = str(file.get("content_type") or "")
-                delete_form_id = "delete-file-" + re.sub(r"[^a-zA-Z0-9_-]", "-", stored)
-                file_url = phrase_file_url(stored)
+                filename, stored, file_url = phrase_file_reference(file)
+                delete_form_id = "delete-file-" + re.sub(r"[^a-zA-Z0-9_-]", "-", stored or filename)
                 preview = (
                     f"<button class='phrase-image-preview' type='button' data-preview-src='{h(file_url)}' data-preview-name='{h(filename)}'>"
                     f"<img src='{h(file_url)}' alt='{h(filename)}' loading='lazy'></button>"
-                    if (content_type.startswith("image/") or looks_like_image_name(filename)) and stored
+                    if phrase_file_is_image(file, filename, file_url) and file_url
                     else "<span class='file-chip-icon'>FILE</span>"
                 )
                 file_rows.append(
@@ -2478,7 +2494,8 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             files = []
             for file in phrase.get("files") or []:
-                if str(file.get("stored") or "") == stored:
+                _, file_stored, _ = phrase_file_reference(file)
+                if file_stored == stored:
                     file_path = (COMMON_PHRASES_DIR / stored).resolve()
                     if str(file_path).startswith(str(COMMON_PHRASES_DIR.resolve())):
                         file_path.unlink(missing_ok=True)
