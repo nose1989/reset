@@ -3361,19 +3361,25 @@ class Handler(BaseHTTPRequestHandler):
         selected_order = 0 if selected_kind == "guest" else int(self.q("order_id", "0") or 0)
         selected_corr_id = int(self.q("corr_id", "0") or 0) if selected_kind == "guest" else 0
         selected_corr_type = self.q("corr_type", "visitor")
-        if selected_kind != "guest" and not selected_order and chats:
-            selected_order = int(chats[0].get("id_i") or 0)
-            selected_platform = "digiseller"
-            selected_kind = "order"
-        elif selected_kind != "guest" and not selected_order and ggsel_chats:
-            selected_order = int(ggsel_chats[0].get("id_i") or 0)
-            selected_platform = "ggsel"
-            selected_kind = "order"
-        elif not selected_corr_id and guest_chats:
+        if selected_kind != "guest" and not selected_order:
+            order_candidates: list[tuple[float, str, int]] = []
+            for chat in chats:
+                order_id = int(chat.get("id_i") or 0)
+                if order_id:
+                    order_candidates.append((sort_time(chat.get("last_date")), "digiseller", order_id))
+            for chat in ggsel_chats:
+                order_id = int(chat.get("id_i") or 0)
+                if order_id:
+                    order_candidates.append((sort_time(chat.get("last_message")), "ggsel", order_id))
+            if order_candidates:
+                _, selected_platform, selected_order = max(order_candidates, key=lambda item: item[0])
+                selected_kind = "order"
+        if selected_kind != "guest" and not selected_order and not selected_corr_id and guest_chats:
             selected_kind = "guest"
             selected_corr_id = int(guest_chats[0].get("CorrID") or 0)
             selected_corr_type = str(guest_chats[0].get("CorrType") or "visitor")
         items = []
+        order_items: list[tuple[float, str]] = []
         order_unread_total = 0
         guest_unread_total = 0
         selected_chat: dict[str, Any] | None = None
@@ -3396,17 +3402,16 @@ class Handler(BaseHTTPRequestHandler):
             badge = f"<div class='badge'>{unread}</div>" if unread else ""
             href = order_chat_href(order_id, email, chat.get("product"))
             search_text = " ".join([str(order_id), email, str(chat.get("product") or ""), name]).lower()
-            items.append(
+            order_items.append((
+                sort_time(when),
                 f"<a class='conversation-item{active}' data-kind='order' data-platform='digiseller' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(chat.get('product'))}' href='{h(href)}'>"
                 f"{avatar}"
                 f"<div><div class='conversation-name'>{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
-            )
+            ))
         if chat_error:
             items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>Digiseller API error</div><div class='preview'>{h(short(chat_error, 100))}</div></div><div></div></div>")
-        if ggsel_chats or ggsel_error:
-            items.append("<div class='conversation-section' data-section='ggsel'>GGSEL orders</div>")
         if ggsel_error:
             items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>GGSEL API error</div><div class='preview'>{h(short(ggsel_error, 100))}</div></div><div></div></div>")
         for chat in ggsel_chats:
@@ -3429,13 +3434,16 @@ class Handler(BaseHTTPRequestHandler):
             badge = f"<div class='badge'>{unread}</div>" if unread else ""
             href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(order_id), "email": email, "product": str(product)})
             search_text = " ".join(["ggsel", str(order_id), email, str(product), name]).lower()
-            items.append(
+            order_items.append((
+                sort_time(when),
                 f"<a class='conversation-item{active}' data-kind='order' data-platform='ggsel' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(product)}' href='{h(href)}'>"
                 f"{avatar}"
                 f"<div><div class='conversation-name'><span class='platform-badge ggsel'>GGSEL</span> {h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
-            )
+            ))
+        items.extend(html for _, html in sorted(order_items, key=lambda item: item[0], reverse=True))
+
         if selected_kind == "order" and selected_order and selected_chat is None:
             selected_chat = {
                 "id_i": selected_order,
@@ -3578,6 +3586,7 @@ class Handler(BaseHTTPRequestHandler):
             let visible = 0;
             list.querySelectorAll('.conversation-item').forEach((link) => {
               const kind = link.dataset.kind || 'order';
+              const platform = link.dataset.platform || '';
               const hasUnread = link.dataset.hasUnread === '1';
               const text = link.dataset.search || link.textContent.toLowerCase();
               const matchesSearch = !query || text.includes(query);
@@ -3585,6 +3594,7 @@ class Handler(BaseHTTPRequestHandler):
                 activeFilter === 'all' ||
                 (activeFilter === 'unread' && hasUnread) ||
                 (activeFilter === 'orders' && kind === 'order') ||
+                (activeFilter === 'ggsel' && platform === 'ggsel') ||
                 (activeFilter === 'guest' && kind === 'guest');
               const show = matchesSearch && matchesFilter;
               link.hidden = !show;
@@ -3712,6 +3722,7 @@ class Handler(BaseHTTPRequestHandler):
             <button class='conversation-filter active' type='button' data-filter='all'>All</button>
             <button class='conversation-filter' type='button' data-filter='unread'>Unread</button>
             <button class='conversation-filter' type='button' data-filter='orders'>Orders</button>
+            <button class='conversation-filter' type='button' data-filter='ggsel'>GGSEL</button>
             <button class='conversation-filter' type='button' data-filter='guest'>Guests</button>
           </div>
         </div>
