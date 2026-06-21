@@ -574,6 +574,9 @@ class DigisellerClient:
         )
 
     def sales(self, days: int, rows: int, page: int = 1) -> dict[str, Any]:
+        days = max(int(days), 1)
+        rows = min(max(int(rows), 1), 50)
+        page = max(int(page), 1)
         finish = dt.datetime.utcnow() + dt.timedelta(days=1)
         start = finish - dt.timedelta(days=days)
         body = {
@@ -586,15 +589,9 @@ class DigisellerClient:
         def fetch_page(page_number: int) -> dict[str, Any]:
             return self.post("/seller-sells/v2", json_body={**body, "page": page_number})
 
-        data = fetch_page(1)
+        data = fetch_page(page)
         pages = int(data.get("pages") or 1)
-        page_rows: dict[int, list[dict[str, Any]]] = {1: list(data.get("rows") or [])}
-        if pages > 1:
-            try:
-                page_rows[pages] = list(fetch_page(pages).get("rows") or [])
-            except Exception:
-                pass
-        all_rows = [item for rows_for_page in page_rows.values() for item in rows_for_page]
+        all_rows = list(data.get("rows") or [])
         unique_rows: list[dict[str, Any]] = []
         seen: set[str] = set()
         for item in all_rows:
@@ -607,7 +604,7 @@ class DigisellerClient:
             unique_rows.append(item)
         unique_rows.sort(key=lambda item: sort_time(item.get("date_pay") or item.get("date")), reverse=True)
         total_rows = int(data.get("total_rows") or len(unique_rows))
-        return {**data, "rows": unique_rows[:rows], "total_rows": total_rows, "pages": 1}
+        return {**data, "rows": unique_rows[:rows], "total_rows": total_rows, "pages": pages}
 
     def chats(self, page_size: int = 50, only_unread: bool = False) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"pageSize": page_size, "page": 1}
@@ -906,6 +903,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .messages-layout{height:calc(100vh - 116px)}
 .conversation-list-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 14px 12px;box-shadow:0 1px 0 #eef2f7}
 .conversation-list-title{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:10px}.conversation-list-title h2{margin:0;font-size:28px;line-height:1}.conversation-counts{font-size:12px;color:#64748b;text-align:right;white-space:nowrap}.conversation-search{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;padding:9px 10px;margin-bottom:10px;background:#f8fafc}.conversation-filters{display:flex;gap:8px;flex-wrap:wrap}.conversation-filter{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;cursor:pointer}.conversation-filter.active{background:#1f7acb;color:#fff;border-color:#1f7acb}.conversation-item[hidden]{display:none}.conversation-empty-filter{display:none;padding:28px 16px;color:#64748b;text-align:center}.conversation-empty-filter.visible{display:block}.conversation-section{padding:14px 14px 7px;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:#f8fafc;border-bottom:1px solid #eef2f7}.conversation-section[hidden]{display:none}.chat-bubble{word-break:break-word}.conversation-body{scroll-behavior:smooth}.reply-editor{border-top:1px solid #e5e7eb;background:#fbfdff}.reply-editor textarea{min-height:84px}
+
+.sales-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sales-toolbar input{max-width:90px}.sales-toolbar .sales-search{flex:1 1 260px;max-width:420px}.sales-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}.sales-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px}.sales-stat b{display:block;font-size:20px;margin-bottom:4px}.sales-table .order-link{font-weight:800}.sales-table .chat-action{display:inline-block;background:#1f7acb;color:#fff;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800}.sales-table tbody tr[hidden]{display:none}.sales-product{max-width:360px}.sales-empty-filter{display:none;padding:24px;text-align:center;color:#64748b}.sales-empty-filter.visible{display:block}
 </style>
 """
 
@@ -2989,27 +2988,104 @@ class Handler(BaseHTTPRequestHandler):
         self.redirect("/phrases")
 
     def sales(self) -> None:
-        days = int(self.q("days", "3"))
-        rows = min(max(int(self.q("rows", "50")), 1), 50)
-        page = int(self.q("page", "1"))
-        data = client.sales(days, rows, page)
-        mark_sales_orders_seen(data.get("rows", []))
+        def parse_int(name: str, default: int) -> int:
+            try:
+                return int(self.q(name, str(default)) or default)
+            except ValueError:
+                return default
+
+        days = max(parse_int("days", 3), 1)
+        rows_limit = min(max(parse_int("rows", 50), 1), 50)
+        page = max(parse_int("page", 1), 1)
+        try:
+            data = client.sales(days, rows_limit, page)
+        except Exception as exc:
+            form = f"""
+            <form class='card sales-toolbar'>
+              <h2>Orders</h2>
+              <label>Days <input name='days' value='{days}' size='4'></label>
+              <label>Rows <input name='rows' value='{rows_limit}' size='4'></label>
+              <button>Refresh</button>
+            </form>
+            """
+            return self.send_html("Sales", form + f"<div class='card bad'>Sales API error:<pre class='code'>{h(exc)}</pre></div>", 500)
+
+        order_rows = [row for row in data.get("rows", []) if isinstance(row, dict)][:rows_limit]
+        mark_sales_orders_seen(order_rows)
+        totals: dict[str, float] = {}
+        for row in order_rows:
+            currency = str(row.get("amount_currency") or "").strip() or "?"
+            try:
+                amount = float(str(row.get("amount_in") or 0).replace(",", "."))
+            except ValueError:
+                amount = 0.0
+            totals[currency] = totals.get(currency, 0.0) + amount
+        totals_text = ", ".join(f"{value:.2f} {currency}" for currency, value in sorted(totals.items())) or "-"
         trs = []
-        for r in data.get("rows", []):
-            buyer_email = next((r.get(key) for key in ("email", "buyer_email", "user_email", "client_email") if r.get(key)), "")
-            chat_href = order_chat_href(r.get("invoice_id"), buyer_email, r.get("product_name"))
-            trs.append([
-                h(r.get("date_pay")),
-                f"<a href='{h(chat_href)}'>{h(r.get('invoice_id'))}</a>",
-                h(r.get("product_id")),
-                h(short(r.get("product_name"), 90)),
-                h(f"{r.get('amount_in')} {r.get('amount_currency')}"),
-                h(r.get("partner_id")),
-                h(r.get("referer")),
-            ])
-        form = f"""<form><input name='days' value='{days}' size='4'> days <input name='rows' value='{rows}' size='4'> rows <button>Refresh</button></form>"""
-        body = f"<div class='card'><h2>Sales</h2>{form}<p>total_rows={h(data.get('total_rows'))} pages={h(data.get('pages'))}</p></div>" + table(["Paid", "Order", "Product ID", "Product", "Amount", "Partner", "Referer"], trs)
-        self.send_html("Sales", body)
+        for row in order_rows:
+            invoice_id = row.get("invoice_id")
+            product_id = row.get("product_id")
+            product_name = row.get("product_name")
+            buyer_email = next((row.get(key) for key in ("email", "buyer_email", "user_email", "client_email") if row.get(key)), "")
+            chat_href = order_chat_href(invoice_id, buyer_email, product_name)
+            amount = f"{row.get('amount_in') or ''} {row.get('amount_currency') or ''}".strip()
+            search_text = " ".join(str(value or "") for value in [invoice_id, product_id, product_name, buyer_email, amount, row.get("partner_id"), row.get("referer")]).lower()
+            trs.append(
+                "<tr data-search='" + h(search_text) + "'>"
+                + f"<td>{h(row.get('date_pay') or row.get('date'))}</td>"
+                + f"<td><a class='order-link' href='{h(chat_href)}'>{h(invoice_id)}</a></td>"
+                + f"<td>{h(buyer_email or '-')}</td>"
+                + f"<td>{h(product_id)}</td>"
+                + f"<td class='sales-product'>{h(short(product_name, 110))}</td>"
+                + f"<td>{h(amount)}</td>"
+                + f"<td>{h(row.get('partner_id') or '-')}</td>"
+                + f"<td>{h(short(row.get('referer'), 80) or '-')}</td>"
+                + f"<td><a class='chat-action' href='{h(chat_href)}'>Chat</a></td>"
+                + "</tr>"
+            )
+        head = "".join(f"<th>{h(value)}</th>" for value in ["Paid", "Order", "Buyer", "Product ID", "Product", "Amount", "Partner", "Referer", "Action"])
+        table_html = f"<table class='sales-table'><thead><tr>{head}</tr></thead><tbody>{''.join(trs)}</tbody></table><div id='sales-empty-filter' class='sales-empty-filter'>No matching orders</div>"
+        form = f"""
+        <div class='card'>
+          <h2>Orders</h2>
+          <form class='sales-toolbar'>
+            <label>Days <input name='days' value='{days}' size='4'></label>
+            <label>Rows <input name='rows' value='{rows_limit}' size='4'></label>
+            <label>Page <input name='page' value='{page}' size='4'></label>
+            <input id='sales-search' class='sales-search' placeholder='Search order, buyer, product, referer...' autocomplete='off'>
+            <button>Refresh</button>
+          </form>
+          <p class='muted'>Default is 3 days; rows are capped at 50 per request.</p>
+        </div>
+        <div class='sales-summary'>
+          <div class='sales-stat'><b>{h(len(order_rows))}</b><span class='muted'>orders shown</span></div>
+          <div class='sales-stat'><b>{h(data.get('total_rows') or len(order_rows))}</b><span class='muted'>total rows from API</span></div>
+          <div class='sales-stat'><b>{h(totals_text)}</b><span class='muted'>shown amount</span></div>
+          <div class='sales-stat'><b>{h(page)} / {h(data.get('pages') or 1)}</b><span class='muted'>page</span></div>
+        </div>
+        """
+        script = """
+        <script>
+        (() => {
+          const search = document.getElementById('sales-search');
+          const rows = [...document.querySelectorAll('.sales-table tbody tr')];
+          const empty = document.getElementById('sales-empty-filter');
+          if (!search) return;
+          function applyFilter() {
+            const query = search.value.trim().toLowerCase();
+            let visible = 0;
+            rows.forEach((row) => {
+              const show = !query || (row.dataset.search || row.textContent.toLowerCase()).includes(query);
+              row.hidden = !show;
+              if (show) visible += 1;
+            });
+            if (empty) empty.classList.toggle('visible', visible === 0);
+          }
+          search.addEventListener('input', applyFilter);
+        })();
+        </script>
+        """
+        self.send_html("Sales", form + table_html + script)
 
     def seller_read_receipt_html(self, msg: dict[str, Any]) -> str:
         if msg.get("seller") != 1:
