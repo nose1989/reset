@@ -49,7 +49,7 @@ COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.11-chat-refresh"
+APP_VERSION = "v8.12-order-chat-start"
 
 
 @dataclass
@@ -1410,6 +1410,25 @@ def clear_unread_cache() -> None:
     UNREAD_CACHE["data"] = None
 
 
+def safe_mark_chat_read(order_id: int) -> None:
+    try:
+        client.mark_chat_read(order_id)
+    except Exception:
+        return
+    clear_unread_cache()
+
+
+def order_chat_href(order_id: Any, email: Any = "", product: Any = "") -> str:
+    params = {"order_id": str(order_id or "").strip()}
+    email_text = clean_text(email)
+    product_text = clean_text(product)
+    if email_text:
+        params["email"] = email_text
+    if product_text:
+        params["product"] = product_text
+    return "/chats?" + urllib.parse.urlencode(params)
+
+
 def load_sales_order_state() -> dict[str, Any]:
     if not SALES_ORDER_SEEN_FILE.exists():
         return {"initialized": False, "seen_invoice_ids": []}
@@ -2751,9 +2770,11 @@ class Handler(BaseHTTPRequestHandler):
         mark_sales_orders_seen(data.get("rows", []))
         trs = []
         for r in data.get("rows", []):
+            buyer_email = next((r.get(key) for key in ("email", "buyer_email", "user_email", "client_email") if r.get(key)), "")
+            chat_href = order_chat_href(r.get("invoice_id"), buyer_email, r.get("product_name"))
             trs.append([
                 h(r.get("date_pay")),
-                f"<a href='/chats?order_id={h(r.get('invoice_id'))}'>{h(r.get('invoice_id'))}</a>",
+                f"<a href='{h(chat_href)}'>{h(r.get('invoice_id'))}</a>",
                 h(r.get("product_id")),
                 h(short(r.get("product_name"), 90)),
                 h(f"{r.get('amount_in')} {r.get('amount_currency')}"),
@@ -2812,6 +2833,8 @@ class Handler(BaseHTTPRequestHandler):
                     f"<div class='chat-meta'><span class='chat-author'>{h(author)} <span class='muted'>{msg_no}{msg_id}</span></span><span>{read_receipt}{h(msg.get('date_written'))}</span></div>"
                     f"<div class='chat-bubble'>{text_html}</div></div>"
                 )
+            if not rows:
+                rows.append("<div class='empty-state'>No order messages yet. Send a reply below to start the order chat.</div>")
             notice = ""
             if self.q("sent") == "1":
                 notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
@@ -2871,10 +2894,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": False, "error": "order_id is required"}, 400)
         email = self.q("email", f"order-{order_id}")
         product = self.q("product", "Direct order lookup")
-        client.mark_chat_read(order_id)
-        clear_unread_cache()
         messages = client.all_chat_messages(order_id)
-        selected_chat = {"id_i": order_id, "email": email, "product": product} if messages else None
+        if messages:
+            safe_mark_chat_read(order_id)
+        selected_chat = {"id_i": order_id, "email": email, "product": product}
         self.send_json({"ok": True, "order_id": order_id, "count": len(messages), "read": True, "html": self.chat_panel_html(order_id, selected_chat, messages)})
 
     def api_translate_batch(self) -> None:
@@ -2929,10 +2952,6 @@ class Handler(BaseHTTPRequestHandler):
             selected_kind = "guest"
             selected_corr_id = int(guest_chats[0].get("CorrID") or 0)
             selected_corr_type = str(guest_chats[0].get("CorrType") or "visitor")
-        if selected_kind == "order" and selected_order:
-            client.mark_chat_read(selected_order)
-            clear_unread_cache()
-
         items = []
         selected_chat: dict[str, Any] | None = None
         selected_guest_chat: dict[str, Any] | None = None
@@ -2950,8 +2969,9 @@ class Handler(BaseHTTPRequestHandler):
             when = str(chat.get("last_date") or "")
             short_when = when[11:16] if len(when) >= 16 else when
             badge = f"<div class='badge'>{unread}</div>" if unread else ""
+            href = order_chat_href(order_id, email, chat.get("product"))
             items.append(
-                f"<a class='conversation-item{active}' data-kind='order' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(chat.get('product'))}' href='/chats?order_id={order_id}'>"
+                f"<a class='conversation-item{active}' data-kind='order' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(chat.get('product'))}' href='{h(href)}'>"
                 f"{avatar}"
                 f"<div><div class='conversation-name'>{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
@@ -2999,8 +3019,10 @@ class Handler(BaseHTTPRequestHandler):
             selected_messages = client.guest_messages(selected_corr_type, selected_corr_id)[-10:]
         elif selected_order:
             selected_messages = client.all_chat_messages(selected_order)
-            if selected_chat is None and selected_messages:
-                selected_chat = {"id_i": selected_order, "email": f"order-{selected_order}", "product": "Direct order lookup"}
+            if selected_messages:
+                safe_mark_chat_read(selected_order)
+            if selected_chat is None:
+                selected_chat = {"id_i": selected_order, "email": self.q("email", f"order-{selected_order}"), "product": self.q("product", "Direct order lookup")}
 
         panel = self.guest_chat_panel_html(selected_guest_chat, selected_messages) if selected_kind == "guest" and selected_guest_chat else self.chat_panel_html(selected_order, selected_chat, selected_messages)
         ajax = """
