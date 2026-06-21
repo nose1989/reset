@@ -1,20 +1,20 @@
 # Digiseller Local Admin
 
-本地 Digiseller Web 管理后台雏形。API Key 只放在本机 `.env`，不要写进代码，不要提交 Git。
+Local web admin for Digiseller/GGSEL operations. API keys are read from `.env`; do not commit real keys.
 
-## 安装
+## Install
 
 ```bash
 python3 -m pip install --user httpx certifi
 ```
 
-## 配置 API Key
+## Configure
 
-在 `digiseller_admin.py` 同目录创建 `.env`：
+Create `.env` next to `digiseller_admin.py`:
 
 ```bash
 DIGISELLER_SELLER_ID=1437041
-DIGISELLER_API_KEY=这里填 WebMoney Keeper 里的完整 API Key
+DIGISELLER_API_KEY=PUT_YOUR_WEBMONEY_API_KEY_HERE
 DIGISELLER_ADMIN_HOST=127.0.0.1
 DIGISELLER_ADMIN_PORT=8765
 DIGISELLER_KEEP_ONLINE=1
@@ -25,73 +25,68 @@ DIGISELLER_PUBLIC_SELLER_URL=https://plati.market/seller/hello1989/1437041/?lang
 DIGISELLER_CHAT_KEEPALIVE_URL=https://chat.digiseller.com/asp/messenger.asp?mode=s
 DIGISELLER_CHAT_OPEN_BROWSER=1
 DIGISELLER_COMMON_PHRASE_PUBLIC_BASE_URL=
+GGSEL_API_KEY=PUT_YOUR_GGSEL_API_KEY_HERE
+GGSEL_API_BASE=https://seller.ggsel.com/api_sellers/api
+GGSEL_SELLER_ID=132809753
+GGSEL_PARTNER_ID=
 ```
 
-建议：如果 API Key 曾经发到聊天或公开地方，先在 Digiseller 后台重新生成新 key，再写入 `.env`。
+If any API key was pasted into chat or exposed publicly, rotate it in the provider dashboard before saving it in `.env`.
 
-## 启动
+## Run
 
 ```bash
 python3 digiseller_admin.py
 ```
 
-浏览器打开：
+Open:
 
 ```text
 http://127.0.0.1:8765
 ```
 
-## 当前功能
+## Main pages
 
-- Dashboard：API 登录测试
-- Sales：最近订单，显示订单号、商品、金额、partner_id、referer
-- Chats：买家订单聊天列表
-- Unread：未读买家聊天和管理员消息
-- Chat：查看订单聊天详情
-- Download buyer images：下载指定订单买家发来的图片
-- Product：查看商品价格、库存、可售状态
+- Dashboard: API login and keepalive status.
+- Sales: recent orders, product, amount, partner ID, referer.
+- Messages / Chats: buyer conversations and reply editor.
+- Unread / Admin: unread buyer/admin messages.
+- Product / Stock: product details and stock upload tools.
+- GGSEL: GGSEL catalog/seller products, searchable by product ID or name.
 
-## 实时提醒
+## GGSEL integration
 
-Web 提醒：启动后台并打开 `http://127.0.0.1:8765` 后，点击右下角 `Enable alerts`。
+`/ggsel` reads `GGSEL_API_KEY` from `.env` and never stores it in code. Optional settings:
 
-Online keepalive: every 15s calls `setonlinesetting` + chat heartbeat APIs, then verifies buyer-visible status with `getonlinestatus` and the public seller page; disable with `DIGISELLER_KEEP_ONLINE=0`.
-If the API token cannot set chat online status, the app opens the seller chat keepalive URL as a top-level browser window on startup. This avoids Chrome third-party iframe cookie limits; set `DIGISELLER_CHAT_OPEN_BROWSER=0` to disable, or use the top-bar button to reopen the chat window if it was closed.
+- `GGSEL_SELLER_ID`: filter the catalog to one seller when needed.
+- `GGSEL_PARTNER_ID`: generate product links with `ai` when needed.
+- `GGSEL_API_BASE`: defaults to `https://seller.ggsel.com/api_sellers/api`.
 
-开启后页面会每 15 秒检查一次未读消息；有新的未读时会：
+The page also exposes `/api/ggsel-products?page=1&count=50&q=` JSON for wiring GGSEL data into other admin modules.
 
-- 播放提示音
-- 中文语音播报
-- 浏览器通知弹窗
-- 浏览器标题显示未读数
+## Alerts and keepalive
 
-注意：浏览器出于安全限制，必须先手动点一次 `Enable alerts`，声音和语音才会被允许播放。
+After opening the web UI, click `Enable alerts` so browser sound/voice notifications are allowed.
 
-后台常驻提醒：即使不打开网页，也可以运行：
+Online keepalive calls `setonlinesetting` plus chat heartbeat APIs every 15 seconds, then verifies buyer-visible status with `getonlinestatus` and the public seller page. Disable with `DIGISELLER_KEEP_ONLINE=0`.
+
+If the API token cannot set chat online status, the app opens the seller chat keepalive URL as a top-level browser window on startup. Set `DIGISELLER_CHAT_OPEN_BROWSER=0` to disable, or use the top-bar button to reopen the chat window.
+
+For terminal-only unread monitoring:
 
 ```bash
 python3 digiseller_admin.py watch --interval 15
 ```
 
-在 macOS 上会用系统声音和 `say` 语音播报。停止用 `Ctrl+C`。
+## Image and phrase previews
 
-## 图片预览
+- Order chat attachments show image previews when possible.
+- Admin messages render the latest 20 messages by default; use `/admin-messages?limit=50` for more.
+- Common phrase file previews are served from `/phrase-files/`. If files are hosted publicly, set `DIGISELLER_COMMON_PHRASE_PUBLIC_BASE_URL=https://your-domain/path`.
 
-- 订单聊天附件：显示文件名、打开链接和图片缩略图。
-- Admin messages：默认只显示最近 20 条，避免一次渲染太多图片导致页面卡顿。可用 `/admin-messages?limit=50` 查看更多。
-- 常用语图片默认从本机 `/phrase-files/` 读；如要放公网静态目录，设置 `DIGISELLER_COMMON_PHRASE_PUBLIC_BASE_URL=https://your-domain/path`，文件名保持 `common_phrase_files` 中的 stored 名。
+## Reply editor
 
-## v6 reply editor
-
-- `/chats` now includes a reply editor under the selected buyer conversation.
-- The editor sends text replies through Digiseller `/debates/v2/`.
-- Multiple images, attachments, and document/reference files are preuploaded through `/debates/v2/upload-preview` and sent with the reply.
-- Use `.env` for `DIGISELLER_API_KEY`; do not publish packages containing `.env`.
-
-## v7 auto translation
-
-- Buyer messages on `/chats` are automatically translated to Chinese when possible.
-- Each translated buyer message has a button to switch between Chinese and the original text.
-- The reply editor detects the buyer's recent language and translates Chinese replies to that language before sending.
-- Account strings, emails, URLs, and long access codes are protected during translation so credentials stay unchanged.
-# reset
+- `/chats` includes a reply editor under the selected buyer conversation.
+- Text replies are sent through Digiseller `/debates/v2/`.
+- Multiple images, attachments, and reference files are preuploaded through `/debates/v2/upload-preview` and sent with the reply.
+- Buyer messages are translated to Chinese when possible; Chinese replies are translated to the buyer's recent language while protecting account strings, emails, URLs, and access codes.

@@ -49,7 +49,7 @@ COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.12-order-chat-start"
+APP_VERSION = "v8.13-ggsel-admin"
 
 
 @dataclass
@@ -735,7 +735,106 @@ class DigisellerClient:
         return saved
 
 
+class GgselClient:
+    def __init__(self) -> None:
+        load_env()
+        self.seller_id = os.getenv("GGSEL_SELLER_ID", "").strip()
+        self.api_key = os.getenv("GGSEL_API_KEY", "").strip()
+        self.api_base = os.getenv("GGSEL_API_BASE", "https://seller.ggsel.com/api_sellers/api").strip().rstrip("/")
+        self.http = httpx.Client(timeout=35, headers={"Accept": "application/json", "User-Agent": "Digiseller Local Admin"})
+        self._token: str | None = None
+        self.valid_thru: str | None = None
+
+    def configured(self) -> bool:
+        return bool(self.seller_id and self.api_key)
+
+    def login(self) -> dict[str, Any]:
+        if not self.api_key:
+            raise RuntimeError("GGSEL_API_KEY is missing. Put it in .env")
+        if not self.seller_id:
+            raise RuntimeError("GGSEL_SELLER_ID is missing. Put it in .env")
+        ts = int(time.time())
+        sign = hashlib.sha256((self.api_key + str(ts)).encode()).hexdigest()
+        payload = {"seller_id": int(self.seller_id), "timestamp": ts, "sign": sign}
+        data = self.post("/apilogin", json_body=payload, auth=False)
+        if not data.get("token"):
+            raise RuntimeError(f"GGSEL login failed: {json.dumps(data, ensure_ascii=False)}")
+        self._token = data["token"]
+        self.valid_thru = data.get("valid_thru")
+        return data
+
+    @property
+    def token(self) -> str:
+        if not self._token:
+            self.login()
+        assert self._token
+        return self._token
+
+    def get(self, path: str, params: dict[str, Any] | None = None, auth: bool = True) -> Any:
+        query = dict(params or {})
+        if auth:
+            query["token"] = self.token
+        r = self.http.get(self.api_base + path, params=query)
+        if auth and r.status_code == 401:
+            self._token = None
+            query["token"] = self.token
+            r = self.http.get(self.api_base + path, params=query)
+        if r.status_code >= 400:
+            raise RuntimeError(f"GGSEL API HTTP {r.status_code}: {short(r.text, 400)}")
+        content_type = r.headers.get("content-type", "")
+        if "json" not in content_type.lower():
+            raise RuntimeError(f"GGSEL API returned non-JSON from {path}: {short(r.text, 400)}")
+        data = r.json()
+        if isinstance(data, dict):
+            retval = data.get("retval")
+            if retval not in (None, 0, "0"):
+                raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL API retval={retval}")
+        return data
+
+    def post(
+        self,
+        path: str,
+        json_body: dict[str, Any] | None = None,
+        auth: bool = True,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        query = dict(params or {})
+        if auth:
+            query["token"] = self.token
+        r = self.http.post(self.api_base + path, params=query, json=json_body or {})
+        if auth and r.status_code == 401:
+            self._token = None
+            query["token"] = self.token
+            r = self.http.post(self.api_base + path, params=query, json=json_body or {})
+        if r.status_code >= 400:
+            raise RuntimeError(f"GGSEL API HTTP {r.status_code}: {short(r.text, 400)}")
+        if not r.content:
+            return {}
+        content_type = r.headers.get("content-type", "")
+        if "json" not in content_type.lower():
+            raise RuntimeError(f"GGSEL API returned non-JSON from {path}: {short(r.text, 400)}")
+        return r.json()
+
+    def sales(self, top: int = 20) -> dict[str, Any]:
+        data = self.get("/seller-last-sales", {"top": min(max(top, 1), 100)})
+        return data if isinstance(data, dict) else {"sales": data}
+
+    def chats(self, page_size: int = 20, page: int = 1) -> dict[str, Any]:
+        data = self.get("/debates/v2/chats", {"pagesize": min(max(page_size, 1), 100), "page": max(page, 1)})
+        return data if isinstance(data, dict) else {"items": data}
+
+    def reviews(self, count: int = 20, page: int = 1, review_type: str = "all") -> dict[str, Any]:
+        data = self.get("/reviews", {"type": review_type, "page": max(page, 1), "count": min(max(count, 1), 100)})
+        return data if isinstance(data, dict) else {"reviews": data}
+
+    def product_url(self, product_id: Any) -> str:
+        if not product_id:
+            return ""
+        return f"https://ggsel.net/en/catalog/product/{urllib.parse.quote(str(product_id))}"
+
+
 client = DigisellerClient()
+ggsel_client = GgselClient()
 UNREAD_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 SALES_ORDER_BADGE_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 PURCHASE_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
@@ -803,6 +902,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
 .phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:flex;align-items:center;justify-content:center;gap:10px;min-height:68px;margin-top:10px;border:1px dashed #93c5fd;border-radius:10px;background:#eff6ff;color:#0f3b66;font-weight:700;padding:10px;cursor:pointer}.phrase-upload input{background:white}.phrase-image-preview,.common-phrase-buttons .common-phrase-preview{border:0;background:transparent;padding:0;cursor:pointer}.phrase-image-preview img,.common-phrase-preview img{display:block;width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1}.common-phrase-card{display:inline-flex;align-items:center;gap:8px;max-width:360px;border:1px solid #b9d4ff;border-radius:10px;background:#eaf3ff;padding:6px;box-shadow:0 1px 1px #0001}.common-phrase-previews{display:flex;gap:6px;align-items:center;flex-shrink:0}.common-phrase-card .common-phrase-send{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;border:0;background:transparent;color:#0f3b66;padding:4px 6px;text-align:left}.common-phrase-text{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}.common-phrase-files-note{font-size:11px;color:#64748b}.common-phrase-file-chip{display:inline-flex;align-items:center;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;color:#475569;padding:4px 6px;font-size:12px}.common-phrase-preview.broken{display:none}.phrase-pending{margin-top:8px}
 .chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.chat-keepalive-btn.warn{background:#fef3c7;color:#92400e;border-color:#fde68a}
+
+.messages-layout{height:calc(100vh - 116px)}
+.conversation-list-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 14px 12px;box-shadow:0 1px 0 #eef2f7}
+.conversation-list-title{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:10px}.conversation-list-title h2{margin:0;font-size:28px;line-height:1}.conversation-counts{font-size:12px;color:#64748b;text-align:right;white-space:nowrap}.conversation-search{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;padding:9px 10px;margin-bottom:10px;background:#f8fafc}.conversation-filters{display:flex;gap:8px;flex-wrap:wrap}.conversation-filter{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;cursor:pointer}.conversation-filter.active{background:#1f7acb;color:#fff;border-color:#1f7acb}.conversation-item[hidden]{display:none}.conversation-empty-filter{display:none;padding:28px 16px;color:#64748b;text-align:center}.conversation-empty-filter.visible{display:block}.conversation-section{padding:14px 14px 7px;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:#f8fafc;border-bottom:1px solid #eef2f7}.conversation-section[hidden]{display:none}.chat-bubble{word-break:break-word}.conversation-body{scroll-behavior:smooth}.reply-editor{border-top:1px solid #e5e7eb;background:#fbfdff}.reply-editor textarea{min-height:84px}
 </style>
 """
 
@@ -855,6 +958,7 @@ def layout(title: str, body: str) -> bytes:
         <a href="/phrases">&#24120;&#29992;&#35821;</a>
         <a href="/product">Product</a>
         <a href="/stock">Stock</a>
+        <a href="/ggsel">GGSEL</a>
       </div>
       <form id="unique-code-form" class="unique-lookup" action="/unique-code" method="get">
         <input id="unique-code-input" name="code" maxlength="16" autocomplete="off" spellcheck="false" placeholder="Enter 16-digit verification code">
@@ -2381,6 +2485,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.product()
             if path == "/stock":
                 return self.stock()
+            if path == "/ggsel":
+                return self.ggsel()
             if path == "/unique-code":
                 return self.unique_code_page()
             if path == "/download-images":
@@ -2393,6 +2499,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_sales_order_count()
             if path == "/api/online-keepalive":
                 return self.api_online_keepalive()
+            if path == "/api/ggsel-products":
+                return self.api_ggsel_products()
             if path == "/api/version":
                 return self.send_json({"version": APP_VERSION, "file": str(Path(__file__).resolve())})
             if path == "/api/chat-panel":
@@ -2498,9 +2606,127 @@ class Handler(BaseHTTPRequestHandler):
         )
         body = f"""
         <div class='card'><h2>Digiseller Local Admin</h2><p>Config: {status}</p><p class='muted'>API Key is read from <code>.env</code>; never paste it into code or chat.</p></div>
-        <div class='grid'>{login_info}{online_info}<div class='stat'><b>Quick links</b><br><a href='/sales'>Recent sales</a><br><a href='/unread'>Unread messages</a><br><a href='/chats'>Buyer chats</a></div></div>
+        <div class='grid'>{login_info}{online_info}<div class='stat'><b>Quick links</b><br><a href='/sales'>Recent sales</a><br><a href='/unread'>Unread messages</a><br><a href='/chats'>Buyer chats</a><br><a href='/ggsel'>GGSEL catalog</a></div></div>
         """
         self.send_html("Dashboard", body)
+
+    def ggsel_product_rows(self, data: Any) -> list[dict[str, Any]]:
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if not isinstance(data, dict):
+            return []
+        for key in ("rows", "products", "goods", "data"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+            if isinstance(value, dict):
+                rows = self.ggsel_product_rows(value)
+                if rows:
+                    return rows
+        return []
+
+    def ggsel_product_id(self, row: dict[str, Any]) -> Any:
+        for key in ("id_goods", "ggsel_id", "id", "product_id"):
+            if row.get(key):
+                return row.get(key)
+        return ""
+
+    def ggsel_product_name(self, row: dict[str, Any]) -> str:
+        for key in ("name_goods", "name", "title", "product_name"):
+            if row.get(key):
+                return str(row.get(key))
+        return ""
+
+    def ggsel(self) -> None:
+        configured = ggsel_client.configured()
+        status = "<span class='ok'>configured</span>" if configured else "<span class='bad'>missing GGSEL_API_KEY or GGSEL_SELLER_ID</span>"
+        count = min(max(int(self.q("count", "20") or "20"), 1), 100)
+        sales_data: dict[str, Any] = {}
+        chats_data: dict[str, Any] = {}
+        reviews_data: dict[str, Any] = {}
+        api_error = ""
+        login_info = ""
+        if configured:
+            try:
+                login_data = ggsel_client.login()
+                login_info = f"<div class='stat'>API login: <span class='ok'>OK</span><br>seller_id: {h(login_data.get('seller_id'))}<br>valid_thru: {h(login_data.get('valid_thru'))}</div>"
+                sales_data = ggsel_client.sales(count)
+                chats_data = ggsel_client.chats(count)
+                reviews_data = ggsel_client.reviews(count)
+            except Exception as exc:
+                api_error = str(exc)
+        sales_rows = []
+        for sale in sales_data.get("sales") or []:
+            product = sale.get("product") if isinstance(sale.get("product"), dict) else {}
+            product_id = product.get("id") or sale.get("product_id") or sale.get("id_goods")
+            product_url = ggsel_client.product_url(product_id)
+            sales_rows.append([
+                h(sale.get("date")),
+                h(sale.get("invoice_id")),
+                f"<a href='{h(product_url)}' target='_blank'>{h(product_id)}</a>" if product_url else h(product_id),
+                h(short(product.get("name") or sale.get("name") or "", 100)),
+                h(product.get("price_usd") or sale.get("price_usd") or ""),
+            ])
+        chat_rows = []
+        for chat in chats_data.get("items") or chats_data.get("chats") or []:
+            product_id = chat.get("product") or chat.get("id_goods")
+            product_url = ggsel_client.product_url(product_id)
+            chat_rows.append([
+                h(chat.get("last_message") or chat.get("date")),
+                h(chat.get("id_i") or chat.get("invoice_id")),
+                h(chat.get("email") or ""),
+                f"<a href='{h(product_url)}' target='_blank'>{h(product_id)}</a>" if product_url else h(product_id),
+                h(chat.get("cnt_new") or ""),
+            ])
+        review_rows = []
+        for review in reviews_data.get("reviews") or []:
+            product_id = review.get("good") or review.get("product_id")
+            product_url = ggsel_client.product_url(product_id)
+            review_rows.append([
+                h(review.get("date")),
+                h(review.get("type")),
+                h(review.get("invoice_id")),
+                f"<a href='{h(product_url)}' target='_blank'>{h(product_id)}</a>" if product_url else h(product_id),
+                h(short(review.get("name") or "", 90)),
+                h(short(review.get("info") or review.get("comment") or "", 120)),
+            ])
+        form = f"""
+        <form class='card'>
+          <h2>GGSEL</h2>
+          <p>Config: {status}</p>
+          <p class='muted'>Reads <code>GGSEL_API_KEY</code> and <code>GGSEL_SELLER_ID</code> from <code>.env</code>. API keys are never stored in code.</p>
+          <label>Rows <input name='count' value='{count}' size='4'></label>
+          <button>Refresh</button>
+          <p class='muted'>API: <code>{h(ggsel_client.api_base)}</code> · seller_id: <code>{h(ggsel_client.seller_id or '-')}</code></p>
+        </form>
+        """
+        error_html = f"<div class='card bad'>GGSEL API error:<pre class='code'>{h(api_error)}</pre></div>" if api_error else ""
+        body = (
+            form
+            + error_html
+            + f"<div class='grid'>{login_info}<div class='stat'><b>Recent sales</b><br>{h(len(sales_rows))} rows</div><div class='stat'><b>Recent chats</b><br>{h(len(chat_rows))} rows</div><div class='stat'><b>Reviews</b><br>{h(len(review_rows))} rows</div></div>"
+            + "<div class='card'><h3>Recent GGSEL sales</h3></div>"
+            + table(["Date", "Invoice", "Product ID", "Product", "USD"], sales_rows)
+            + "<div class='card'><h3>Recent GGSEL chats</h3></div>"
+            + table(["Last message", "Invoice", "Email", "Product", "Unread"], chat_rows)
+            + "<div class='card'><h3>Recent GGSEL reviews</h3></div>"
+            + table(["Date", "Type", "Invoice", "Product ID", "Product", "Text"], review_rows)
+        )
+        self.send_html("GGSEL", body)
+
+    def api_ggsel_products(self) -> None:
+        count = min(max(int(self.q("count", "20") or "20"), 1), 100)
+        if not ggsel_client.configured():
+            return self.send_json({"ok": False, "error": "GGSEL_API_KEY or GGSEL_SELLER_ID is missing"}, 400)
+        try:
+            self.send_json({
+                "ok": True,
+                "sales": ggsel_client.sales(count),
+                "chats": ggsel_client.chats(count),
+                "reviews": ggsel_client.reviews(count),
+            })
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, 502)
 
     def phrases_page(self) -> None:
         phrases = load_common_phrases()
@@ -2934,7 +3160,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "created": created, "id": phrase_id})
 
     def chats(self) -> None:
-        chats = client.chats(page_size=100)
+        chat_error = ""
+        try:
+            chats = client.chats(page_size=100)
+        except Exception as exc:
+            chats = []
+            chat_error = str(exc)
         guest_error = ""
         try:
             guest_chats = client.guest_chats(limit=10)
@@ -2953,6 +3184,8 @@ class Handler(BaseHTTPRequestHandler):
             selected_corr_id = int(guest_chats[0].get("CorrID") or 0)
             selected_corr_type = str(guest_chats[0].get("CorrType") or "visitor")
         items = []
+        order_unread_total = 0
+        guest_unread_total = 0
         selected_chat: dict[str, Any] | None = None
         selected_guest_chat: dict[str, Any] | None = None
         for chat in chats:
@@ -2962,7 +3195,9 @@ class Handler(BaseHTTPRequestHandler):
             email = str(chat.get("email") or "unknown")
             name = email.split("@", 1)[0] or email
             initials = (name[:1] or "?").upper()
-            unread = 0 if selected_kind == "order" and order_id == selected_order else int(chat.get("cnt_new") or 0)
+            raw_unread = int(chat.get("cnt_new") or 0)
+            order_unread_total += raw_unread
+            unread = 0 if selected_kind == "order" and order_id == selected_order else raw_unread
             active = " active" if selected_kind == "order" and order_id == selected_order else ""
             preview = short(chat.get("product"), 80)
             avatar = product_avatar_html(chat.get("product"), initials)
@@ -2970,15 +3205,18 @@ class Handler(BaseHTTPRequestHandler):
             short_when = when[11:16] if len(when) >= 16 else when
             badge = f"<div class='badge'>{unread}</div>" if unread else ""
             href = order_chat_href(order_id, email, chat.get("product"))
+            search_text = " ".join([str(order_id), email, str(chat.get("product") or ""), name]).lower()
             items.append(
-                f"<a class='conversation-item{active}' data-kind='order' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(chat.get('product'))}' href='{h(href)}'>"
+                f"<a class='conversation-item{active}' data-kind='order' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(chat.get('product'))}' href='{h(href)}'>"
                 f"{avatar}"
                 f"<div><div class='conversation-name'>{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
             )
+        if chat_error:
+            items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>Digiseller API error</div><div class='preview'>{h(short(chat_error, 100))}</div></div><div></div></div>")
         if guest_chats or guest_error:
-            items.append("<div class='conversation-title' style='font-size:18px;padding-top:18px'>Guest consultations</div>")
+            items.append("<div class='conversation-section' data-section='guest'>Guest consultations</div>")
         if guest_error:
             items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>Guest API error</div><div class='preview'>{h(short(guest_error, 100))}</div></div><div></div></div>")
         for chat in guest_chats:
@@ -2989,7 +3227,9 @@ class Handler(BaseHTTPRequestHandler):
             name = str(chat.get("Name") or f"GUEST-{corr_id}")
             initials = (name.replace("GUEST-", "")[:1] or "G").upper()
             is_selected_guest = selected_kind == "guest" and corr_id == selected_corr_id and corr_type == selected_corr_type
-            unread = 0 if is_selected_guest else (1 if not int(chat.get("IsAuthor") or 0) and not int(chat.get("IsViewed") or 0) else 0)
+            raw_unread = 1 if not int(chat.get("IsAuthor") or 0) and not int(chat.get("IsViewed") or 0) else 0
+            guest_unread_total += raw_unread
+            unread = 0 if is_selected_guest else raw_unread
             active = " active" if selected_kind == "guest" and corr_id == selected_corr_id and corr_type == selected_corr_type else ""
             preview = chat.get("Text") or chat.get("PurchaseName") or ""
             avatar = product_avatar_html(chat.get("PurchaseName"), initials)
@@ -2997,8 +3237,9 @@ class Handler(BaseHTTPRequestHandler):
             short_when = when[11:16] if len(when) >= 16 and "-" in when[:10] else when[-5:]
             badge = f"<div class='badge'>{unread}</div>" if unread else ""
             href = f"/chats?kind=guest&corr_type={urllib.parse.quote(corr_type)}&corr_id={corr_id}&name={urllib.parse.quote(name)}&product={urllib.parse.quote(str(chat.get('PurchaseName') or ''))}"
+            search_text = " ".join([str(corr_id), corr_type, name, str(chat.get("PurchaseName") or ""), str(chat.get("Text") or "")]).lower()
             items.append(
-                f"<a class='conversation-item{active}' data-kind='guest' data-corr-id='{corr_id}' data-corr-type='{h(corr_type)}' data-name='{h(name)}' data-product='{h(chat.get('PurchaseName'))}' href='{h(href)}'>"
+                f"<a class='conversation-item{active}' data-kind='guest' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-corr-id='{corr_id}' data-corr-type='{h(corr_type)}' data-name='{h(name)}' data-product='{h(chat.get('PurchaseName'))}' href='{h(href)}'>"
                 f"{avatar}"
                 f"<div><div class='conversation-name'>{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
@@ -3018,11 +3259,14 @@ class Handler(BaseHTTPRequestHandler):
             clear_unread_cache()
             selected_messages = client.guest_messages(selected_corr_type, selected_corr_id)[-10:]
         elif selected_order:
-            selected_messages = client.all_chat_messages(selected_order)
-            if selected_messages:
-                safe_mark_chat_read(selected_order)
-            if selected_chat is None:
-                selected_chat = {"id_i": selected_order, "email": self.q("email", f"order-{selected_order}"), "product": self.q("product", "Direct order lookup")}
+            try:
+                selected_messages = client.all_chat_messages(selected_order)
+                if selected_messages:
+                    safe_mark_chat_read(selected_order)
+                if selected_chat is None:
+                    selected_chat = {"id_i": selected_order, "email": self.q("email", f"order-{selected_order}"), "product": self.q("product", "Direct order lookup")}
+            except Exception as exc:
+                selected_chat = {"id_i": selected_order, "email": self.q("email", f"order-{selected_order}"), "product": f"Chat load failed: {exc}"}
 
         panel = self.guest_chat_panel_html(selected_guest_chat, selected_messages) if selected_kind == "guest" and selected_guest_chat else self.chat_panel_html(selected_order, selected_chat, selected_messages)
         ajax = """
@@ -3055,13 +3299,44 @@ class Handler(BaseHTTPRequestHandler):
               clearConversationBadge(link);
               return;
             }
+            link.dataset.hasUnread = '1';
             const badge = conversationBadge(link);
             if (badge) badge.textContent = String(value);
           }
           function clearConversationBadge(link) {
             const badge = link?.querySelector('.badge');
             if (badge) badge.remove();
-            if (link) delete link.dataset.pendingUnread;
+            if (link) {
+              delete link.dataset.pendingUnread;
+              link.dataset.hasUnread = '0';
+            }
+          }
+          const searchInput = document.getElementById('conversation-search');
+          const filterButtons = [...document.querySelectorAll('.conversation-filter')];
+          const emptyFilter = document.getElementById('conversation-empty-filter');
+          function applyConversationFilters() {
+            const query = (searchInput?.value || '').trim().toLowerCase();
+            const activeFilter = document.querySelector('.conversation-filter.active')?.dataset.filter || 'all';
+            let visible = 0;
+            list.querySelectorAll('.conversation-item').forEach((link) => {
+              const kind = link.dataset.kind || 'order';
+              const hasUnread = link.dataset.hasUnread === '1';
+              const text = link.dataset.search || link.textContent.toLowerCase();
+              const matchesSearch = !query || text.includes(query);
+              const matchesFilter =
+                activeFilter === 'all' ||
+                (activeFilter === 'unread' && hasUnread) ||
+                (activeFilter === 'orders' && kind === 'order') ||
+                (activeFilter === 'guest' && kind === 'guest');
+              const show = matchesSearch && matchesFilter;
+              link.hidden = !show;
+              if (show) visible += 1;
+            });
+            list.querySelectorAll('.conversation-section').forEach((section) => {
+              const guestVisible = !!list.querySelector('.conversation-item[data-kind="guest"]:not([hidden])');
+              section.hidden = !guestVisible || activeFilter === 'orders';
+            });
+            if (emptyFilter) emptyFilter.classList.toggle('visible', visible === 0);
           }
           function paramsForLink(link) {
             const kind = link.dataset.kind || 'order';
@@ -3117,10 +3392,20 @@ class Handler(BaseHTTPRequestHandler):
           list.addEventListener('click', async (event) => {
             const link = event.target.closest('.conversation-item');
             if (!link) return;
+            if (!link.dataset.orderId && !link.dataset.corrId) return;
             event.preventDefault();
             list.querySelectorAll('.conversation-item.active').forEach((item) => item.classList.remove('active'));
             link.classList.add('active');
             await loadPanel(link, {pushHistory: true, clearBadge: true, refreshUnread: true});
+            applyConversationFilters();
+          });
+          searchInput?.addEventListener('input', applyConversationFilters);
+          filterButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+              filterButtons.forEach((item) => item.classList.remove('active'));
+              button.classList.add('active');
+              applyConversationFilters();
+            });
           });
           window.handleDigisellerUnreadData = (data) => {
             const buyerUnread = Array.isArray(data.buyer_unread) ? data.buyer_unread : [];
@@ -3135,6 +3420,7 @@ class Handler(BaseHTTPRequestHandler):
               if (count > 0) setConversationBadge(link, count);
               else if (!link.classList.contains('active')) clearConversationBadge(link);
             });
+            applyConversationFilters();
             const active = list.querySelector('.conversation-item.active[data-kind="order"]');
             if (!active) return;
             const activeCount = unreadByOrder.get(String(active.dataset.orderId || '')) || 0;
@@ -3146,13 +3432,30 @@ class Handler(BaseHTTPRequestHandler):
           };
           window.addEventListener('popstate', () => location.reload());
           if (window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
+          applyConversationFilters();
           setInterval(() => {
             if (!document.hidden && window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
           }, 15000);
         })();
         </script>
         """
-        body = f"<div class='messages-layout'><div id='conversation-list' class='conversation-list'><div class='conversation-title'>Messages</div>{''.join(items)}</div>{panel}</div>{ajax}"
+        unread_total = order_unread_total + guest_unread_total
+        list_header = f"""
+        <div class='conversation-list-header'>
+          <div class='conversation-list-title'>
+            <h2>Messages</h2>
+            <div class='conversation-counts'>{len(chats)} orders · {len(guest_chats)} guests · {unread_total} unread</div>
+          </div>
+          <input id='conversation-search' class='conversation-search' placeholder='Search order, buyer, product...' autocomplete='off'>
+          <div class='conversation-filters'>
+            <button class='conversation-filter active' type='button' data-filter='all'>All</button>
+            <button class='conversation-filter' type='button' data-filter='unread'>Unread</button>
+            <button class='conversation-filter' type='button' data-filter='orders'>Orders</button>
+            <button class='conversation-filter' type='button' data-filter='guest'>Guests</button>
+          </div>
+        </div>
+        """
+        body = f"<div class='messages-layout'><div id='conversation-list' class='conversation-list'>{list_header}{''.join(items)}<div id='conversation-empty-filter' class='conversation-empty-filter'>No matching conversations</div></div>{panel}</div>{ajax}"
         self.send_html("Messages", body)
 
     def chat(self) -> None:
