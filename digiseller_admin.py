@@ -3215,6 +3215,28 @@ class Handler(BaseHTTPRequestHandler):
             )
         if chat_error:
             items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>Digiseller API error</div><div class='preview'>{h(short(chat_error, 100))}</div></div><div></div></div>")
+        if selected_kind == "order" and selected_order and selected_chat is None:
+            selected_chat = {
+                "id_i": selected_order,
+                "email": self.q("email", f"order-{selected_order}"),
+                "product": self.q("product", "Direct order lookup"),
+            }
+            email = str(selected_chat.get("email") or f"order-{selected_order}")
+            name = email.split("@", 1)[0] or email
+            initials = (name[:1] or "?").upper()
+            product = selected_chat.get("product")
+            preview = short(product, 80)
+            href = order_chat_href(selected_order, email, product)
+            search_text = " ".join([str(selected_order), email, str(product or ""), name]).lower()
+            items.insert(
+                0,
+                f"<a class='conversation-item active' data-kind='order' data-has-unread='0' data-search='{h(search_text)}' data-order-id='{selected_order}' data-email='{h(email)}' data-product='{h(product)}' href='{h(href)}'>"
+                f"{product_avatar_html(product, initials)}"
+                f"<div><div class='conversation-name'>{h(name)}</div>"
+                f"<div class='preview'>{h(short(preview, 70))}</div></div>"
+                "<div class='conversation-time'>new</div></a>",
+            )
+
         if guest_chats or guest_error:
             items.append("<div class='conversation-section' data-section='guest'>Guest consultations</div>")
         if guest_error:
