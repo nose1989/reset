@@ -44,7 +44,7 @@ COMMON_PHRASES_FILE = APP_DIR / "common_phrases.json"
 COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.8-delivery-mode"
+APP_VERSION = "v8.9-translate-phrases"
 
 
 @dataclass
@@ -193,18 +193,40 @@ def detect_buyer_language(messages: list[dict[str, Any]]) -> str:
     return "en"
 
 
-def translate_incoming_html(text: str, message_id: Any) -> str:
-    source_lang = heuristic_language(text)
-    if source_lang in {"zh", "zh-CN"}:
+def save_common_phrase_button(text: str) -> str:
+    value = clean_text(text)
+    if not value:
+        return ""
+    return f"<button class='save-common-phrase' type='button' data-text='{h(value)}'>&#20445;&#23384;&#20026;&#24120;&#29992;&#35821;</button>"
+
+
+def message_text_html(text: str, allow_save: bool = False) -> str:
+    actions = save_common_phrase_button(text) if allow_save else ""
+    if not actions:
         return h(text)
+    return (
+        f"<div class='plain-message'>"
+        f"<div class='plain-text'>{h(text)}</div>"
+        f"<div class='message-actions'>{actions}</div>"
+        f"</div>"
+    )
+
+
+def translate_incoming_html(text: str, message_id: Any, should_translate: bool = True) -> str:
+    source_lang = heuristic_language(text)
+    if not should_translate or source_lang in {"zh", "zh-CN"}:
+        return message_text_html(text, allow_save=not should_translate)
     message_key = h(message_id or hashlib.sha1(text.encode("utf-8")).hexdigest()[:12])
     return (
         f"<div class='translated-message' id='msg-{message_key}' data-pending='1'>"
         f"<div class='translated-text'>&#32763;&#35793;&#20013;...</div>"
         f"<div class='original-inline'>&#21407;&#25991;&#65306;{h(text)}</div>"
         f"<div class='original-text' hidden>{h(text)}</div>"
+        f"<div class='message-actions'>"
         f"<button class='toggle-original' type='button'>&#26597;&#30475;&#21407;&#25991;</button>"
+        f"{save_common_phrase_button(text)}"
         f"<span class='translation-label'>{h(lang_label(source_lang or 'auto'))} → &#20013;&#25991;</span>"
+        f"</div>"
         f"</div>"
     )
 
@@ -664,7 +686,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .alert-controls{position:fixed;right:18px;bottom:18px;z-index:50;display:flex;gap:8px;align-items:center}.alert-button{background:#16a34a;color:#fff;border:0;border-radius:999px;padding:10px 14px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-button.off{background:#64748b}.alert-pill{display:none;background:#dc2626;color:#fff;border-radius:999px;padding:9px 12px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-pill.show{display:inline-block}.unread-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#ef4444;margin-left:6px}
 .thumb{max-width:220px;max-height:160px;border:1px solid #e5e7eb;border-radius:8px;display:block;margin-top:8px;background:#f8fafc}.file-preview{margin-top:6px}.file-name{font-weight:700}.image-note{font-size:12px;color:#6b7280;margin-top:4px}
 .reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.common-phrases{border-top:1px solid #e5e7eb;background:#f8fafc;padding:10px 18px 14px}.common-phrase-title{font-size:13px;font-weight:800;color:#334155;margin-bottom:8px}.common-phrase-buttons{display:flex;flex-wrap:wrap;gap:8px}.common-phrase-buttons form{margin:0}.common-phrase-buttons button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.phrase-manager textarea{width:100%;box-sizing:border-box;min-height:76px;resize:vertical}.phrase-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:start;margin-bottom:10px}.phrase-empty{color:#64748b;font-size:14px}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
-.translated-message{white-space:normal}.translated-text,.original-text{white-space:pre-wrap}.toggle-original{margin-top:8px;background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.translation-label{display:inline-block;margin-left:8px;color:#64748b;font-size:12px}
+.translated-message,.plain-message{white-space:normal}.translated-text,.original-text,.plain-text{white-space:pre-wrap}.message-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}.toggle-original,.save-common-phrase{background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.save-common-phrase.saved{background:#dcfce7;color:#166534;border-color:#bbf7d0}.save-common-phrase.failed{background:#fee2e2;color:#991b1b;border-color:#fecaca}.translation-label{display:inline-block;color:#64748b;font-size:12px}
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
 .phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:block;margin-top:8px}.phrase-manager.dragover textarea{border-color:#2563eb;background:#eff6ff}.phrase-pending{margin-top:8px}
 .chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.chat-keepalive-btn.warn{background:#fef3c7;color:#92400e;border-color:#fde68a}
@@ -1015,6 +1037,35 @@ def layout(title: str, body: str) -> bytes:
       if (originalInline) originalInline.hidden = !showingOriginal;
       button.textContent = showingOriginal ? '查看原文' : '显示中文';
     });
+    document.addEventListener('click', async (event) => {
+      const button = event.target.closest('.save-common-phrase');
+      if (!button) return;
+      const text = button.dataset.text || '';
+      if (!text.trim()) return;
+      const originalLabel = button.textContent;
+      button.disabled = true;
+      button.classList.remove('saved', 'failed');
+      button.textContent = '\u4fdd\u5b58\u4e2d...';
+      try {
+        const res = await fetch('/api/common-phrases', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({text})
+        });
+        if (!res.ok) throw new Error('save failed');
+        const data = await res.json();
+        button.textContent = data.created ? '\u5df2\u4fdd\u5b58' : '\u5df2\u5b58\u5728';
+        button.classList.add('saved');
+      } catch (e) {
+        button.textContent = '\u4fdd\u5b58\u5931\u8d25';
+        button.classList.add('failed');
+        setTimeout(() => {
+          button.disabled = false;
+          button.classList.remove('failed');
+          button.textContent = originalLabel || '\u4fdd\u5b58\u4e3a\u5e38\u7528\u8bed';
+        }, 1800);
+      }
+    });
     window.loadDigisellerTranslations = async function(root=document) {
       const nodes = Array.from(root.querySelectorAll(".translated-message[data-pending='1']"));
       if (!nodes.length) return;
@@ -1259,6 +1310,21 @@ def save_common_phrases(phrases: list[dict[str, Any]]) -> None:
     tmp = COMMON_PHRASES_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(COMMON_PHRASES_FILE)
+
+
+def save_text_common_phrase(text: str) -> tuple[bool, str]:
+    value = clean_text(text)
+    if not value:
+        raise RuntimeError("Text is empty")
+    phrases = load_common_phrases()
+    for phrase in phrases:
+        phrase_text = clean_text(phrase.get("text"))
+        if phrase_text == value and not phrase.get("files"):
+            return False, str(phrase["id"])
+    phrase_id = new_phrase_id(value)
+    phrases.append({"id": phrase_id, "text": value, "files": []})
+    save_common_phrases(phrases)
+    return True, phrase_id
 
 
 def new_phrase_id(text: str) -> str:
@@ -1821,6 +1887,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.upload_stock()
             if path == "/api/translate-batch":
                 return self.api_translate_batch()
+            if path == "/api/common-phrases":
+                return self.api_save_common_phrase()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
         except Exception as exc:
             self.send_html("Error", f"<div class='card bad'>Error</div><pre class='card code'>{h(exc)}</pre>", 500)
@@ -2169,7 +2237,7 @@ class Handler(BaseHTTPRequestHandler):
                     if msg.get("is_file"):
                         text_html = attachment_html(msg)
                     else:
-                        text_html = translate_incoming_html(text, msg.get("id"))
+                        text_html = translate_incoming_html(text, msg.get("id"), should_translate=not is_seller)
                 except Exception as exc:
                     text_html = h(text or f"Message render error: {exc}")
                 msg_no = f"#{idx}/{total_messages}"
@@ -2206,7 +2274,7 @@ class Handler(BaseHTTPRequestHandler):
             if msg.get("is_file"):
                 text_html = attachment_html(msg, allow_guess_preview=True)
             else:
-                text_html = translate_incoming_html(text, msg.get("id"))
+                text_html = translate_incoming_html(text, msg.get("id"), should_translate=not is_seller)
             msg_no = f"#{idx}/{total_messages}"
             msg_id = f" · ID {h(msg.get('id'))}" if msg.get("id") else ""
             rows.append(
@@ -2269,6 +2337,14 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
         self.send_json({"ok": True, "results": results})
+
+    def api_save_common_phrase(self) -> None:
+        payload = self.read_json_body()
+        text = clean_text(payload.get("text"))
+        if not text:
+            return self.send_json({"ok": False, "error": "text is required"}, 400)
+        created, phrase_id = save_text_common_phrase(text)
+        self.send_json({"ok": True, "created": created, "id": phrase_id})
 
     def chats(self) -> None:
         chats = client.chats(page_size=100)
