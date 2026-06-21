@@ -1496,18 +1496,52 @@ def new_phrase_id(text: str) -> str:
     return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
 
 
+def phrase_stored_path(stored: str) -> Path | None:
+    if not stored or "/" in stored or "\\" in stored:
+        return None
+    file_path = (COMMON_PHRASES_DIR / stored).resolve()
+    if not str(file_path).startswith(str(COMMON_PHRASES_DIR.resolve())) or not file_path.exists():
+        return None
+    return file_path
+
+
 def phrase_file_url(stored: str) -> str:
-    return "/phrase-files/" + urllib.parse.quote(stored, safe="")
+    path = phrase_stored_path(stored)
+    version = f"?v={int(path.stat().st_mtime)}" if path else ""
+    return "/phrase-files/" + urllib.parse.quote(stored, safe="") + version
+
+
+def digiseller_debate_image_url(image_id: str, filename: str, width: int = 360) -> str:
+    ref = urllib.parse.quote(f"{image_id}/{filename}")
+    return f"https://graph.digiseller.ru/img_deb.ashx?f={ref}&w={width}"
 
 
 def phrase_file_reference(file: dict[str, Any]) -> tuple[str, str, str]:
     filename = str(file.get("filename") or file.get("name") or "")
-    stored = str(file.get("stored") or file.get("file") or "")
+    stored = str(file.get("stored") or "")
+    legacy_file = str(file.get("file") or "")
+    explicit_url = str(file.get("preview") or file.get("url") or file.get("src") or "")
+    if not explicit_url and legacy_file and urllib.parse.urlparse(legacy_file).scheme:
+        explicit_url = legacy_file
+    if not stored and legacy_file and not urllib.parse.urlparse(legacy_file).scheme:
+        stored = legacy_file
+    if not filename and stored and looks_like_image_name(stored):
+        filename = stored
+    if stored and phrase_stored_path(stored):
+        return filename or stored or "file", stored, phrase_file_url(stored)
     if not stored and filename:
         candidate = (COMMON_PHRASES_DIR / filename).resolve()
         if str(candidate).startswith(str(COMMON_PHRASES_DIR.resolve())) and candidate.exists():
             stored = filename
-    file_url = phrase_file_url(stored) if stored else str(file.get("preview") or file.get("url") or "")
+    if stored and phrase_stored_path(stored):
+        return filename or stored or "file", stored, phrase_file_url(stored)
+    file_url = explicit_url
+    if not file_url and phrase_file_is_image(file, filename, ""):
+        image_id = str(file.get("newid") or file.get("id") or file.get("file_id") or file.get("fileId") or "")
+        if not image_id and legacy_file and not looks_like_image_name(legacy_file):
+            image_id = legacy_file
+        if image_id and filename:
+            file_url = digiseller_debate_image_url(image_id, filename)
     return filename or stored or "file", stored, file_url
 
 
@@ -1960,10 +1994,7 @@ class Handler(BaseHTTPRequestHandler):
             const img = button.querySelector('img');
             if (img) {{
               img.addEventListener('error', () => {{
-                const fallback = document.createElement('span');
-                fallback.className = 'common-phrase-file-chip';
-                fallback.textContent = button.dataset.previewName || 'IMAGE';
-                button.replaceWith(fallback);
+                img.title = button.dataset.previewSrc || '';
               }});
             }}
             button.addEventListener('click', () => {{
@@ -2315,10 +2346,7 @@ class Handler(BaseHTTPRequestHandler):
             const img = button.querySelector('img');
             if (img) {
               img.addEventListener('error', () => {
-                const fallback = document.createElement('span');
-                fallback.className = 'common-phrase-file-chip';
-                fallback.textContent = button.dataset.previewName || 'IMAGE';
-                button.replaceWith(fallback);
+                img.title = button.dataset.previewSrc || '';
               });
             }
             button.addEventListener('click', () => openImagePreview(button.dataset.previewSrc || '', button.dataset.previewName || ''));
