@@ -820,6 +820,20 @@ class GgselClient:
         data = self.get("/debates/v2/chats", {"pagesize": min(max(page_size, 1), 100), "page": max(page, 1)})
         return data if isinstance(data, dict) else {"items": data}
 
+    def chat_messages(self, order_id: int, count: int = 200) -> list[dict[str, Any]]:
+        data = self.get("/debates/v2", {"id_i": order_id, "count": min(max(count, 1), 200)})
+        if not isinstance(data, list):
+            return []
+        messages: list[dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            message = dict(item)
+            message["seller"] = 0 if int(message.get("buyer") or 0) else 1
+            messages.append(message)
+        messages.sort(key=lambda item: sort_time(item.get("date_written")))
+        return messages
+
     def reviews(self, count: int = 20, page: int = 1, review_type: str = "all") -> dict[str, Any]:
         data = self.get("/reviews", {"type": review_type, "page": max(page, 1), "count": min(max(count, 1), 100)})
         return data if isinstance(data, dict) else {"reviews": data}
@@ -904,6 +918,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .conversation-list-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 14px 12px;box-shadow:0 1px 0 #eef2f7}
 .conversation-list-title{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:10px}.conversation-list-title h2{margin:0;font-size:28px;line-height:1}.conversation-counts{font-size:12px;color:#64748b;text-align:right;white-space:nowrap}.conversation-search{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;padding:9px 10px;margin-bottom:10px;background:#f8fafc}.conversation-filters{display:flex;gap:8px;flex-wrap:wrap}.conversation-filter{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;cursor:pointer}.conversation-filter.active{background:#1f7acb;color:#fff;border-color:#1f7acb}.conversation-item[hidden]{display:none}.conversation-empty-filter{display:none;padding:28px 16px;color:#64748b;text-align:center}.conversation-empty-filter.visible{display:block}.conversation-section{padding:14px 14px 7px;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:#f8fafc;border-bottom:1px solid #eef2f7}.conversation-section[hidden]{display:none}.chat-bubble{word-break:break-word}.conversation-body{scroll-behavior:smooth}.reply-editor{border-top:1px solid #e5e7eb;background:#fbfdff}.reply-editor textarea{min-height:84px}
 
+.platform-badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:900;background:#e0f2fe;color:#075985}.platform-badge.ggsel{background:#fef3c7;color:#92400e}.sales-source{white-space:nowrap}.ggsel-readonly-note{background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 10px;color:#9a3412;font-size:13px;font-weight:700}
 .sales-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sales-toolbar input{max-width:90px}.sales-toolbar .sales-search{flex:1 1 260px;max-width:420px}.sales-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}.sales-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px}.sales-stat b{display:block;font-size:20px;margin-bottom:4px}.sales-table .order-link{font-weight:800}.sales-table .chat-action{display:inline-block;background:#1f7acb;color:#fff;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800}.sales-table tbody tr[hidden]{display:none}.sales-product{max-width:360px}.sales-empty-filter{display:none;padding:24px;text-align:center;color:#64748b}.sales-empty-filter.visible{display:block}
 </style>
 """
@@ -2659,20 +2674,26 @@ class Handler(BaseHTTPRequestHandler):
             product = sale.get("product") if isinstance(sale.get("product"), dict) else {}
             product_id = product.get("id") or sale.get("product_id") or sale.get("id_goods")
             product_url = ggsel_client.product_url(product_id)
+            invoice_id = sale.get("invoice_id")
+            product_name = product.get("name") or sale.get("name") or f"GGSEL product {product_id}"
+            chat_href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(invoice_id or ""), "email": str(sale.get("email") or f"ggsel-{invoice_id}"), "product": str(product_name)})
             sales_rows.append([
                 h(sale.get("date")),
-                h(sale.get("invoice_id")),
+                f"<a class='order-link' href='{h(chat_href)}'>{h(invoice_id)}</a>",
                 f"<a href='{h(product_url)}' target='_blank'>{h(product_id)}</a>" if product_url else h(product_id),
-                h(short(product.get("name") or sale.get("name") or "", 100)),
+                h(short(product_name, 100)),
                 h(product.get("price_usd") or sale.get("price_usd") or ""),
             ])
         chat_rows = []
         for chat in chats_data.get("items") or chats_data.get("chats") or []:
             product_id = chat.get("product") or chat.get("id_goods")
             product_url = ggsel_client.product_url(product_id)
+            invoice_id = chat.get("id_i") or chat.get("invoice_id")
+            product_name = f"GGSEL product {product_id}" if product_id else "GGSEL order"
+            chat_href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(invoice_id or ""), "email": str(chat.get("email") or f"ggsel-{invoice_id}"), "product": product_name})
             chat_rows.append([
                 h(chat.get("last_message") or chat.get("date")),
-                h(chat.get("id_i") or chat.get("invoice_id")),
+                f"<a class='order-link' href='{h(chat_href)}'>{h(invoice_id)}</a>",
                 h(chat.get("email") or ""),
                 f"<a href='{h(product_url)}' target='_blank'>{h(product_id)}</a>" if product_url else h(product_id),
                 h(chat.get("cnt_new") or ""),
@@ -2997,23 +3018,55 @@ class Handler(BaseHTTPRequestHandler):
         days = max(parse_int("days", 3), 1)
         rows_limit = min(max(parse_int("rows", 50), 1), 50)
         page = max(parse_int("page", 1), 1)
+        errors: list[str] = []
+        digiseller_data: dict[str, Any] = {"rows": [], "total_rows": 0, "pages": 1}
         try:
-            data = client.sales(days, rows_limit, page)
+            digiseller_data = client.sales(days, rows_limit, page)
         except Exception as exc:
-            form = f"""
-            <form class='card sales-toolbar'>
-              <h2>Orders</h2>
-              <label>Days <input name='days' value='{days}' size='4'></label>
-              <label>Rows <input name='rows' value='{rows_limit}' size='4'></label>
-              <button>Refresh</button>
-            </form>
-            """
-            return self.send_html("Sales", form + f"<div class='card bad'>Sales API error:<pre class='code'>{h(exc)}</pre></div>", 500)
+            errors.append(f"Digiseller: {exc}")
 
-        order_rows = [row for row in data.get("rows", []) if isinstance(row, dict)][:rows_limit]
-        mark_sales_orders_seen(order_rows)
+        digiseller_rows = [row for row in digiseller_data.get("rows", []) if isinstance(row, dict)][:rows_limit]
+        if digiseller_rows:
+            mark_sales_orders_seen(digiseller_rows)
+
+        ggsel_rows: list[dict[str, Any]] = []
+        if ggsel_client.configured():
+            try:
+                ggsel_data = ggsel_client.sales(rows_limit)
+                for sale in ggsel_data.get("sales") or []:
+                    if not isinstance(sale, dict):
+                        continue
+                    product = sale.get("product") if isinstance(sale.get("product"), dict) else {}
+                    product_id = product.get("id") or sale.get("product_id") or sale.get("id_goods")
+                    ggsel_rows.append(
+                        {
+                            "source": "GGSEL",
+                            "date_pay": sale.get("date"),
+                            "invoice_id": sale.get("invoice_id"),
+                            "email": sale.get("email") or "",
+                            "product_id": product_id,
+                            "product_name": product.get("name") or sale.get("product_name") or sale.get("name") or f"GGSEL product {product_id}",
+                            "amount_in": product.get("price_usd") or sale.get("price_usd") or "",
+                            "amount_currency": "USD" if product.get("price_usd") or sale.get("price_usd") else "",
+                            "partner_id": sale.get("partner_id") or "-",
+                            "referer": "ggsel.net",
+                            "platform": "ggsel",
+                        }
+                    )
+            except Exception as exc:
+                errors.append(f"GGSEL: {exc}")
+        else:
+            errors.append("GGSEL: GGSEL_API_KEY or GGSEL_SELLER_ID missing")
+
+        for row in digiseller_rows:
+            row.setdefault("source", "Digiseller")
+            row.setdefault("platform", "digiseller")
+        order_rows = sorted(digiseller_rows + ggsel_rows, key=lambda row: sort_time(row.get("date_pay") or row.get("date")), reverse=True)[:rows_limit]
         totals: dict[str, float] = {}
+        platform_counts: dict[str, int] = {}
         for row in order_rows:
+            platform = str(row.get("source") or row.get("platform") or "?")
+            platform_counts[platform] = platform_counts.get(platform, 0) + 1
             currency = str(row.get("amount_currency") or "").strip() or "?"
             try:
                 amount = float(str(row.get("amount_in") or 0).replace(",", "."))
@@ -3021,17 +3074,25 @@ class Handler(BaseHTTPRequestHandler):
                 amount = 0.0
             totals[currency] = totals.get(currency, 0.0) + amount
         totals_text = ", ".join(f"{value:.2f} {currency}" for currency, value in sorted(totals.items())) or "-"
+        platform_text = ", ".join(f"{name}: {count}" for name, count in sorted(platform_counts.items())) or "-"
         trs = []
         for row in order_rows:
             invoice_id = row.get("invoice_id")
             product_id = row.get("product_id")
             product_name = row.get("product_name")
+            platform = str(row.get("platform") or "digiseller")
+            source = "GGSEL" if platform == "ggsel" else "Digiseller"
             buyer_email = next((row.get(key) for key in ("email", "buyer_email", "user_email", "client_email") if row.get(key)), "")
-            chat_href = order_chat_href(invoice_id, buyer_email, product_name)
+            if platform == "ggsel":
+                chat_href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(invoice_id or ""), "email": str(buyer_email or f"ggsel-{invoice_id}"), "product": str(product_name or "GGSEL order")})
+            else:
+                chat_href = order_chat_href(invoice_id, buyer_email, product_name)
             amount = f"{row.get('amount_in') or ''} {row.get('amount_currency') or ''}".strip()
-            search_text = " ".join(str(value or "") for value in [invoice_id, product_id, product_name, buyer_email, amount, row.get("partner_id"), row.get("referer")]).lower()
+            search_text = " ".join(str(value or "") for value in [source, invoice_id, product_id, product_name, buyer_email, amount, row.get("partner_id"), row.get("referer")]).lower()
+            platform_class = "ggsel" if platform == "ggsel" else "digiseller"
             trs.append(
                 "<tr data-search='" + h(search_text) + "'>"
+                + f"<td class='sales-source'><span class='platform-badge {platform_class}'>{h(source)}</span></td>"
                 + f"<td>{h(row.get('date_pay') or row.get('date'))}</td>"
                 + f"<td><a class='order-link' href='{h(chat_href)}'>{h(invoice_id)}</a></td>"
                 + f"<td>{h(buyer_email or '-')}</td>"
@@ -3043,8 +3104,9 @@ class Handler(BaseHTTPRequestHandler):
                 + f"<td><a class='chat-action' href='{h(chat_href)}'>Chat</a></td>"
                 + "</tr>"
             )
-        head = "".join(f"<th>{h(value)}</th>" for value in ["Paid", "Order", "Buyer", "Product ID", "Product", "Amount", "Partner", "Referer", "Action"])
+        head = "".join(f"<th>{h(value)}</th>" for value in ["Platform", "Paid", "Order", "Buyer", "Product ID", "Product", "Amount", "Partner", "Referer", "Action"])
         table_html = f"<table class='sales-table'><thead><tr>{head}</tr></thead><tbody>{''.join(trs)}</tbody></table><div id='sales-empty-filter' class='sales-empty-filter'>No matching orders</div>"
+        errors_html = "".join(f"<div class='notice bad-bg'>{h(error)}</div>" for error in errors)
         form = f"""
         <div class='card'>
           <h2>Orders</h2>
@@ -3052,16 +3114,17 @@ class Handler(BaseHTTPRequestHandler):
             <label>Days <input name='days' value='{days}' size='4'></label>
             <label>Rows <input name='rows' value='{rows_limit}' size='4'></label>
             <label>Page <input name='page' value='{page}' size='4'></label>
-            <input id='sales-search' class='sales-search' placeholder='Search order, buyer, product, referer...' autocomplete='off'>
+            <input id='sales-search' class='sales-search' placeholder='Search platform, order, buyer, product, referer...' autocomplete='off'>
             <button>Refresh</button>
           </form>
-          <p class='muted'>Default is 3 days; rows are capped at 50 per request.</p>
+          <p class='muted'>Default is 3 days; rows are capped at 50 per request. Digiseller and GGSEL orders are merged by paid time.</p>
+          {errors_html}
         </div>
         <div class='sales-summary'>
           <div class='sales-stat'><b>{h(len(order_rows))}</b><span class='muted'>orders shown</span></div>
-          <div class='sales-stat'><b>{h(data.get('total_rows') or len(order_rows))}</b><span class='muted'>total rows from API</span></div>
+          <div class='sales-stat'><b>{h(platform_text)}</b><span class='muted'>platforms shown</span></div>
           <div class='sales-stat'><b>{h(totals_text)}</b><span class='muted'>shown amount</span></div>
-          <div class='sales-stat'><b>{h(page)} / {h(data.get('pages') or 1)}</b><span class='muted'>page</span></div>
+          <div class='sales-stat'><b>{h(page)} / {h(digiseller_data.get('pages') or 1)}</b><span class='muted'>Digiseller page</span></div>
         </div>
         """
         script = """
@@ -3175,6 +3238,40 @@ class Handler(BaseHTTPRequestHandler):
             rows.append("<div class='empty-state'>No guest messages loaded</div>")
         return f"<div id='chat-panel' class='conversation-panel' data-kind='guest' data-corr-id='{corr_id}' data-message-count='{len(messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{''.join(rows)}</div></div>"
 
+    def ggsel_chat_panel_html(self, selected_order: int, selected_chat: dict[str, Any], selected_messages: list[dict[str, Any]]) -> str:
+        buyer_name = str(selected_chat.get("email") or f"GGSEL-{selected_order}").split("@", 1)[0]
+        product = selected_chat.get("product") or "GGSEL order"
+        buyer_lang = detect_buyer_language(selected_messages)
+        header = (
+            f"<div class='conversation-header-main'><div class='conversation-header-title'>{h(buyer_name)}</div>"
+            f"<div class='muted'>GGSEL Order {h(selected_order)} · {h(short(product, 110))} · Messages loaded: {len(selected_messages)} · Reply language: {h(lang_label(buyer_lang))}</div></div>"
+            "<div class='conversation-header-side'><div class='ggsel-readonly-note'>GGSEL messages are shown here; reply from GGSEL seller backend for now.</div></div>"
+        )
+        rows = []
+        total_messages = len(selected_messages)
+        for idx, msg in enumerate(selected_messages, 1):
+            is_seller = msg.get("seller") == 1
+            cls = "seller" if is_seller else "buyer"
+            author = "nose1989" if is_seller else buyer_name
+            text = clean_text(msg.get("message"))
+            try:
+                if is_attachment_message(msg):
+                    text_html = attachment_html(msg, allow_guess_preview=True)
+                else:
+                    text_html = translate_incoming_html(text, msg.get("id"), should_translate=not is_seller)
+            except Exception as exc:
+                text_html = h(text or f"Message render error: {exc}")
+            msg_no = f"#{idx}/{total_messages}"
+            msg_id = f" · ID {h(msg.get('id'))}" if msg.get("id") else ""
+            rows.append(
+                f"<div class='chat-row {cls}'>"
+                f"<div class='chat-meta'><span class='chat-author'>{h(author)} <span class='muted'>{msg_no}{msg_id}</span></span><span>{h(msg.get('date_written'))}</span></div>"
+                f"<div class='chat-bubble'>{text_html}</div></div>"
+            )
+        if not rows:
+            rows.append("<div class='empty-state'>No GGSEL messages loaded</div>")
+        return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-platform='ggsel' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{''.join(rows)}</div></div>"
+
     def api_chat_panel(self) -> None:
         if self.q("kind") == "guest":
             corr_id = int(self.q("corr_id", "0") or 0)
@@ -3196,11 +3293,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": False, "error": "order_id is required"}, 400)
         email = self.q("email", f"order-{order_id}")
         product = self.q("product", "Direct order lookup")
+        platform = self.q("platform", "digiseller")
+        if platform == "ggsel":
+            messages = ggsel_client.chat_messages(order_id)
+            selected_chat = {"id_i": order_id, "email": email, "product": product, "platform": "ggsel"}
+            return self.send_json({"ok": True, "platform": "ggsel", "order_id": order_id, "count": len(messages), "read": False, "html": self.ggsel_chat_panel_html(order_id, selected_chat, messages)})
         messages = client.all_chat_messages(order_id)
         if messages:
             safe_mark_chat_read(order_id)
-        selected_chat = {"id_i": order_id, "email": email, "product": product}
-        self.send_json({"ok": True, "order_id": order_id, "count": len(messages), "read": True, "html": self.chat_panel_html(order_id, selected_chat, messages)})
+        selected_chat = {"id_i": order_id, "email": email, "product": product, "platform": "digiseller"}
+        self.send_json({"ok": True, "platform": "digiseller", "order_id": order_id, "count": len(messages), "read": True, "html": self.chat_panel_html(order_id, selected_chat, messages)})
 
     def api_translate_batch(self) -> None:
         payload = self.read_json_body()
@@ -3248,12 +3350,24 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             guest_chats = []
             guest_error = str(exc)
+        ggsel_error = ""
+        try:
+            ggsel_chats = list((ggsel_client.chats(page_size=50).get("items") or []) if ggsel_client.configured() else [])
+        except Exception as exc:
+            ggsel_chats = []
+            ggsel_error = str(exc)
         selected_kind = self.q("kind", "order")
+        selected_platform = self.q("platform", "digiseller")
         selected_order = 0 if selected_kind == "guest" else int(self.q("order_id", "0") or 0)
         selected_corr_id = int(self.q("corr_id", "0") or 0) if selected_kind == "guest" else 0
         selected_corr_type = self.q("corr_type", "visitor")
         if selected_kind != "guest" and not selected_order and chats:
             selected_order = int(chats[0].get("id_i") or 0)
+            selected_platform = "digiseller"
+            selected_kind = "order"
+        elif selected_kind != "guest" and not selected_order and ggsel_chats:
+            selected_order = int(ggsel_chats[0].get("id_i") or 0)
+            selected_platform = "ggsel"
             selected_kind = "order"
         elif not selected_corr_id and guest_chats:
             selected_kind = "guest"
@@ -3266,15 +3380,15 @@ class Handler(BaseHTTPRequestHandler):
         selected_guest_chat: dict[str, Any] | None = None
         for chat in chats:
             order_id = int(chat.get("id_i") or 0)
-            if selected_kind == "order" and order_id == selected_order:
+            if selected_kind == "order" and selected_platform != "ggsel" and order_id == selected_order:
                 selected_chat = chat
             email = str(chat.get("email") or "unknown")
             name = email.split("@", 1)[0] or email
             initials = (name[:1] or "?").upper()
             raw_unread = int(chat.get("cnt_new") or 0)
             order_unread_total += raw_unread
-            unread = 0 if selected_kind == "order" and order_id == selected_order else raw_unread
-            active = " active" if selected_kind == "order" and order_id == selected_order else ""
+            unread = 0 if selected_kind == "order" and selected_platform != "ggsel" and order_id == selected_order else raw_unread
+            active = " active" if selected_kind == "order" and selected_platform != "ggsel" and order_id == selected_order else ""
             preview = short(chat.get("product"), 80)
             avatar = product_avatar_html(chat.get("product"), initials)
             when = str(chat.get("last_date") or "")
@@ -3283,7 +3397,7 @@ class Handler(BaseHTTPRequestHandler):
             href = order_chat_href(order_id, email, chat.get("product"))
             search_text = " ".join([str(order_id), email, str(chat.get("product") or ""), name]).lower()
             items.append(
-                f"<a class='conversation-item{active}' data-kind='order' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(chat.get('product'))}' href='{h(href)}'>"
+                f"<a class='conversation-item{active}' data-kind='order' data-platform='digiseller' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(chat.get('product'))}' href='{h(href)}'>"
                 f"{avatar}"
                 f"<div><div class='conversation-name'>{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
@@ -3291,24 +3405,57 @@ class Handler(BaseHTTPRequestHandler):
             )
         if chat_error:
             items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>Digiseller API error</div><div class='preview'>{h(short(chat_error, 100))}</div></div><div></div></div>")
+        if ggsel_chats or ggsel_error:
+            items.append("<div class='conversation-section' data-section='ggsel'>GGSEL orders</div>")
+        if ggsel_error:
+            items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>GGSEL API error</div><div class='preview'>{h(short(ggsel_error, 100))}</div></div><div></div></div>")
+        for chat in ggsel_chats:
+            order_id = int(chat.get("id_i") or 0)
+            if not order_id:
+                continue
+            if selected_kind == "order" and selected_platform == "ggsel" and order_id == selected_order:
+                selected_chat = {"id_i": order_id, "email": chat.get("email") or f"ggsel-{order_id}", "product": chat.get("product") or "GGSEL order", "platform": "ggsel"}
+            email = str(chat.get("email") or f"ggsel-{order_id}")
+            name = email.split("@", 1)[0] or email
+            initials = "GG"
+            raw_unread = int(chat.get("cnt_new") or 0)
+            unread = 0 if selected_kind == "order" and selected_platform == "ggsel" and order_id == selected_order else raw_unread
+            active = " active" if selected_kind == "order" and selected_platform == "ggsel" and order_id == selected_order else ""
+            product = chat.get("product") or "GGSEL order"
+            preview = f"GGSEL · {product}"
+            avatar = product_avatar_html(product, initials)
+            when = str(chat.get("last_message") or "")
+            short_when = when[11:16] if len(when) >= 16 and "-" in when[:10] else when[-5:]
+            badge = f"<div class='badge'>{unread}</div>" if unread else ""
+            href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(order_id), "email": email, "product": str(product)})
+            search_text = " ".join(["ggsel", str(order_id), email, str(product), name]).lower()
+            items.append(
+                f"<a class='conversation-item{active}' data-kind='order' data-platform='ggsel' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(product)}' href='{h(href)}'>"
+                f"{avatar}"
+                f"<div><div class='conversation-name'><span class='platform-badge ggsel'>GGSEL</span> {h(name)}</div>"
+                f"<div class='preview'>{h(short(preview, 70))}</div></div>"
+                f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
+            )
         if selected_kind == "order" and selected_order and selected_chat is None:
             selected_chat = {
                 "id_i": selected_order,
                 "email": self.q("email", f"order-{selected_order}"),
                 "product": self.q("product", "Direct order lookup"),
+                "platform": selected_platform,
             }
             email = str(selected_chat.get("email") or f"order-{selected_order}")
             name = email.split("@", 1)[0] or email
-            initials = (name[:1] or "?").upper()
+            initials = "GG" if selected_platform == "ggsel" else (name[:1] or "?").upper()
             product = selected_chat.get("product")
-            preview = short(product, 80)
-            href = order_chat_href(selected_order, email, product)
-            search_text = " ".join([str(selected_order), email, str(product or ""), name]).lower()
+            preview = ("GGSEL · " if selected_platform == "ggsel" else "") + short(product, 80)
+            href = ("/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(selected_order), "email": email, "product": str(product or "")})) if selected_platform == "ggsel" else order_chat_href(selected_order, email, product)
+            search_text = " ".join([selected_platform, str(selected_order), email, str(product or ""), name]).lower()
+            badge_html = "<span class='platform-badge ggsel'>GGSEL</span> " if selected_platform == "ggsel" else ""
             items.insert(
                 0,
-                f"<a class='conversation-item active' data-kind='order' data-has-unread='0' data-search='{h(search_text)}' data-order-id='{selected_order}' data-email='{h(email)}' data-product='{h(product)}' href='{h(href)}'>"
+                f"<a class='conversation-item active' data-kind='order' data-platform='{h(selected_platform)}' data-has-unread='0' data-search='{h(search_text)}' data-order-id='{selected_order}' data-email='{h(email)}' data-product='{h(product)}' href='{h(href)}'>"
                 f"{product_avatar_html(product, initials)}"
-                f"<div><div class='conversation-name'>{h(name)}</div>"
+                f"<div><div class='conversation-name'>{badge_html}{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 "<div class='conversation-time'>new</div></a>",
             )
@@ -3357,16 +3504,29 @@ class Handler(BaseHTTPRequestHandler):
             clear_unread_cache()
             selected_messages = client.guest_messages(selected_corr_type, selected_corr_id)[-10:]
         elif selected_order:
-            try:
-                selected_messages = client.all_chat_messages(selected_order)
-                if selected_messages:
-                    safe_mark_chat_read(selected_order)
-                if selected_chat is None:
-                    selected_chat = {"id_i": selected_order, "email": self.q("email", f"order-{selected_order}"), "product": self.q("product", "Direct order lookup")}
-            except Exception as exc:
-                selected_chat = {"id_i": selected_order, "email": self.q("email", f"order-{selected_order}"), "product": f"Chat load failed: {exc}"}
+            if selected_platform == "ggsel":
+                try:
+                    selected_messages = ggsel_client.chat_messages(selected_order)
+                    if selected_chat is None:
+                        selected_chat = {"id_i": selected_order, "email": self.q("email", f"ggsel-{selected_order}"), "product": self.q("product", "GGSEL order"), "platform": "ggsel"}
+                except Exception as exc:
+                    selected_chat = {"id_i": selected_order, "email": self.q("email", f"ggsel-{selected_order}"), "product": f"GGSEL chat load failed: {exc}", "platform": "ggsel"}
+            else:
+                try:
+                    selected_messages = client.all_chat_messages(selected_order)
+                    if selected_messages:
+                        safe_mark_chat_read(selected_order)
+                    if selected_chat is None:
+                        selected_chat = {"id_i": selected_order, "email": self.q("email", f"order-{selected_order}"), "product": self.q("product", "Direct order lookup"), "platform": "digiseller"}
+                except Exception as exc:
+                    selected_chat = {"id_i": selected_order, "email": self.q("email", f"order-{selected_order}"), "product": f"Chat load failed: {exc}", "platform": "digiseller"}
 
-        panel = self.guest_chat_panel_html(selected_guest_chat, selected_messages) if selected_kind == "guest" and selected_guest_chat else self.chat_panel_html(selected_order, selected_chat, selected_messages)
+        if selected_kind == "guest" and selected_guest_chat:
+            panel = self.guest_chat_panel_html(selected_guest_chat, selected_messages)
+        elif selected_platform == "ggsel" and selected_chat:
+            panel = self.ggsel_chat_panel_html(selected_order, selected_chat, selected_messages)
+        else:
+            panel = self.chat_panel_html(selected_order, selected_chat, selected_messages)
         ajax = """
         <script>
         (() => {
@@ -3431,8 +3591,11 @@ class Handler(BaseHTTPRequestHandler):
               if (show) visible += 1;
             });
             list.querySelectorAll('.conversation-section').forEach((section) => {
-              const guestVisible = !!list.querySelector('.conversation-item[data-kind="guest"]:not([hidden])');
-              section.hidden = !guestVisible || activeFilter === 'orders';
+              const sectionName = section.dataset.section || 'guest';
+              const selector = sectionName === 'ggsel'
+                ? '.conversation-item[data-platform="ggsel"]:not([hidden])'
+                : '.conversation-item[data-kind="guest"]:not([hidden])';
+              section.hidden = !list.querySelector(selector) || (activeFilter === 'orders' && sectionName !== 'ggsel') || (activeFilter === 'guest' && sectionName !== 'guest');
             });
             if (emptyFilter) emptyFilter.classList.toggle('visible', visible === 0);
           }
@@ -3440,7 +3603,7 @@ class Handler(BaseHTTPRequestHandler):
             const kind = link.dataset.kind || 'order';
             return kind === 'guest'
               ? new URLSearchParams({kind: 'guest', corr_id: link.dataset.corrId || '', corr_type: link.dataset.corrType || 'visitor', name: link.dataset.name || '', product: link.dataset.product || ''})
-              : new URLSearchParams({order_id: link.dataset.orderId || '', email: link.dataset.email || '', product: link.dataset.product || ''});
+              : new URLSearchParams({platform: link.dataset.platform || 'digiseller', order_id: link.dataset.orderId || '', email: link.dataset.email || '', product: link.dataset.product || ''});
           }
           function escapeHtml(value) {
             return String(value).replace(/[&<>"']/g, (char) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
@@ -3513,13 +3676,13 @@ class Handler(BaseHTTPRequestHandler):
               const count = Number(item.cnt_new || 0);
               if (orderId && count > 0) unreadByOrder.set(orderId, count);
             });
-            list.querySelectorAll('.conversation-item[data-kind="order"]').forEach((link) => {
+            list.querySelectorAll('.conversation-item[data-kind="order"][data-platform="digiseller"]').forEach((link) => {
               const count = unreadByOrder.get(String(link.dataset.orderId || '')) || 0;
               if (count > 0) setConversationBadge(link, count);
               else if (!link.classList.contains('active')) clearConversationBadge(link);
             });
             applyConversationFilters();
-            const active = list.querySelector('.conversation-item.active[data-kind="order"]');
+            const active = list.querySelector('.conversation-item.active[data-kind="order"][data-platform="digiseller"]');
             if (!active) return;
             const activeCount = unreadByOrder.get(String(active.dataset.orderId || '')) || 0;
             if (activeCount <= 0 || refreshingActiveOrder) return;
@@ -3542,7 +3705,7 @@ class Handler(BaseHTTPRequestHandler):
         <div class='conversation-list-header'>
           <div class='conversation-list-title'>
             <h2>Messages</h2>
-            <div class='conversation-counts'>{len(chats)} orders · {len(guest_chats)} guests · {unread_total} unread</div>
+            <div class='conversation-counts'>{len(chats)} Digiseller · {len(ggsel_chats)} GGSEL · {len(guest_chats)} guests · {unread_total} unread</div>
           </div>
           <input id='conversation-search' class='conversation-search' placeholder='Search order, buyer, product...' autocomplete='off'>
           <div class='conversation-filters'>
