@@ -44,7 +44,7 @@ COMMON_PHRASES_FILE = APP_DIR / "common_phrases.json"
 COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.8-delivery-mode"
+APP_VERSION = "v8.11-chat-refresh"
 
 
 @dataclass
@@ -176,14 +176,14 @@ def google_translate(text: str, target_lang: str, source_lang: str = "auto") -> 
 
 def detect_buyer_language(messages: list[dict[str, Any]]) -> str:
     for msg in reversed(messages):
-        if msg.get("seller") == 1 or msg.get("is_file"):
+        if msg.get("seller") == 1 or is_attachment_message(msg):
             continue
         text = clean_text(msg.get("message"))
         lang = heuristic_language(text)
         if lang and lang not in {"zh", "zh-CN"}:
             return lang
     for msg in reversed(messages):
-        if msg.get("seller") == 1 or msg.get("is_file"):
+        if msg.get("seller") == 1 or is_attachment_message(msg):
             continue
         text = clean_text(msg.get("message"))
         if text:
@@ -193,18 +193,51 @@ def detect_buyer_language(messages: list[dict[str, Any]]) -> str:
     return "en"
 
 
-def translate_incoming_html(text: str, message_id: Any) -> str:
-    source_lang = heuristic_language(text)
-    if source_lang in {"zh", "zh-CN"}:
+def save_common_phrase_button(text: str) -> str:
+    value = clean_text(text)
+    if not value:
+        return ""
+    return f"<button class='save-common-phrase' type='button' data-text='{h(value)}'>&#20445;&#23384;&#20026;&#24120;&#29992;&#35821;</button>"
+
+
+def message_text_html(text: str, allow_save: bool = False) -> str:
+    actions = save_common_phrase_button(text) if allow_save else ""
+    if not actions:
         return h(text)
+    return (
+        f"<div class='plain-message'>"
+        f"<div class='plain-text'>{h(text)}</div>"
+        f"<div class='message-actions'>{actions}</div>"
+        f"</div>"
+    )
+
+
+def should_translate_text(text: str) -> bool:
+    value = clean_text(text)
+    if not value:
+        return False
+    if looks_like_image_name(value):
+        return False
+    if re.fullmatch(r"[\d\s.,:+#/_-]+", value):
+        return False
+    return bool(heuristic_language(value))
+
+
+def translate_incoming_html(text: str, message_id: Any, should_translate: bool = True) -> str:
+    source_lang = heuristic_language(text)
+    if not should_translate or source_lang in {"zh", "zh-CN"} or not should_translate_text(text):
+        return message_text_html(text, allow_save=not should_translate)
     message_key = h(message_id or hashlib.sha1(text.encode("utf-8")).hexdigest()[:12])
     return (
         f"<div class='translated-message' id='msg-{message_key}' data-pending='1'>"
         f"<div class='translated-text'>&#32763;&#35793;&#20013;...</div>"
         f"<div class='original-inline'>&#21407;&#25991;&#65306;{h(text)}</div>"
         f"<div class='original-text' hidden>{h(text)}</div>"
+        f"<div class='message-actions'>"
         f"<button class='toggle-original' type='button'>&#26597;&#30475;&#21407;&#25991;</button>"
+        f"{save_common_phrase_button(text)}"
         f"<span class='translation-label'>{h(lang_label(source_lang or 'auto'))} → &#20013;&#25991;</span>"
+        f"</div>"
         f"</div>"
     )
 
@@ -216,6 +249,14 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 def looks_like_image_name(value: Any) -> bool:
     text = clean_text(value).lower().split("?", 1)[0]
     return text.endswith(IMAGE_EXTENSIONS)
+
+
+def is_attachment_message(msg: dict[str, Any]) -> bool:
+    if msg.get("is_file") or msg.get("is_img") == 1:
+        return True
+    if msg.get("url") or msg.get("preview"):
+        return True
+    return looks_like_image_name(msg.get("filename") or msg.get("message") or msg.get("text"))
 
 
 def attachment_html(msg: dict[str, Any], allow_guess_preview: bool = False) -> str:
@@ -555,6 +596,13 @@ class DigisellerClient:
         payload: dict[str, Any] = {"message": message, "files": files}
         self.post("/debates/v2/", json_body=payload, params={"id_i": order_id})
 
+    def purchase_info(self, invoice_id: int) -> dict[str, Any]:
+        data = self.get(f"/purchase/info/{invoice_id}")
+        if not isinstance(data, dict):
+            return {}
+        content = data.get("content")
+        return content if isinstance(content, dict) else data
+
     def product(self, product_id: int) -> dict[str, Any]:
         return self.get(f"/products/{product_id}/data", params={"seller_id": self.seller_id, "lang": "en-US"})
 
@@ -605,6 +653,7 @@ class DigisellerClient:
 
 client = DigisellerClient()
 UNREAD_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
+PURCHASE_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
 ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
     "enabled": False,
     "last_ok": "",
@@ -659,14 +708,14 @@ STYLE = """
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;margin:0;background:#f6f8fb;color:#1f2937}a{color:#0b65c2;text-decoration:none}.top{background:#1f7acb;color:white;padding:10px 22px;display:flex;align-items:center;gap:16px}.brand-logo{width:42px;height:42px;object-fit:contain;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0002}.top a{color:white;font-weight:600}.top-nav{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.top-version{margin-left:auto;font-weight:700;white-space:nowrap}.top-online{border:1px solid #bfdbfe;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:800;white-space:nowrap;background:#dbeafe;color:#0f3b66}.top-online.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.top-online.bad{background:#fee2e2;color:#991b1b;border-color:#fecaca}.unique-lookup{position:relative;flex:1 1 320px;max-width:520px}.unique-lookup input{width:100%;box-sizing:border-box;border-color:#7db5e8;border-radius:3px;background:#fff;color:#1f2937;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.unique-results{position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:80;background:#fff;color:#1f2937;border:1px solid #9eb8ce;border-radius:0 0 4px 4px;box-shadow:0 8px 16px #0002;overflow:hidden}.unique-results[hidden]{display:none}.unique-title{background:#eef3f7;color:#5b6b7a;font-size:12px;font-weight:800;padding:8px 12px;text-transform:uppercase}.unique-result{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;padding:12px;background:#fff;color:#1f2937;border:0;border-radius:0;text-align:left}.unique-result:hover{background:#eef6ff}.unique-icon{width:28px;height:28px;flex:0 0 auto;border:1px solid #cbd5e1;background:#f8fafc;color:#64748b;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}.unique-main{min-width:0}.unique-product{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700}.unique-meta{display:block;color:#6b7280;font-size:12px;margin-top:2px}.unique-message{padding:12px;color:#6b7280;font-size:14px}.unique-error{color:#b91c1c}.wrap{padding:22px;max-width:1280px;margin:auto}.card{background:white;border:1px solid #d9e2ec;border-radius:10px;padding:18px;margin:0 0 18px 0;box-shadow:0 1px 2px #0001}table{border-collapse:collapse;width:100%;background:white}th,td{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left;vertical-align:top;font-size:14px}th{background:#f3f6fa}.muted{color:#6b7280}.ok{color:#047857;font-weight:700}.bad{color:#b91c1c;font-weight:700}input,button{font-size:14px;padding:8px;border:1px solid #cbd5e1;border-radius:6px}button{background:#1f7acb;color:white;cursor:pointer}.msg-seller{background:#eef6ff}.msg-buyer{background:#fff}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px}
 
-.messages-layout{display:grid;grid-template-columns:360px minmax(0,1fr);height:calc(100vh - 120px);min-height:0;background:white;border:1px solid #d9e2ec;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px #0001}.conversation-list{border-right:1px solid #e5e7eb;overflow-y:scroll;min-height:0;background:#fff}.conversation-title{font-size:34px;font-weight:800;padding:22px 22px 14px}.conversation-item{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;padding:12px 14px;border-bottom:1px solid #eef2f7;color:#1f2937}.conversation-item:hover{background:#f4f8ff}.conversation-item.active{background:#3f85d6;color:#fff}.conversation-item.active .muted,.conversation-item.active .preview{color:#eaf2ff}.avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#111827;color:#fff;font-weight:800}.conversation-name{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.preview{color:#9ca3af;line-height:1.25;max-height:38px;overflow:hidden}.conversation-time{font-size:14px;white-space:nowrap}.badge{display:inline-block;min-width:18px;padding:2px 6px;border-radius:999px;background:#ef4444;color:white;font-size:12px;text-align:center;margin-top:6px}.conversation-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:#fff}.conversation-header{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid #e5e7eb}.conversation-header-title{font-size:18px;font-weight:800}.conversation-body{padding:20px 24px;overflow-y:scroll;min-height:0;flex:1 1 auto;scrollbar-gutter:stable}.chat-row{margin:0 0 18px}.chat-meta{display:flex;justify-content:space-between;gap:12px;color:#6b7280;font-size:13px;margin-bottom:6px}.chat-author{font-weight:800;color:#1f2937}.chat-bubble{display:inline-block;max-width:78%;border-radius:10px;padding:10px 12px;line-height:1.45;background:#f3f4f6;white-space:pre-wrap;text-align:left}.chat-row.seller{text-align:right}.chat-row.seller .chat-meta{justify-content:flex-end}.chat-row.seller .chat-bubble{background:#eef6ff}.chat-row.buyer .chat-bubble{background:#fff;border:1px solid #e5e7eb}.read-receipt{display:inline-flex;align-items:center;gap:3px;margin:0 8px;color:#047857;font-size:12px;font-weight:800;white-space:nowrap}.toolbar a{margin-left:12px}.empty-state{padding:40px;color:#6b7280;text-align:center}.conversation-list::-webkit-scrollbar,.conversation-body::-webkit-scrollbar,.reply-editor::-webkit-scrollbar{width:12px}.conversation-list::-webkit-scrollbar-thumb,.conversation-body::-webkit-scrollbar-thumb,.reply-editor::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:999px;border:3px solid #f8fafc}@media(max-width:850px){.messages-layout{grid-template-columns:1fr;height:calc(100vh - 110px)}.conversation-panel{min-height:0}.conversation-list{max-height:260px;border-right:0;border-bottom:1px solid #e5e7eb}}
+.messages-layout{display:grid;grid-template-columns:360px minmax(0,1fr);height:calc(100vh - 120px);min-height:0;background:white;border:1px solid #d9e2ec;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px #0001}.conversation-list{border-right:1px solid #e5e7eb;overflow-y:scroll;min-height:0;background:#fff}.conversation-title{font-size:34px;font-weight:800;padding:22px 22px 14px}.conversation-item{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;padding:12px 14px;border-bottom:1px solid #eef2f7;color:#1f2937}.conversation-item:hover{background:#f4f8ff}.conversation-item.active{background:#3f85d6;color:#fff}.conversation-item.active .muted,.conversation-item.active .preview{color:#eaf2ff}.avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#111827;color:#fff;font-weight:800}.conversation-name{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.preview{color:#9ca3af;line-height:1.25;max-height:38px;overflow:hidden}.conversation-time{font-size:14px;white-space:nowrap}.badge{display:inline-block;min-width:18px;padding:2px 6px;border-radius:999px;background:#ef4444;color:white;font-size:12px;text-align:center;margin-top:6px}.conversation-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:#fff}.conversation-header{flex:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid #e5e7eb}.conversation-header-main{min-width:0}.conversation-header-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:360px;text-align:right}.conversation-header-title{font-size:18px;font-weight:800}.order-options{background:#f8fafc;border:1px solid #dbe4ee;border-radius:8px;padding:8px 10px;color:#334155;font-size:13px;line-height:1.35}.order-options-title{color:#64748b;font-size:12px;font-weight:800;margin-bottom:4px}.order-option-name{font-weight:800}.order-option-value{color:#0f172a}.conversation-body{padding:20px 24px;overflow-y:scroll;min-height:0;flex:1 1 auto;scrollbar-gutter:stable}.chat-row{margin:0 0 18px}.chat-meta{display:flex;justify-content:space-between;gap:12px;color:#6b7280;font-size:13px;margin-bottom:6px}.chat-author{font-weight:800;color:#1f2937}.chat-bubble{display:inline-block;max-width:78%;border-radius:10px;padding:10px 12px;line-height:1.45;background:#f3f4f6;white-space:pre-wrap;text-align:left}.chat-row.seller{text-align:right}.chat-row.seller .chat-meta{justify-content:flex-end}.chat-row.seller .chat-bubble{background:#eef6ff}.chat-row.buyer .chat-bubble{background:#fff;border:1px solid #e5e7eb}.read-receipt{display:inline-flex;align-items:center;gap:3px;margin:0 8px;color:#047857;font-size:12px;font-weight:800;white-space:nowrap}.toolbar a{margin-left:12px}.empty-state{padding:40px;color:#6b7280;text-align:center}.conversation-list::-webkit-scrollbar,.conversation-body::-webkit-scrollbar,.reply-editor::-webkit-scrollbar{width:12px}.conversation-list::-webkit-scrollbar-thumb,.conversation-body::-webkit-scrollbar-thumb,.reply-editor::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:999px;border:3px solid #f8fafc}@media(max-width:850px){.messages-layout{grid-template-columns:1fr;height:calc(100vh - 110px)}.conversation-panel{min-height:0}.conversation-list{max-height:260px;border-right:0;border-bottom:1px solid #e5e7eb}.conversation-header{flex-direction:column}.conversation-header-side{align-items:flex-start;text-align:left;max-width:none}}
 
 .alert-controls{position:fixed;right:18px;bottom:18px;z-index:50;display:flex;gap:8px;align-items:center}.alert-button{background:#16a34a;color:#fff;border:0;border-radius:999px;padding:10px 14px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-button.off{background:#64748b}.alert-pill{display:none;background:#dc2626;color:#fff;border-radius:999px;padding:9px 12px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-pill.show{display:inline-block}.unread-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#ef4444;margin-left:6px}
 .thumb{max-width:220px;max-height:160px;border:1px solid #e5e7eb;border-radius:8px;display:block;margin-top:8px;background:#f8fafc}.file-preview{margin-top:6px}.file-name{font-weight:700}.image-note{font-size:12px;color:#6b7280;margin-top:4px}
-.reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.common-phrases{border-top:1px solid #e5e7eb;background:#f8fafc;padding:10px 18px 14px}.common-phrase-title{font-size:13px;font-weight:800;color:#334155;margin-bottom:8px}.common-phrase-buttons{display:flex;flex-wrap:wrap;gap:8px}.common-phrase-buttons form{margin:0}.common-phrase-buttons button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.phrase-manager textarea{width:100%;box-sizing:border-box;min-height:76px;resize:vertical}.phrase-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:start;margin-bottom:10px}.phrase-empty{color:#64748b;font-size:14px}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
-.translated-message{white-space:normal}.translated-text,.original-text{white-space:pre-wrap}.toggle-original{margin-top:8px;background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.translation-label{display:inline-block;margin-left:8px;color:#64748b;font-size:12px}
+.reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.common-phrases{border-top:1px solid #e5e7eb;background:#f8fafc;padding:10px 18px 14px}.common-phrase-title{font-size:13px;font-weight:800;color:#334155;margin-bottom:8px}.common-phrase-buttons{display:flex;flex-wrap:wrap;gap:8px}.common-phrase-buttons form{margin:0}.common-phrase-buttons button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.phrase-manager form[action='/phrases/save']{border:1px dashed #cbd5e1;border-radius:10px;padding:12px;background:#fff}.phrase-manager textarea{width:100%;box-sizing:border-box;min-height:130px;resize:vertical}.phrase-manager.dragover form[action='/phrases/save']{border-color:#2563eb;background:#eff6ff}.phrase-manager.dragover textarea{border-color:#2563eb;background:#eff6ff}.phrase-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:start;margin-bottom:10px}.phrase-empty{color:#64748b;font-size:14px}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
+.translated-message,.plain-message{white-space:normal}.translated-text,.original-text,.plain-text{white-space:pre-wrap}.message-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}.toggle-original,.save-common-phrase{background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.save-common-phrase.saved{background:#dcfce7;color:#166534;border-color:#bbf7d0}.save-common-phrase.failed{background:#fee2e2;color:#991b1b;border-color:#fecaca}.translation-label{display:inline-block;color:#64748b;font-size:12px}
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
-.phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:block;margin-top:8px}.phrase-manager.dragover textarea{border-color:#2563eb;background:#eff6ff}.phrase-pending{margin-top:8px}
+.phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:flex;align-items:center;justify-content:center;gap:10px;min-height:68px;margin-top:10px;border:1px dashed #93c5fd;border-radius:10px;background:#eff6ff;color:#0f3b66;font-weight:700;padding:10px;cursor:pointer}.phrase-upload input{background:white}.phrase-image-preview,.common-phrase-buttons .common-phrase-preview{border:0;background:transparent;padding:0;cursor:pointer}.phrase-image-preview img,.common-phrase-preview img{display:block;width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1}.common-phrase-item{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.common-phrase-previews{display:flex;gap:6px;align-items:center}.common-phrase-file-chip{display:inline-flex;align-items:center;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;color:#475569;padding:4px 6px;font-size:12px}.phrase-pending{margin-top:8px}
 .chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.chat-keepalive-btn.warn{background:#fef3c7;color:#92400e;border-color:#fde68a}
 </style>
 """
@@ -958,12 +1007,13 @@ def layout(title: str, body: str) -> bytes:
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8000);
         try {
-          const res = await fetch('/api/unread-count', {cache: 'no-store', signal: controller.signal});
+          const res = await fetch('/api/unread-count?force=1', {cache: 'no-store', signal: controller.signal});
           const data = await res.json();
           const total = Number(data.total || 0);
           pill.textContent = total > 0 ? `\u672a\u8bfb ${total}` : '';
           pill.classList.toggle('show', total > 0);
           document.title = total > 0 ? `(${total}) ${baseTitle}` : baseTitle;
+          if (window.handleDigisellerUnreadData) window.handleDigisellerUnreadData(data);
           if (enabled && total > 0 && (force || total > lastTotal)) alertUnread(data, force);
           lastTotal = total;
           localStorage.setItem('digisellerLastUnreadTotal', String(lastTotal));
@@ -1014,6 +1064,35 @@ def layout(title: str, body: str) -> bytes:
       translated.hidden = !showingOriginal;
       if (originalInline) originalInline.hidden = !showingOriginal;
       button.textContent = showingOriginal ? '查看原文' : '显示中文';
+    });
+    document.addEventListener('click', async (event) => {
+      const button = event.target.closest('.save-common-phrase');
+      if (!button) return;
+      const text = button.dataset.text || '';
+      if (!text.trim()) return;
+      const originalLabel = button.textContent;
+      button.disabled = true;
+      button.classList.remove('saved', 'failed');
+      button.textContent = '\u4fdd\u5b58\u4e2d...';
+      try {
+        const res = await fetch('/api/common-phrases', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({text})
+        });
+        if (!res.ok) throw new Error('save failed');
+        const data = await res.json();
+        button.textContent = data.created ? '\u5df2\u4fdd\u5b58' : '\u5df2\u5b58\u5728';
+        button.classList.add('saved');
+      } catch (e) {
+        button.textContent = '\u4fdd\u5b58\u5931\u8d25';
+        button.classList.add('failed');
+        setTimeout(() => {
+          button.disabled = false;
+          button.classList.remove('failed');
+          button.textContent = originalLabel || '\u4fdd\u5b58\u4e3a\u5e38\u7528\u8bed';
+        }, 1800);
+      }
     });
     window.loadDigisellerTranslations = async function(root=document) {
       const nodes = Array.from(root.querySelectorAll(".translated-message[data-pending='1']"));
@@ -1177,6 +1256,7 @@ def unread_summary() -> dict[str, Any]:
         guest = []
     admin: list[dict[str, Any]] = []
     latest: dict[str, Any] | None = None
+    buyer_unread: list[dict[str, Any]] = []
     for chat in buyer:
         rec = {
             "type": "buyer",
@@ -1187,6 +1267,7 @@ def unread_summary() -> dict[str, Any]:
             "cnt_new": int(chat.get("cnt_new") or 0),
             "url": f"/chats?order_id={chat.get('id_i')}",
         }
+        buyer_unread.append(rec)
         if latest is None or str(rec.get("last_date") or "") > str(latest.get("last_date") or ""):
             latest = rec
     for chat in guest:
@@ -1208,6 +1289,7 @@ def unread_summary() -> dict[str, Any]:
         "ok": True,
         "buyer_unread_chats": len(buyer),
         "buyer_unread_messages": sum(int(c.get("cnt_new") or 0) for c in buyer),
+        "buyer_unread": buyer_unread,
         "guest_unread_chats": len(guest),
         "admin_unread": len(admin),
         "total": total,
@@ -1259,6 +1341,94 @@ def save_common_phrases(phrases: list[dict[str, Any]]) -> None:
     tmp = COMMON_PHRASES_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(COMMON_PHRASES_FILE)
+
+
+def save_text_common_phrase(text: str) -> tuple[bool, str]:
+    value = clean_text(text)
+    if not value:
+        raise RuntimeError("Text is empty")
+    phrases = load_common_phrases()
+    for phrase in phrases:
+        phrase_text = clean_text(phrase.get("text"))
+        if phrase_text == value and not phrase.get("files"):
+            return False, str(phrase["id"])
+    phrase_id = new_phrase_id(value)
+    phrases.append({"id": phrase_id, "text": value, "files": []})
+    save_common_phrases(phrases)
+    return True, phrase_id
+
+
+def localize_option_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return clean_text(value)
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        candidates = [item for item in value if isinstance(item, dict)]
+        for locale in ("zh-CN", "zh", "ru-RU", "ru", "en-US", "en"):
+            for item in candidates:
+                if str(item.get("locale") or item.get("lang") or "").lower() == locale.lower():
+                    text = localize_option_value(item.get("value") or item.get("text") or item.get("name"))
+                    if text:
+                        return text
+        for item in value:
+            text = localize_option_value(item.get("value") if isinstance(item, dict) else item)
+            if text:
+                return text
+        return ""
+    if isinstance(value, dict):
+        for key in ("value", "text", "name", "title", "caption", "label"):
+            text = localize_option_value(value.get(key))
+            if text:
+                return text
+    return clean_text(value)
+
+
+def purchase_options_from_info(info: dict[str, Any]) -> list[tuple[str, str]]:
+    raw_options: Any = info.get("options") or info.get("option") or info.get("parameters") or info.get("params")
+    if isinstance(raw_options, dict):
+        raw_options = raw_options.get("option") or raw_options.get("items") or raw_options.get("values") or [raw_options]
+    if isinstance(raw_options, dict):
+        raw_options = [raw_options]
+    if not isinstance(raw_options, list):
+        return []
+    options: list[tuple[str, str]] = []
+    for raw in raw_options:
+        if not isinstance(raw, dict):
+            continue
+        name = localize_option_value(raw.get("name") or raw.get("parameter") or raw.get("title") or raw.get("label"))
+        value = localize_option_value(raw.get("value") or raw.get("variant") or raw.get("selected") or raw.get("text"))
+        if name and value:
+            options.append((name, value))
+    return options
+
+
+def cached_purchase_info(order_id: int) -> dict[str, Any]:
+    if not order_id:
+        return {}
+    now = time.time()
+    cached = PURCHASE_INFO_CACHE.get(order_id)
+    if cached and now - cached[0] < 300:
+        return cached[1]
+    try:
+        info = client.purchase_info(order_id)
+    except Exception:
+        info = {}
+    PURCHASE_INFO_CACHE[order_id] = (now, info)
+    return info
+
+
+def order_options_html(order_id: int) -> str:
+    options = purchase_options_from_info(cached_purchase_info(order_id))
+    if not options:
+        return ""
+    rows = "".join(
+        f"<div class='order-option'><span class='order-option-name'>{h(name)}:</span> <span class='order-option-value'>{h(value)}</span></div>"
+        for name, value in options
+    )
+    return f"<div class='order-options'><div class='order-options-title'>&#39069;&#22806;&#36873;&#39033;</div>{rows}</div>"
 
 
 def new_phrase_id(text: str) -> str:
@@ -1568,12 +1738,29 @@ class Handler(BaseHTTPRequestHandler):
             label = short(text, 36) if text else "Attachment phrase"
             if files:
                 label = f"{label} +{len(files)} file"
+            preview_items = []
+            for file in files:
+                if not isinstance(file, dict):
+                    continue
+                stored = str(file.get("stored") or "")
+                filename = str(file.get("filename") or stored)
+                content_type = str(file.get("content_type") or "")
+                if content_type.startswith("image/"):
+                    file_url = phrase_file_url(stored)
+                    preview_items.append(
+                        f"<button class='common-phrase-preview' type='button' data-preview-src='{h(file_url)}' data-preview-name='{h(filename)}'>"
+                        f"<img src='{h(file_url)}' alt='{h(filename)}'></button>"
+                    )
+                else:
+                    preview_items.append(f"<span class='common-phrase-file-chip'>{h(filename or 'FILE')}</span>")
+            previews_html = f"<div class='common-phrase-previews'>{''.join(preview_items)}</div>" if preview_items else ""
             phrase_forms.append(
+                f"<div class='common-phrase-item'>{previews_html}"
                 f"<form method='post' action='/chats/send'>"
                 f"<input type='hidden' name='order_id' value='{order_id}'>"
                 f"<input type='hidden' name='target_lang' value='{h(target_lang)}'>"
                 f"<input type='hidden' name='phrase_id' value='{h(phrase['id'])}'>"
-                f"<button type='submit' title='{h(text or label)}'>{h(label)}</button></form>"
+                f"<button type='submit' title='{h(text or label)}'>{h(label)}</button></form></div>"
             )
         if phrase_forms:
             phrases_html = (
@@ -1627,6 +1814,13 @@ class Handler(BaseHTTPRequestHandler):
           }});
           document.addEventListener('keydown', (event) => {{
             if (event.key === 'Escape' && !previewModal.hidden) closeImagePreview();
+          }});
+          document.querySelectorAll('.common-phrase-preview').forEach((button) => {{
+            if (button.dataset.previewReady) return;
+            button.dataset.previewReady = '1';
+            button.addEventListener('click', () => {{
+              openImagePreview(button.dataset.previewSrc || '', button.dataset.previewName || '');
+            }});
           }});
           function syncInputFiles() {{
             const dataTransfer = new DataTransfer();
@@ -1821,6 +2015,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.upload_stock()
             if path == "/api/translate-batch":
                 return self.api_translate_batch()
+            if path == "/api/common-phrases":
+                return self.api_save_common_phrase()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
         except Exception as exc:
             self.send_html("Error", f"<div class='card bad'>Error</div><pre class='card code'>{h(exc)}</pre>", 500)
@@ -1912,7 +2108,13 @@ class Handler(BaseHTTPRequestHandler):
                 filename = str(file.get("filename") or stored)
                 content_type = str(file.get("content_type") or "")
                 delete_form_id = "delete-file-" + re.sub(r"[^a-zA-Z0-9_-]", "-", stored)
-                preview = f"<img src='{h(phrase_file_url(stored))}' alt='{h(filename)}'>" if content_type.startswith("image/") else "<span class='file-chip-icon'>FILE</span>"
+                file_url = phrase_file_url(stored)
+                preview = (
+                    f"<button class='phrase-image-preview' type='button' data-preview-src='{h(file_url)}' data-preview-name='{h(filename)}'>"
+                    f"<img src='{h(file_url)}' alt='{h(filename)}'></button>"
+                    if content_type.startswith("image/")
+                    else "<span class='file-chip-icon'>FILE</span>"
+                )
                 file_rows.append(
                     f"<div class='phrase-file'>{preview}<span class='phrase-file-name'>{h(filename)}</span>"
                     f"<button type='submit' form='{h(delete_form_id)}'>&#21024;&#38500;&#38468;&#20214;</button></div>"
@@ -1943,6 +2145,30 @@ class Handler(BaseHTTPRequestHandler):
         phrase_editor_js = """
         <script>
         (() => {
+          const previewModal = document.createElement('div');
+          previewModal.className = 'preview-modal';
+          previewModal.hidden = true;
+          previewModal.innerHTML = '<button class="preview-modal-close" type="button" aria-label="Close">×</button><img alt="">';
+          document.body.appendChild(previewModal);
+          const modalImage = previewModal.querySelector('img');
+          function openImagePreview(url, name) {
+            modalImage.src = url;
+            modalImage.alt = name || '';
+            previewModal.hidden = false;
+          }
+          function closeImagePreview() {
+            previewModal.hidden = true;
+            modalImage.removeAttribute('src');
+          }
+          previewModal.addEventListener('click', (event) => {
+            if (event.target === previewModal || event.target.closest('.preview-modal-close')) closeImagePreview();
+          });
+          document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !previewModal.hidden) closeImagePreview();
+          });
+          document.querySelectorAll('.phrase-image-preview').forEach((button) => {
+            button.addEventListener('click', () => openImagePreview(button.dataset.previewSrc || '', button.dataset.previewName || ''));
+          });
           function clipboardImageFiles(event) {
             const clipboard = event.clipboardData;
             if (!clipboard) return [];
@@ -1970,6 +2196,7 @@ class Handler(BaseHTTPRequestHandler):
             const textarea = form.querySelector('textarea[name="text"]');
             if (!input || !textarea) return;
             let selectedFiles = [];
+            let selectedPreviewUrls = [];
             const pending = document.createElement('div');
             pending.className = 'phrase-pending selected-files';
             input.closest('label').after(pending);
@@ -1979,11 +2206,13 @@ class Handler(BaseHTTPRequestHandler):
               input.files = dataTransfer.files;
             }
             function render() {
+              selectedPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+              selectedPreviewUrls = [];
               pending.replaceChildren();
               if (!selectedFiles.length) return;
               const summary = document.createElement('div');
               summary.className = 'selected-summary';
-              summary.textContent = `待上传：${selectedFiles.map((file) => file.name).join('、')}`;
+              summary.textContent = `\u5f85\u4e0a\u4f20\uff1a${selectedFiles.map((file) => file.name).join('\u3001')}`;
               pending.appendChild(summary);
               const grid = document.createElement('div');
               grid.className = 'file-preview-grid';
@@ -1992,8 +2221,12 @@ class Handler(BaseHTTPRequestHandler):
                 chip.className = 'file-chip';
                 if (file.type.startsWith('image/')) {
                   const img = document.createElement('img');
-                  img.src = URL.createObjectURL(file);
+                  const url = URL.createObjectURL(file);
+                  selectedPreviewUrls.push(url);
+                  img.src = url;
                   img.alt = file.name;
+                  img.title = '\u70b9\u51fb\u67e5\u770b\u5927\u56fe';
+                  img.addEventListener('click', () => openImagePreview(url, file.name));
                   chip.appendChild(img);
                 } else {
                   const icon = document.createElement('span');
@@ -2022,20 +2255,26 @@ class Handler(BaseHTTPRequestHandler):
               event.preventDefault();
               addFiles(files);
             });
-            [form, textarea].forEach((target) => {
+            const uploadLabel = input.closest('label');
+            [form, textarea, uploadLabel].filter(Boolean).forEach((target) => {
               target.addEventListener('dragenter', (event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 form.closest('.phrase-manager')?.classList.add('dragover');
               });
               target.addEventListener('dragover', (event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 form.closest('.phrase-manager')?.classList.add('dragover');
               });
               target.addEventListener('dragleave', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
                 if (!form.contains(event.relatedTarget)) form.closest('.phrase-manager')?.classList.remove('dragover');
               });
               target.addEventListener('drop', (event) => {
                 event.preventDefault();
+                event.stopPropagation();
                 form.closest('.phrase-manager')?.classList.remove('dragover');
                 addFiles(event.dataTransfer.files);
               });
@@ -2152,11 +2391,12 @@ class Handler(BaseHTTPRequestHandler):
         if selected_chat:
             buyer_name = str(selected_chat.get("email") or "Buyer").split("@", 1)[0]
             buyer_lang = detect_buyer_language(selected_messages)
+            options_html = order_options_html(selected_order)
             header = (
-                f"<div><div class='conversation-header-title'>{h(buyer_name)}</div>"
+                f"<div class='conversation-header-main'><div class='conversation-header-title'>{h(buyer_name)}</div>"
                 f"<div class='muted'>Order {h(selected_chat.get('id_i'))} · {h(short(selected_chat.get('product'), 110))} · Messages loaded: {len(selected_messages)} · Reply language: {h(lang_label(buyer_lang))}</div></div>"
-                f"<div class='toolbar'><a href='/chat?order_id={selected_order}'>Table view</a>"
-                f"<a href='/download-images?order_id={selected_order}'>Download images</a></div>"
+                f"<div class='conversation-header-side'>{options_html}<div class='toolbar'><a href='/chat?order_id={selected_order}'>Table view</a>"
+                f"<a href='/download-images?order_id={selected_order}'>Download images</a></div></div>"
             )
             rows = []
             total_messages = len(selected_messages)
@@ -2166,10 +2406,10 @@ class Handler(BaseHTTPRequestHandler):
                 author = "nose1989" if is_seller else buyer_name
                 text = clean_text(msg.get("message"))
                 try:
-                    if msg.get("is_file"):
+                    if is_attachment_message(msg):
                         text_html = attachment_html(msg)
                     else:
-                        text_html = translate_incoming_html(text, msg.get("id"))
+                        text_html = translate_incoming_html(text, msg.get("id"), should_translate=not is_seller)
                 except Exception as exc:
                     text_html = h(text or f"Message render error: {exc}")
                 msg_no = f"#{idx}/{total_messages}"
@@ -2183,8 +2423,8 @@ class Handler(BaseHTTPRequestHandler):
             notice = ""
             if self.q("sent") == "1":
                 notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
-            return f"<div id='chat-panel' class='conversation-panel'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang)}</div>"
-        return "<div id='chat-panel' class='conversation-panel'><div class='empty-state'>No chats found</div></div>"
+            return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang)}</div>"
+        return "<div id='chat-panel' class='conversation-panel' data-kind='order'><div class='empty-state'>No chats found</div></div>"
 
     def guest_chat_panel_html(self, chat: dict[str, Any], messages: list[dict[str, Any]]) -> str:
         corr_id = int(chat.get("CorrID") or chat.get("corrID") or 0)
@@ -2203,10 +2443,10 @@ class Handler(BaseHTTPRequestHandler):
             cls = "seller" if is_seller else "buyer"
             author = "nose1989" if is_seller else name
             text = clean_text(msg.get("message"))
-            if msg.get("is_file"):
+            if is_attachment_message(msg):
                 text_html = attachment_html(msg, allow_guess_preview=True)
             else:
-                text_html = translate_incoming_html(text, msg.get("id"))
+                text_html = translate_incoming_html(text, msg.get("id"), should_translate=not is_seller)
             msg_no = f"#{idx}/{total_messages}"
             msg_id = f" · ID {h(msg.get('id'))}" if msg.get("id") else ""
             rows.append(
@@ -2216,7 +2456,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         if not rows:
             rows.append("<div class='empty-state'>No guest messages loaded</div>")
-        return f"<div id='chat-panel' class='conversation-panel'><div class='conversation-header'>{header}</div><div class='conversation-body'>{''.join(rows)}</div></div>"
+        return f"<div id='chat-panel' class='conversation-panel' data-kind='guest' data-corr-id='{corr_id}' data-message-count='{len(messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{''.join(rows)}</div></div>"
 
     def api_chat_panel(self) -> None:
         if self.q("kind") == "guest":
@@ -2269,6 +2509,14 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
         self.send_json({"ok": True, "results": results})
+
+    def api_save_common_phrase(self) -> None:
+        payload = self.read_json_body()
+        text = clean_text(payload.get("text"))
+        if not text:
+            return self.send_json({"ok": False, "error": "text is required"}, 400)
+        created, phrase_id = save_text_common_phrase(text)
+        self.send_json({"ok": True, "created": created, "id": phrase_id})
 
     def chats(self) -> None:
         chats = client.chats(page_size=100)
@@ -2366,6 +2614,7 @@ class Handler(BaseHTTPRequestHandler):
         (() => {
           const list = document.getElementById('conversation-list');
           if (!list) return;
+          let refreshingActiveOrder = false;
           function runPanelScripts(panel) {
             panel.querySelectorAll('script').forEach((oldScript) => {
               const script = document.createElement('script');
@@ -2374,23 +2623,42 @@ class Handler(BaseHTTPRequestHandler):
               script.remove();
             });
           }
-          list.addEventListener('click', async (event) => {
-            const link = event.target.closest('.conversation-item');
-            if (!link) return;
-            event.preventDefault();
-            const panel = document.getElementById('chat-panel');
-            if (!panel) { location.href = link.href; return; }
+          function conversationBadge(link) {
+            let badge = link.querySelector('.badge');
+            if (badge) return badge;
+            const time = link.querySelector('.conversation-time');
+            if (!time) return null;
+            badge = document.createElement('div');
+            badge.className = 'badge';
+            time.appendChild(badge);
+            return badge;
+          }
+          function setConversationBadge(link, count) {
+            const value = Number(count || 0);
+            if (value <= 0) {
+              clearConversationBadge(link);
+              return;
+            }
+            const badge = conversationBadge(link);
+            if (badge) badge.textContent = String(value);
+          }
+          function clearConversationBadge(link) {
+            const badge = link?.querySelector('.badge');
+            if (badge) badge.remove();
+            if (link) delete link.dataset.pendingUnread;
+          }
+          function paramsForLink(link) {
             const kind = link.dataset.kind || 'order';
-            const params = kind === 'guest'
+            return kind === 'guest'
               ? new URLSearchParams({kind: 'guest', corr_id: link.dataset.corrId || '', corr_type: link.dataset.corrType || 'visitor', name: link.dataset.name || '', product: link.dataset.product || ''})
               : new URLSearchParams({order_id: link.dataset.orderId || '', email: link.dataset.email || '', product: link.dataset.product || ''});
-            list.querySelectorAll('.conversation-item.active').forEach((item) => item.classList.remove('active'));
-            link.classList.add('active');
-            const badge = link.querySelector('.badge');
-            if (badge) badge.remove();
+          }
+          async function loadPanel(link, options = {}) {
+            const panel = document.getElementById('chat-panel');
+            if (!panel) { location.href = link.href; return; }
             panel.classList.add('loading');
             try {
-              const res = await fetch('/api/chat-panel?' + params.toString(), {cache: 'no-store'});
+              const res = await fetch('/api/chat-panel?' + paramsForLink(link).toString(), {cache: 'no-store'});
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
               const data = await res.json();
               if (!data.ok) throw new Error(data.error || 'Load failed');
@@ -2398,13 +2666,48 @@ class Handler(BaseHTTPRequestHandler):
               const newPanel = document.getElementById('chat-panel');
               if (newPanel) runPanelScripts(newPanel);
               if (newPanel && window.loadDigisellerTranslations) window.loadDigisellerTranslations(newPanel);
-              if (window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
-              history.pushState(null, '', link.href);
+              if (options.clearBadge) clearConversationBadge(link);
+              if (options.pushHistory) history.pushState(null, '', link.href);
+              if (options.refreshUnread && window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
             } catch (error) {
-              location.href = link.href;
+              if (!options.silent) location.href = link.href;
             }
+          }
+          list.addEventListener('click', async (event) => {
+            const link = event.target.closest('.conversation-item');
+            if (!link) return;
+            event.preventDefault();
+            list.querySelectorAll('.conversation-item.active').forEach((item) => item.classList.remove('active'));
+            link.classList.add('active');
+            await loadPanel(link, {pushHistory: true, clearBadge: true, refreshUnread: true});
           });
+          window.handleDigisellerUnreadData = (data) => {
+            const buyerUnread = Array.isArray(data.buyer_unread) ? data.buyer_unread : [];
+            const unreadByOrder = new Map();
+            buyerUnread.forEach((item) => {
+              const orderId = String(item.order_id || '');
+              const count = Number(item.cnt_new || 0);
+              if (orderId && count > 0) unreadByOrder.set(orderId, count);
+            });
+            list.querySelectorAll('.conversation-item[data-kind="order"]').forEach((link) => {
+              const count = unreadByOrder.get(String(link.dataset.orderId || '')) || 0;
+              if (count > 0) setConversationBadge(link, count);
+              else if (!link.classList.contains('active')) clearConversationBadge(link);
+            });
+            const active = list.querySelector('.conversation-item.active[data-kind="order"]');
+            if (!active) return;
+            const activeCount = unreadByOrder.get(String(active.dataset.orderId || '')) || 0;
+            if (activeCount <= 0 || refreshingActiveOrder) return;
+            active.dataset.pendingUnread = String(activeCount);
+            setConversationBadge(active, activeCount);
+            refreshingActiveOrder = true;
+            loadPanel(active, {silent: true}).finally(() => { refreshingActiveOrder = false; });
+          };
           window.addEventListener('popstate', () => location.reload());
+          if (window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
+          setInterval(() => {
+            if (!document.hidden && window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
+          }, 15000);
         })();
         </script>
         """
@@ -2648,7 +2951,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_unread_count(self) -> None:
         now = time.time()
         cached = UNREAD_CACHE.get("data")
-        if cached is not None and now - float(UNREAD_CACHE.get("time") or 0) < 30:
+        force = self.q("force", "0") in {"1", "true", "yes"}
+        if not force and cached is not None and now - float(UNREAD_CACHE.get("time") or 0) < 30:
             return self.send_json(cached)
         data = unread_summary()
         UNREAD_CACHE["time"] = now
