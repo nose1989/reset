@@ -15,6 +15,7 @@ import datetime as dt
 import hashlib
 import html
 import json
+import mimetypes
 import os
 import re
 import subprocess
@@ -34,6 +35,9 @@ try:
     import httpx
 except ImportError:
     raise SystemExit("Missing dependency: python3 -m pip install --user httpx certifi")
+
+mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("image/avif", ".avif")
 
 APP_DIR = Path(__file__).resolve().parent
 DOWNLOAD_DIR = APP_DIR / "downloads"
@@ -708,14 +712,14 @@ STYLE = """
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;margin:0;background:#f6f8fb;color:#1f2937}a{color:#0b65c2;text-decoration:none}.top{background:#1f7acb;color:white;padding:10px 22px;display:flex;align-items:center;gap:16px}.brand-logo{width:42px;height:42px;object-fit:contain;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0002}.top a{color:white;font-weight:600}.top-nav{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.top-version{margin-left:auto;font-weight:700;white-space:nowrap}.top-online{border:1px solid #bfdbfe;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:800;white-space:nowrap;background:#dbeafe;color:#0f3b66}.top-online.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.top-online.bad{background:#fee2e2;color:#991b1b;border-color:#fecaca}.unique-lookup{position:relative;flex:1 1 320px;max-width:520px}.unique-lookup input{width:100%;box-sizing:border-box;border-color:#7db5e8;border-radius:3px;background:#fff;color:#1f2937;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.unique-results{position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:80;background:#fff;color:#1f2937;border:1px solid #9eb8ce;border-radius:0 0 4px 4px;box-shadow:0 8px 16px #0002;overflow:hidden}.unique-results[hidden]{display:none}.unique-title{background:#eef3f7;color:#5b6b7a;font-size:12px;font-weight:800;padding:8px 12px;text-transform:uppercase}.unique-result{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;padding:12px;background:#fff;color:#1f2937;border:0;border-radius:0;text-align:left}.unique-result:hover{background:#eef6ff}.unique-icon{width:28px;height:28px;flex:0 0 auto;border:1px solid #cbd5e1;background:#f8fafc;color:#64748b;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}.unique-main{min-width:0}.unique-product{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700}.unique-meta{display:block;color:#6b7280;font-size:12px;margin-top:2px}.unique-message{padding:12px;color:#6b7280;font-size:14px}.unique-error{color:#b91c1c}.wrap{padding:22px;max-width:1280px;margin:auto}.card{background:white;border:1px solid #d9e2ec;border-radius:10px;padding:18px;margin:0 0 18px 0;box-shadow:0 1px 2px #0001}table{border-collapse:collapse;width:100%;background:white}th,td{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left;vertical-align:top;font-size:14px}th{background:#f3f6fa}.muted{color:#6b7280}.ok{color:#047857;font-weight:700}.bad{color:#b91c1c;font-weight:700}input,button{font-size:14px;padding:8px;border:1px solid #cbd5e1;border-radius:6px}button{background:#1f7acb;color:white;cursor:pointer}.msg-seller{background:#eef6ff}.msg-buyer{background:#fff}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px}
 
-.messages-layout{display:grid;grid-template-columns:360px minmax(0,1fr);height:calc(100vh - 120px);min-height:0;background:white;border:1px solid #d9e2ec;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px #0001}.conversation-list{border-right:1px solid #e5e7eb;overflow-y:scroll;min-height:0;background:#fff}.conversation-title{font-size:34px;font-weight:800;padding:22px 22px 14px}.conversation-item{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;padding:12px 14px;border-bottom:1px solid #eef2f7;color:#1f2937}.conversation-item:hover{background:#f4f8ff}.conversation-item.active{background:#3f85d6;color:#fff}.conversation-item.active .muted,.conversation-item.active .preview{color:#eaf2ff}.avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#111827;color:#fff;font-weight:800}.conversation-name{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.preview{color:#9ca3af;line-height:1.25;max-height:38px;overflow:hidden}.conversation-time{font-size:14px;white-space:nowrap}.badge{display:inline-block;min-width:18px;padding:2px 6px;border-radius:999px;background:#ef4444;color:white;font-size:12px;text-align:center;margin-top:6px}.conversation-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:#fff}.conversation-header{flex:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid #e5e7eb}.conversation-header-main{min-width:0}.conversation-header-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:360px;text-align:right}.conversation-header-title{font-size:18px;font-weight:800}.order-options{background:#f8fafc;border:1px solid #dbe4ee;border-radius:8px;padding:8px 10px;color:#334155;font-size:13px;line-height:1.35}.order-options-title{color:#64748b;font-size:12px;font-weight:800;margin-bottom:4px}.order-option-name{font-weight:800}.order-option-value{color:#0f172a}.conversation-body{padding:20px 24px;overflow-y:scroll;min-height:0;flex:1 1 auto;scrollbar-gutter:stable}.chat-row{margin:0 0 18px}.chat-meta{display:flex;justify-content:space-between;gap:12px;color:#6b7280;font-size:13px;margin-bottom:6px}.chat-author{font-weight:800;color:#1f2937}.chat-bubble{display:inline-block;max-width:78%;border-radius:10px;padding:10px 12px;line-height:1.45;background:#f3f4f6;white-space:pre-wrap;text-align:left}.chat-row.seller{text-align:right}.chat-row.seller .chat-meta{justify-content:flex-end}.chat-row.seller .chat-bubble{background:#eef6ff}.chat-row.buyer .chat-bubble{background:#fff;border:1px solid #e5e7eb}.read-receipt{display:inline-flex;align-items:center;gap:3px;margin:0 8px;color:#047857;font-size:12px;font-weight:800;white-space:nowrap}.toolbar a{margin-left:12px}.empty-state{padding:40px;color:#6b7280;text-align:center}.conversation-list::-webkit-scrollbar,.conversation-body::-webkit-scrollbar,.reply-editor::-webkit-scrollbar{width:12px}.conversation-list::-webkit-scrollbar-thumb,.conversation-body::-webkit-scrollbar-thumb,.reply-editor::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:999px;border:3px solid #f8fafc}@media(max-width:850px){.messages-layout{grid-template-columns:1fr;height:calc(100vh - 110px)}.conversation-panel{min-height:0}.conversation-list{max-height:260px;border-right:0;border-bottom:1px solid #e5e7eb}.conversation-header{flex-direction:column}.conversation-header-side{align-items:flex-start;text-align:left;max-width:none}}
+.messages-layout{display:grid;grid-template-columns:360px minmax(0,1fr);height:calc(100vh - 120px);min-height:0;background:white;border:1px solid #d9e2ec;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px #0001}.conversation-list{border-right:1px solid #e5e7eb;overflow-y:scroll;min-height:0;background:#fff}.conversation-title{font-size:34px;font-weight:800;padding:22px 22px 14px}.conversation-item{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;padding:12px 14px;border-bottom:1px solid #eef2f7;color:#1f2937}.conversation-item:hover{background:#f4f8ff}.conversation-item.active{background:#3f85d6;color:#fff}.conversation-item.active .muted,.conversation-item.active .preview{color:#eaf2ff}.avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#111827;color:#fff;font-weight:800}.conversation-name{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.preview{color:#9ca3af;line-height:1.25;max-height:38px;overflow:hidden}.conversation-time{font-size:14px;white-space:nowrap}.badge{display:inline-block;min-width:18px;padding:2px 6px;border-radius:999px;background:#ef4444;color:white;font-size:12px;text-align:center;margin-top:6px}.conversation-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:#fff}.conversation-panel.loading{position:relative}.chat-loading{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#64748b;background:#fff}.chat-loading-spinner{width:34px;height:34px;border:4px solid #dbeafe;border-top-color:#1f7acb;border-radius:50%;animation:spin .8s linear infinite}.chat-loading-title{font-weight:800;color:#1f2937}.chat-loading-subtitle{font-size:13px}.loading-line{height:12px;border-radius:999px;background:linear-gradient(90deg,#eef2f7,#dbeafe,#eef2f7);background-size:200% 100%;animation:shine 1.1s linear infinite}.loading-lines{width:min(520px,70%);display:flex;flex-direction:column;gap:10px}.loading-lines .short{width:55%}@keyframes spin{to{transform:rotate(360deg)}}@keyframes shine{to{background-position:-200% 0}}.conversation-header{flex:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid #e5e7eb}.conversation-header-main{min-width:0}.conversation-header-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:360px;text-align:right}.conversation-header-title{font-size:18px;font-weight:800}.order-options{background:#f8fafc;border:1px solid #dbe4ee;border-radius:8px;padding:8px 10px;color:#334155;font-size:13px;line-height:1.35}.order-options-title{color:#64748b;font-size:12px;font-weight:800;margin-bottom:4px}.order-option-name{font-weight:800}.order-option-value{color:#0f172a}.conversation-body{padding:20px 24px;overflow-y:scroll;min-height:0;flex:1 1 auto;scrollbar-gutter:stable}.chat-row{margin:0 0 18px}.chat-meta{display:flex;justify-content:space-between;gap:12px;color:#6b7280;font-size:13px;margin-bottom:6px}.chat-author{font-weight:800;color:#1f2937}.chat-bubble{display:inline-block;max-width:78%;border-radius:10px;padding:10px 12px;line-height:1.45;background:#f3f4f6;white-space:pre-wrap;text-align:left}.chat-row.seller{text-align:right}.chat-row.seller .chat-meta{justify-content:flex-end}.chat-row.seller .chat-bubble{background:#eef6ff}.chat-row.buyer .chat-bubble{background:#fff;border:1px solid #e5e7eb}.read-receipt{display:inline-flex;align-items:center;gap:3px;margin:0 8px;color:#047857;font-size:12px;font-weight:800;white-space:nowrap}.toolbar a{margin-left:12px}.empty-state{padding:40px;color:#6b7280;text-align:center}.conversation-list::-webkit-scrollbar,.conversation-body::-webkit-scrollbar,.reply-editor::-webkit-scrollbar{width:12px}.conversation-list::-webkit-scrollbar-thumb,.conversation-body::-webkit-scrollbar-thumb,.reply-editor::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:999px;border:3px solid #f8fafc}@media(max-width:850px){.messages-layout{grid-template-columns:1fr;height:calc(100vh - 110px)}.conversation-panel{min-height:0}.conversation-list{max-height:260px;border-right:0;border-bottom:1px solid #e5e7eb}.conversation-header{flex-direction:column}.conversation-header-side{align-items:flex-start;text-align:left;max-width:none}}
 
 .alert-controls{position:fixed;right:18px;bottom:18px;z-index:50;display:flex;gap:8px;align-items:center}.alert-button{background:#16a34a;color:#fff;border:0;border-radius:999px;padding:10px 14px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-button.off{background:#64748b}.alert-pill{display:none;background:#dc2626;color:#fff;border-radius:999px;padding:9px 12px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-pill.show{display:inline-block}.unread-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#ef4444;margin-left:6px}
 .thumb{max-width:220px;max-height:160px;border:1px solid #e5e7eb;border-radius:8px;display:block;margin-top:8px;background:#f8fafc}.file-preview{margin-top:6px}.file-name{font-weight:700}.image-note{font-size:12px;color:#6b7280;margin-top:4px}
 .reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.common-phrases{border-top:1px solid #e5e7eb;background:#f8fafc;padding:10px 18px 14px}.common-phrase-title{font-size:13px;font-weight:800;color:#334155;margin-bottom:8px}.common-phrase-buttons{display:flex;flex-wrap:wrap;gap:8px}.common-phrase-buttons form{margin:0}.common-phrase-buttons button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.phrase-manager form[action='/phrases/save']{border:1px dashed #cbd5e1;border-radius:10px;padding:12px;background:#fff}.phrase-manager textarea{width:100%;box-sizing:border-box;min-height:130px;resize:vertical}.phrase-manager.dragover form[action='/phrases/save']{border-color:#2563eb;background:#eff6ff}.phrase-manager.dragover textarea{border-color:#2563eb;background:#eff6ff}.phrase-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:start;margin-bottom:10px}.phrase-empty{color:#64748b;font-size:14px}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
 .translated-message,.plain-message{white-space:normal}.translated-text,.original-text,.plain-text{white-space:pre-wrap}.message-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}.toggle-original,.save-common-phrase{background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.save-common-phrase.saved{background:#dcfce7;color:#166534;border-color:#bbf7d0}.save-common-phrase.failed{background:#fee2e2;color:#991b1b;border-color:#fecaca}.translation-label{display:inline-block;color:#64748b;font-size:12px}
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
-.phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:flex;align-items:center;justify-content:center;gap:10px;min-height:68px;margin-top:10px;border:1px dashed #93c5fd;border-radius:10px;background:#eff6ff;color:#0f3b66;font-weight:700;padding:10px;cursor:pointer}.phrase-upload input{background:white}.phrase-image-preview,.common-phrase-buttons .common-phrase-preview{border:0;background:transparent;padding:0;cursor:pointer}.phrase-image-preview img,.common-phrase-preview img{display:block;width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1}.common-phrase-item{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.common-phrase-previews{display:flex;gap:6px;align-items:center}.common-phrase-file-chip{display:inline-flex;align-items:center;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;color:#475569;padding:4px 6px;font-size:12px}.phrase-pending{margin-top:8px}
+.phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:flex;align-items:center;justify-content:center;gap:10px;min-height:68px;margin-top:10px;border:1px dashed #93c5fd;border-radius:10px;background:#eff6ff;color:#0f3b66;font-weight:700;padding:10px;cursor:pointer}.phrase-upload input{background:white}.phrase-image-preview,.common-phrase-buttons .common-phrase-preview{border:0;background:transparent;padding:0;cursor:pointer}.phrase-image-preview img,.common-phrase-preview img{display:block;width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1}.common-phrase-item{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.common-phrase-previews{display:flex;gap:6px;align-items:center}.common-phrase-file-chip{display:inline-flex;align-items:center;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;color:#475569;padding:4px 6px;font-size:12px}.common-phrase-preview.broken{display:none}.phrase-pending{margin-top:8px}
 .chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.chat-keepalive-btn.warn{background:#fef3c7;color:#92400e;border-color:#fde68a}
 </style>
 """
@@ -1370,38 +1374,93 @@ def localize_option_value(value: Any) -> str:
         for locale in ("zh-CN", "zh", "ru-RU", "ru", "en-US", "en"):
             for item in candidates:
                 if str(item.get("locale") or item.get("lang") or "").lower() == locale.lower():
-                    text = localize_option_value(item.get("value") or item.get("text") or item.get("name"))
+                    text = first_option_text(item, ("value", "user_data", "text", "name", "title", "label"))
                     if text:
                         return text
-        for item in value:
-            text = localize_option_value(item.get("value") if isinstance(item, dict) else item)
-            if text:
-                return text
-        return ""
+        values = [localize_option_value(item) for item in value]
+        return " / ".join(value for value in values if value)
     if isinstance(value, dict):
-        for key in ("value", "text", "name", "title", "caption", "label"):
-            text = localize_option_value(value.get(key))
-            if text:
-                return text
+        text = first_option_text(value, ("value", "user_data", "text", "name", "title", "caption", "label"))
+        if text:
+            return text
     return clean_text(value)
 
 
-def purchase_options_from_info(info: dict[str, Any]) -> list[tuple[str, str]]:
-    raw_options: Any = info.get("options") or info.get("option") or info.get("parameters") or info.get("params")
-    if isinstance(raw_options, dict):
-        raw_options = raw_options.get("option") or raw_options.get("items") or raw_options.get("values") or [raw_options]
-    if isinstance(raw_options, dict):
-        raw_options = [raw_options]
-    if not isinstance(raw_options, list):
-        return []
-    options: list[tuple[str, str]] = []
-    for raw in raw_options:
-        if not isinstance(raw, dict):
+def first_option_text(raw: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        if key not in raw:
             continue
-        name = localize_option_value(raw.get("name") or raw.get("parameter") or raw.get("title") or raw.get("label"))
-        value = localize_option_value(raw.get("value") or raw.get("variant") or raw.get("selected") or raw.get("text"))
-        if name and value:
-            options.append((name, value))
+        text = localize_option_value(raw.get(key))
+        if text:
+            return text
+    return ""
+
+
+def normalize_option_items(raw_options: Any) -> list[Any]:
+    if raw_options is None:
+        return []
+    if isinstance(raw_options, dict):
+        for key in ("option", "options", "items", "values", "parameters", "params"):
+            if key in raw_options:
+                nested = normalize_option_items(raw_options.get(key))
+                if nested:
+                    return nested
+        return [raw_options]
+    if isinstance(raw_options, list):
+        return raw_options
+    return []
+
+
+def option_sources_from_info(info: dict[str, Any]) -> list[Any]:
+    sources: list[Any] = []
+    for key in ("options", "option", "parameters", "params"):
+        if key in info:
+            sources.append(info.get(key))
+    content = info.get("content")
+    if isinstance(content, dict):
+        for key in ("options", "option", "parameters", "params"):
+            if key in content:
+                sources.append(content.get(key))
+    return sources
+
+
+def purchase_options_from_info(info: dict[str, Any]) -> list[tuple[str, str]]:
+    options: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for source in option_sources_from_info(info):
+        for raw in normalize_option_items(source):
+            if isinstance(raw, dict):
+                name = first_option_text(raw, ("name", "parameter", "title", "label", "caption"))
+                value = first_option_text(
+                    raw,
+                    (
+                        "user_data",
+                        "user_data_text",
+                        "value",
+                        "variant",
+                        "selected",
+                        "text",
+                        "option_value",
+                        "value_text",
+                    ),
+                )
+                variant_id = first_option_text(raw, ("variant_id", "user_data_id", "value_id", "selected_id"))
+                if value and variant_id and variant_id != value:
+                    value = f"{value} ({variant_id})"
+                elif not value and variant_id:
+                    value = variant_id
+            else:
+                name = ""
+                value = localize_option_value(raw)
+            if not value:
+                continue
+            if not name:
+                name = "选项"
+            item = (name, value)
+            if item in seen:
+                continue
+            seen.add(item)
+            options.append(item)
     return options
 
 
@@ -1437,7 +1496,7 @@ def new_phrase_id(text: str) -> str:
 
 
 def phrase_file_url(stored: str) -> str:
-    return "/phrase-files/" + urllib.parse.quote(stored)
+    return "/phrase-files/" + urllib.parse.quote(stored, safe="")
 
 
 def save_phrase_uploads(phrase_id: str, uploads: list[UploadItem], existing: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1745,11 +1804,11 @@ class Handler(BaseHTTPRequestHandler):
                 stored = str(file.get("stored") or "")
                 filename = str(file.get("filename") or stored)
                 content_type = str(file.get("content_type") or "")
-                if content_type.startswith("image/"):
+                if (content_type.startswith("image/") or looks_like_image_name(filename)) and stored:
                     file_url = phrase_file_url(stored)
                     preview_items.append(
                         f"<button class='common-phrase-preview' type='button' data-preview-src='{h(file_url)}' data-preview-name='{h(filename)}'>"
-                        f"<img src='{h(file_url)}' alt='{h(filename)}'></button>"
+                        f"<img src='{h(file_url)}' alt='{h(filename)}' loading='lazy'></button>"
                     )
                 else:
                     preview_items.append(f"<span class='common-phrase-file-chip'>{h(filename or 'FILE')}</span>")
@@ -1818,6 +1877,15 @@ class Handler(BaseHTTPRequestHandler):
           document.querySelectorAll('.common-phrase-preview').forEach((button) => {{
             if (button.dataset.previewReady) return;
             button.dataset.previewReady = '1';
+            const img = button.querySelector('img');
+            if (img) {{
+              img.addEventListener('error', () => {{
+                const fallback = document.createElement('span');
+                fallback.className = 'common-phrase-file-chip';
+                fallback.textContent = button.dataset.previewName || 'IMAGE';
+                button.replaceWith(fallback);
+              }});
+            }}
             button.addEventListener('click', () => {{
               openImagePreview(button.dataset.previewSrc || '', button.dataset.previewName || '');
             }});
@@ -2111,8 +2179,8 @@ class Handler(BaseHTTPRequestHandler):
                 file_url = phrase_file_url(stored)
                 preview = (
                     f"<button class='phrase-image-preview' type='button' data-preview-src='{h(file_url)}' data-preview-name='{h(filename)}'>"
-                    f"<img src='{h(file_url)}' alt='{h(filename)}'></button>"
-                    if content_type.startswith("image/")
+                    f"<img src='{h(file_url)}' alt='{h(filename)}' loading='lazy'></button>"
+                    if (content_type.startswith("image/") or looks_like_image_name(filename)) and stored
                     else "<span class='file-chip-icon'>FILE</span>"
                 )
                 file_rows.append(
@@ -2167,6 +2235,15 @@ class Handler(BaseHTTPRequestHandler):
             if (event.key === 'Escape' && !previewModal.hidden) closeImagePreview();
           });
           document.querySelectorAll('.phrase-image-preview').forEach((button) => {
+            const img = button.querySelector('img');
+            if (img) {
+              img.addEventListener('error', () => {
+                const fallback = document.createElement('span');
+                fallback.className = 'common-phrase-file-chip';
+                fallback.textContent = button.dataset.previewName || 'IMAGE';
+                button.replaceWith(fallback);
+              });
+            }
             button.addEventListener('click', () => openImagePreview(button.dataset.previewSrc || '', button.dataset.previewName || ''));
           });
           function clipboardImageFiles(event) {
@@ -2653,10 +2730,35 @@ class Handler(BaseHTTPRequestHandler):
               ? new URLSearchParams({kind: 'guest', corr_id: link.dataset.corrId || '', corr_type: link.dataset.corrType || 'visitor', name: link.dataset.name || '', product: link.dataset.product || ''})
               : new URLSearchParams({order_id: link.dataset.orderId || '', email: link.dataset.email || '', product: link.dataset.product || ''});
           }
+          function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, (char) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
+          }
+          function showPanelLoading(panel, link) {
+            const name = link.querySelector('.conversation-name')?.textContent?.trim() || '';
+            const preview = link.querySelector('.preview')?.textContent?.trim() || '';
+            panel.className = 'conversation-panel loading';
+            panel.innerHTML = `
+              <div class="conversation-header">
+                <div class="conversation-header-main">
+                  <div class="conversation-header-title">${escapeHtml(name || '\u52a0\u8f7d\u4e2d')}</div>
+                  <div class="muted">${escapeHtml(preview || '\u6b63\u5728\u52a0\u8f7d\u8ba2\u5355\u6d88\u606f')}</div>
+                </div>
+              </div>
+              <div class="chat-loading">
+                <div class="chat-loading-spinner"></div>
+                <div class="chat-loading-title">\u6b63\u5728\u52a0\u8f7d\u6d88\u606f...</div>
+                <div class="chat-loading-subtitle">\u5207\u6362\u8ba2\u5355\u540e\u4f1a\u81ea\u52a8\u663e\u793a\u6700\u65b0\u5bf9\u8bdd</div>
+                <div class="loading-lines">
+                  <div class="loading-line"></div>
+                  <div class="loading-line short"></div>
+                  <div class="loading-line"></div>
+                </div>
+              </div>`;
+          }
           async function loadPanel(link, options = {}) {
             const panel = document.getElementById('chat-panel');
             if (!panel) { location.href = link.href; return; }
-            panel.classList.add('loading');
+            if (!options.silent) showPanelLoading(panel, link);
             try {
               const res = await fetch('/api/chat-panel?' + paramsForLink(link).toString(), {cache: 'no-store'});
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -3003,19 +3105,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_phrase_file(self, path: str) -> None:
         rel = urllib.parse.unquote(path.removeprefix("/phrase-files/"))
+        if not rel or "/" in rel or "\\" in rel:
+            self.send_error(404)
+            return
         file_path = (COMMON_PHRASES_DIR / rel).resolve()
         if not str(file_path).startswith(str(COMMON_PHRASES_DIR.resolve())) or not file_path.exists():
-            return self.send_html("Not found", "Not found", 404)
-        content_type = "application/octet-stream"
+            self.send_error(404)
+            return
+        content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
         for phrase in load_common_phrases():
             for file in phrase.get("files") or []:
                 if str(file.get("stored") or "") == rel:
-                    content_type = str(file.get("content_type") or content_type)
+                    saved_type = str(file.get("content_type") or "")
+                    if saved_type and saved_type != "application/octet-stream":
+                        content_type = saved_type
                     break
         data = file_path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, max-age=3600")
         self.end_headers()
         self.wfile.write(data)
 
