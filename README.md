@@ -24,6 +24,7 @@ DIGISELLER_ONLINE_VERIFY_TYPE=seller
 DIGISELLER_PUBLIC_SELLER_URL=https://plati.market/seller/hello1989/1437041/?lang=en-US
 DIGISELLER_CHAT_KEEPALIVE_URL=https://chat.digiseller.com/asp/messenger.asp?mode=s
 DIGISELLER_CHAT_OPEN_BROWSER=1
+DIGISELLER_COMMON_PHRASE_PUBLIC_BASE_URL=
 ```
 
 建议：如果 API Key 曾经发到聊天或公开地方，先在 Digiseller 后台重新生成新 key，再写入 `.env`。
@@ -78,6 +79,7 @@ python3 digiseller_admin.py watch --interval 15
 
 - 订单聊天附件：显示文件名、打开链接和图片缩略图。
 - Admin messages：默认只显示最近 20 条，避免一次渲染太多图片导致页面卡顿。可用 `/admin-messages?limit=50` 查看更多。
+- 常用语图片默认从本机 `/phrase-files/` 读；如要放公网静态目录，设置 `DIGISELLER_COMMON_PHRASE_PUBLIC_BASE_URL=https://your-domain/path`，文件名保持 `common_phrase_files` 中的 stored 名。
 
 ## v6 reply editor
 
