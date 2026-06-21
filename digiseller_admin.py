@@ -114,6 +114,12 @@ LANG_LABELS = {
     "pt": "Português",
     "uk": "Українська",
 }
+OPTION_TRANSLATIONS = {
+    "выбор типа": "\u9009\u62e9\u7c7b\u578b",
+    "я понимаю": "\u6211\u660e\u767d",
+    "плюс (личный аккаунт, предоставленный продавцом пакет)": "PLUS\uff08\u4e2a\u4eba\u8d26\u53f7\uff0c\u5356\u5bb6\u63d0\u4f9b\u5957\u9910\uff09",
+    "гарантия 7 дней (личный аккаунт предоставляется продавцом)": "7 \u5929\u8d28\u4fdd\uff08\u5356\u5bb6\u63d0\u4f9b\u4e2a\u4eba\u8d26\u53f7\uff09",
+}
 PROTECTED_TOKEN_RE = re.compile(r"https?://\S+|[\w.+-]+@[\w.-]+\.\w+|(?=\b[A-Za-z0-9._:+/@#%=-]{6,}\b)(?=[A-Za-z0-9._:+/@#%=-]*[0-9@._:+/#%=-])[A-Za-z0-9._:+/@#%=-]+")
 
 
@@ -520,18 +526,41 @@ class DigisellerClient:
         )
 
     def sales(self, days: int, rows: int, page: int = 1) -> dict[str, Any]:
-        finish = dt.datetime.utcnow()
+        finish = dt.datetime.utcnow() + dt.timedelta(days=1)
         start = finish - dt.timedelta(days=days)
-        return self.post(
-            "/seller-sells/v2",
-            json_body={
-                "date_start": start.strftime("%Y-%m-%d %H:%M:%S"),
-                "date_finish": finish.strftime("%Y-%m-%d %H:%M:%S"),
-                "returned": 0,
-                "page": page,
-                "rows": rows,
-            },
-        )
+        body = {
+            "date_start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "date_finish": finish.strftime("%Y-%m-%d %H:%M:%S"),
+            "returned": 0,
+            "rows": rows,
+        }
+
+        def fetch_page(page_number: int) -> dict[str, Any]:
+            return self.post("/seller-sells/v2", json_body={**body, "page": page_number})
+
+        data = fetch_page(1)
+        all_rows = list(data.get("rows") or [])
+        pages = int(data.get("pages") or 1)
+        for page_number in range(2, pages + 1):
+            try:
+                all_rows.extend(fetch_page(page_number).get("rows") or [])
+            except Exception:
+                break
+        unique_rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in all_rows:
+            if not isinstance(item, dict):
+                continue
+            row_key = str(item.get("invoice_id") or item.get("id") or len(unique_rows))
+            if row_key in seen:
+                continue
+            seen.add(row_key)
+            unique_rows.append(item)
+        unique_rows.sort(key=lambda item: sort_time(item.get("date_pay") or item.get("date")), reverse=True)
+        total_rows = int(data.get("total_rows") or len(unique_rows))
+        page_count = max(1, (len(unique_rows) + rows - 1) // rows)
+        start_index = max(page - 1, 0) * rows
+        return {**data, "rows": unique_rows[start_index : start_index + rows], "total_rows": total_rows, "pages": page_count}
 
     def chats(self, page_size: int = 50, only_unread: bool = False) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"pageSize": page_size, "page": 1}
@@ -1449,11 +1478,6 @@ def purchase_options_from_info(info: dict[str, Any]) -> list[tuple[str, str]]:
                         "value_text",
                     ),
                 )
-                variant_id = first_option_text(raw, ("variant_id", "user_data_id", "value_id", "selected_id"))
-                if value and variant_id and variant_id != value:
-                    value = f"{value} ({variant_id})"
-                elif not value and variant_id:
-                    value = variant_id
             else:
                 name = ""
                 value = localize_option_value(raw)
@@ -1467,6 +1491,17 @@ def purchase_options_from_info(info: dict[str, Any]) -> list[tuple[str, str]]:
             seen.add(item)
             options.append(item)
     return options
+
+
+def translate_option_text(text: str) -> str:
+    value = clean_text(text)
+    normalized = re.sub(r"\s+", " ", value).strip().lower()
+    if normalized in OPTION_TRANSLATIONS:
+        return OPTION_TRANSLATIONS[normalized]
+    if not value or not should_translate_text(value):
+        return value
+    translated, _ = google_translate(value, "zh-CN")
+    return translated or value
 
 
 def cached_purchase_info(order_id: int) -> dict[str, Any]:
@@ -1489,7 +1524,8 @@ def order_options_html(order_id: int) -> str:
     if not options:
         return ""
     rows = "".join(
-        f"<div class='order-option'><span class='order-option-name'>{h(name)}:</span> <span class='order-option-value'>{h(value)}</span></div>"
+        f"<div class='order-option'><span class='order-option-name' title='{h(name)}'>{h(translate_option_text(name))}:</span> "
+        f"<span class='order-option-value' title='{h(value)}'>{h(translate_option_text(value))}</span></div>"
         for name, value in options
     )
     return f"<div class='order-options'><div class='order-options-title'>&#39069;&#22806;&#36873;&#39033;</div>{rows}</div>"
@@ -1944,11 +1980,11 @@ class Handler(BaseHTTPRequestHandler):
             )
         if phrase_forms:
             phrases_html = (
-                "<div class='common-phrases'><div class='common-phrase-title'>&#24120;&#29992;&#35821;&#65288;&#28857;&#20987;&#31435;&#21363;&#21457;&#36865;&#65289;</div>"
+                f"<div id='{editor_id}-phrases' class='common-phrases' hidden><div class='common-phrase-title'>&#24120;&#29992;&#35821;&#65288;&#28857;&#20987;&#31435;&#21363;&#21457;&#36865;&#65289;</div>"
                 f"<div class='common-phrase-buttons'>{''.join(phrase_forms)}</div></div>"
             )
         else:
-            phrases_html = "<div class='common-phrases'><div class='phrase-empty'>&#36824;&#27809;&#26377;&#24120;&#29992;&#35821;&#65292;<a href='/phrases'>&#21435;&#28155;&#21152;</a></div></div>"
+            phrases_html = f"<div id='{editor_id}-phrases' class='common-phrases' hidden><div class='phrase-empty'>&#36824;&#27809;&#26377;&#24120;&#29992;&#35821;&#65292;<a href='/phrases'>&#21435;&#28155;&#21152;</a></div></div>"
         return f"""
         <form id="{editor_id}" class="reply-editor" method="post" action="/chats/send" enctype="multipart/form-data">
           <input type="hidden" name="order_id" value="{order_id}">
@@ -1960,6 +1996,7 @@ class Handler(BaseHTTPRequestHandler):
               <span class="reply-dropzone-text">&#25302;&#25341;&#22270;&#29255;/&#38468;&#20214;&#21040;&#36825;&#37324;&#65292;&#25110;&#28857;&#20987;&#36873;&#25321;&#25991;&#20214;</span>
             </div>
             <button type="submit">&#21457;&#36865;&#22238;&#22797;</button>
+            <button id="{editor_id}-phrase-toggle" type="button" aria-expanded="false" aria-controls="{editor_id}-phrases">&#24120;&#29992;&#35821;</button>
             <span class="reply-hint">&#20013;&#25991;&#20250;&#33258;&#21160;&#32763;&#35793;&#20026; {h(lang_label(target_lang))} &#20877;&#21457;&#36865;&#12290;&#25903;&#25345;&#22270;&#29255;&#12289;&#38468;&#20214;&#12289;&#25991;&#26723;/&#25991;&#29486;&#65292;&#20063;&#21487;&#30452;&#25509; Ctrl+V &#31896;&#36148;&#21098;&#36148;&#26495;&#22270;&#29255;&#12290;</span>
           </div>
           <div id="{editor_id}-selected" class="selected-files"></div>
@@ -1972,6 +2009,8 @@ class Handler(BaseHTTPRequestHandler):
           const input = document.getElementById('{editor_id}-files');
           const dropzone = document.getElementById('{editor_id}-dropzone');
           const selected = document.getElementById('{editor_id}-selected');
+          const phrases = document.getElementById('{editor_id}-phrases');
+          const phraseToggle = document.getElementById('{editor_id}-phrase-toggle');
           let previewUrls = [];
           let selectedFiles = Array.from(input.files || []);
           const previewModal = document.createElement('div');
@@ -1995,6 +2034,14 @@ class Handler(BaseHTTPRequestHandler):
           document.addEventListener('keydown', (event) => {{
             if (event.key === 'Escape' && !previewModal.hidden) closeImagePreview();
           }});
+          if (phraseToggle && phrases) {{
+            phraseToggle.addEventListener('click', () => {{
+              const show = phrases.hidden;
+              phrases.hidden = !show;
+              phraseToggle.setAttribute('aria-expanded', show ? 'true' : 'false');
+              phraseToggle.textContent = show ? '\u9690\u85cf\u5e38\u7528\u8bed' : '\u5e38\u7528\u8bed';
+            }});
+          }}
           document.querySelectorAll('.common-phrase-preview').forEach((button) => {{
             if (button.dataset.previewReady) return;
             button.dataset.previewReady = '1';
@@ -2542,8 +2589,8 @@ class Handler(BaseHTTPRequestHandler):
         self.redirect("/phrases")
 
     def sales(self) -> None:
-        days = int(self.q("days", "7"))
-        rows = int(self.q("rows", "50"))
+        days = int(self.q("days", "50"))
+        rows = min(max(int(self.q("rows", "100")), 1), 100)
         page = int(self.q("page", "1"))
         data = client.sales(days, rows, page)
         trs = []
@@ -2585,8 +2632,7 @@ class Handler(BaseHTTPRequestHandler):
             header = (
                 f"<div class='conversation-header-main'><div class='conversation-header-title'>{h(buyer_name)}</div>"
                 f"<div class='muted'>Order {h(selected_chat.get('id_i'))} · {h(short(selected_chat.get('product'), 110))} · Messages loaded: {len(selected_messages)} · Reply language: {h(lang_label(buyer_lang))}</div></div>"
-                f"<div class='conversation-header-side'>{options_html}<div class='toolbar'><a href='/chat?order_id={selected_order}'>Table view</a>"
-                f"<a href='/download-images?order_id={selected_order}'>Download images</a></div></div>"
+                f"<div class='conversation-header-side'>{options_html}</div>"
             )
             rows = []
             total_messages = len(selected_messages)
