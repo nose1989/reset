@@ -44,7 +44,7 @@ COMMON_PHRASES_FILE = APP_DIR / "common_phrases.json"
 COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.10-order-options"
+APP_VERSION = "v8.11-chat-refresh"
 
 
 @dataclass
@@ -1007,12 +1007,13 @@ def layout(title: str, body: str) -> bytes:
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8000);
         try {
-          const res = await fetch('/api/unread-count', {cache: 'no-store', signal: controller.signal});
+          const res = await fetch('/api/unread-count?force=1', {cache: 'no-store', signal: controller.signal});
           const data = await res.json();
           const total = Number(data.total || 0);
           pill.textContent = total > 0 ? `\u672a\u8bfb ${total}` : '';
           pill.classList.toggle('show', total > 0);
           document.title = total > 0 ? `(${total}) ${baseTitle}` : baseTitle;
+          if (window.handleDigisellerUnreadData) window.handleDigisellerUnreadData(data);
           if (enabled && total > 0 && (force || total > lastTotal)) alertUnread(data, force);
           lastTotal = total;
           localStorage.setItem('digisellerLastUnreadTotal', String(lastTotal));
@@ -1255,6 +1256,7 @@ def unread_summary() -> dict[str, Any]:
         guest = []
     admin: list[dict[str, Any]] = []
     latest: dict[str, Any] | None = None
+    buyer_unread: list[dict[str, Any]] = []
     for chat in buyer:
         rec = {
             "type": "buyer",
@@ -1265,6 +1267,7 @@ def unread_summary() -> dict[str, Any]:
             "cnt_new": int(chat.get("cnt_new") or 0),
             "url": f"/chats?order_id={chat.get('id_i')}",
         }
+        buyer_unread.append(rec)
         if latest is None or str(rec.get("last_date") or "") > str(latest.get("last_date") or ""):
             latest = rec
     for chat in guest:
@@ -1286,6 +1289,7 @@ def unread_summary() -> dict[str, Any]:
         "ok": True,
         "buyer_unread_chats": len(buyer),
         "buyer_unread_messages": sum(int(c.get("cnt_new") or 0) for c in buyer),
+        "buyer_unread": buyer_unread,
         "guest_unread_chats": len(guest),
         "admin_unread": len(admin),
         "total": total,
@@ -2419,8 +2423,8 @@ class Handler(BaseHTTPRequestHandler):
             notice = ""
             if self.q("sent") == "1":
                 notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
-            return f"<div id='chat-panel' class='conversation-panel'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang)}</div>"
-        return "<div id='chat-panel' class='conversation-panel'><div class='empty-state'>No chats found</div></div>"
+            return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang)}</div>"
+        return "<div id='chat-panel' class='conversation-panel' data-kind='order'><div class='empty-state'>No chats found</div></div>"
 
     def guest_chat_panel_html(self, chat: dict[str, Any], messages: list[dict[str, Any]]) -> str:
         corr_id = int(chat.get("CorrID") or chat.get("corrID") or 0)
@@ -2452,7 +2456,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         if not rows:
             rows.append("<div class='empty-state'>No guest messages loaded</div>")
-        return f"<div id='chat-panel' class='conversation-panel'><div class='conversation-header'>{header}</div><div class='conversation-body'>{''.join(rows)}</div></div>"
+        return f"<div id='chat-panel' class='conversation-panel' data-kind='guest' data-corr-id='{corr_id}' data-message-count='{len(messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{''.join(rows)}</div></div>"
 
     def api_chat_panel(self) -> None:
         if self.q("kind") == "guest":
@@ -2610,6 +2614,7 @@ class Handler(BaseHTTPRequestHandler):
         (() => {
           const list = document.getElementById('conversation-list');
           if (!list) return;
+          let refreshingActiveOrder = false;
           function runPanelScripts(panel) {
             panel.querySelectorAll('script').forEach((oldScript) => {
               const script = document.createElement('script');
@@ -2618,23 +2623,42 @@ class Handler(BaseHTTPRequestHandler):
               script.remove();
             });
           }
-          list.addEventListener('click', async (event) => {
-            const link = event.target.closest('.conversation-item');
-            if (!link) return;
-            event.preventDefault();
-            const panel = document.getElementById('chat-panel');
-            if (!panel) { location.href = link.href; return; }
+          function conversationBadge(link) {
+            let badge = link.querySelector('.badge');
+            if (badge) return badge;
+            const time = link.querySelector('.conversation-time');
+            if (!time) return null;
+            badge = document.createElement('div');
+            badge.className = 'badge';
+            time.appendChild(badge);
+            return badge;
+          }
+          function setConversationBadge(link, count) {
+            const value = Number(count || 0);
+            if (value <= 0) {
+              clearConversationBadge(link);
+              return;
+            }
+            const badge = conversationBadge(link);
+            if (badge) badge.textContent = String(value);
+          }
+          function clearConversationBadge(link) {
+            const badge = link?.querySelector('.badge');
+            if (badge) badge.remove();
+            if (link) delete link.dataset.pendingUnread;
+          }
+          function paramsForLink(link) {
             const kind = link.dataset.kind || 'order';
-            const params = kind === 'guest'
+            return kind === 'guest'
               ? new URLSearchParams({kind: 'guest', corr_id: link.dataset.corrId || '', corr_type: link.dataset.corrType || 'visitor', name: link.dataset.name || '', product: link.dataset.product || ''})
               : new URLSearchParams({order_id: link.dataset.orderId || '', email: link.dataset.email || '', product: link.dataset.product || ''});
-            list.querySelectorAll('.conversation-item.active').forEach((item) => item.classList.remove('active'));
-            link.classList.add('active');
-            const badge = link.querySelector('.badge');
-            if (badge) badge.remove();
+          }
+          async function loadPanel(link, options = {}) {
+            const panel = document.getElementById('chat-panel');
+            if (!panel) { location.href = link.href; return; }
             panel.classList.add('loading');
             try {
-              const res = await fetch('/api/chat-panel?' + params.toString(), {cache: 'no-store'});
+              const res = await fetch('/api/chat-panel?' + paramsForLink(link).toString(), {cache: 'no-store'});
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
               const data = await res.json();
               if (!data.ok) throw new Error(data.error || 'Load failed');
@@ -2642,13 +2666,48 @@ class Handler(BaseHTTPRequestHandler):
               const newPanel = document.getElementById('chat-panel');
               if (newPanel) runPanelScripts(newPanel);
               if (newPanel && window.loadDigisellerTranslations) window.loadDigisellerTranslations(newPanel);
-              if (window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
-              history.pushState(null, '', link.href);
+              if (options.clearBadge) clearConversationBadge(link);
+              if (options.pushHistory) history.pushState(null, '', link.href);
+              if (options.refreshUnread && window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
             } catch (error) {
-              location.href = link.href;
+              if (!options.silent) location.href = link.href;
             }
+          }
+          list.addEventListener('click', async (event) => {
+            const link = event.target.closest('.conversation-item');
+            if (!link) return;
+            event.preventDefault();
+            list.querySelectorAll('.conversation-item.active').forEach((item) => item.classList.remove('active'));
+            link.classList.add('active');
+            await loadPanel(link, {pushHistory: true, clearBadge: true, refreshUnread: true});
           });
+          window.handleDigisellerUnreadData = (data) => {
+            const buyerUnread = Array.isArray(data.buyer_unread) ? data.buyer_unread : [];
+            const unreadByOrder = new Map();
+            buyerUnread.forEach((item) => {
+              const orderId = String(item.order_id || '');
+              const count = Number(item.cnt_new || 0);
+              if (orderId && count > 0) unreadByOrder.set(orderId, count);
+            });
+            list.querySelectorAll('.conversation-item[data-kind="order"]').forEach((link) => {
+              const count = unreadByOrder.get(String(link.dataset.orderId || '')) || 0;
+              if (count > 0) setConversationBadge(link, count);
+              else if (!link.classList.contains('active')) clearConversationBadge(link);
+            });
+            const active = list.querySelector('.conversation-item.active[data-kind="order"]');
+            if (!active) return;
+            const activeCount = unreadByOrder.get(String(active.dataset.orderId || '')) || 0;
+            if (activeCount <= 0 || refreshingActiveOrder) return;
+            active.dataset.pendingUnread = String(activeCount);
+            setConversationBadge(active, activeCount);
+            refreshingActiveOrder = true;
+            loadPanel(active, {silent: true}).finally(() => { refreshingActiveOrder = false; });
+          };
           window.addEventListener('popstate', () => location.reload());
+          if (window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
+          setInterval(() => {
+            if (!document.hidden && window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
+          }, 15000);
         })();
         </script>
         """
@@ -2892,7 +2951,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_unread_count(self) -> None:
         now = time.time()
         cached = UNREAD_CACHE.get("data")
-        if cached is not None and now - float(UNREAD_CACHE.get("time") or 0) < 30:
+        force = self.q("force", "0") in {"1", "true", "yes"}
+        if not force and cached is not None and now - float(UNREAD_CACHE.get("time") or 0) < 30:
             return self.send_json(cached)
         data = unread_summary()
         UNREAD_CACHE["time"] = now
