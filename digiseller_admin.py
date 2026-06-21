@@ -47,6 +47,7 @@ SHINCHAN_LOGO = ASSET_DIR / "shinchan-logo.png"
 COMMON_PHRASES_FILE = APP_DIR / "common_phrases.json"
 COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
+SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 API_BASE = "https://api.digiseller.com/api"
 APP_VERSION = "v8.11-chat-refresh"
 
@@ -734,6 +735,7 @@ class DigisellerClient:
 
 client = DigisellerClient()
 UNREAD_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
+SALES_ORDER_BADGE_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 PURCHASE_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
 ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
     "enabled": False,
@@ -788,7 +790,7 @@ def start_auto_reload() -> None:
 
 STYLE = """
 <style>
-body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;margin:0;background:#f6f8fb;color:#1f2937}a{color:#0b65c2;text-decoration:none}.top{background:#1f7acb;color:white;padding:10px 22px;display:flex;align-items:center;gap:16px}.brand-logo{width:42px;height:42px;object-fit:contain;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0002}.top a{color:white;font-weight:600}.top-nav{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.top-version{margin-left:auto;font-weight:700;white-space:nowrap}.top-online{border:1px solid #bfdbfe;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:800;white-space:nowrap;background:#dbeafe;color:#0f3b66}.top-online.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.top-online.bad{background:#fee2e2;color:#991b1b;border-color:#fecaca}.unique-lookup{position:relative;flex:1 1 320px;max-width:520px}.unique-lookup input{width:100%;box-sizing:border-box;border-color:#7db5e8;border-radius:3px;background:#fff;color:#1f2937;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.unique-results{position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:80;background:#fff;color:#1f2937;border:1px solid #9eb8ce;border-radius:0 0 4px 4px;box-shadow:0 8px 16px #0002;overflow:hidden}.unique-results[hidden]{display:none}.unique-title{background:#eef3f7;color:#5b6b7a;font-size:12px;font-weight:800;padding:8px 12px;text-transform:uppercase}.unique-result{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;padding:12px;background:#fff;color:#1f2937;border:0;border-radius:0;text-align:left}.unique-result:hover{background:#eef6ff}.unique-icon{width:28px;height:28px;flex:0 0 auto;border:1px solid #cbd5e1;background:#f8fafc;color:#64748b;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}.unique-main{min-width:0}.unique-product{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700}.unique-meta{display:block;color:#6b7280;font-size:12px;margin-top:2px}.unique-message{padding:12px;color:#6b7280;font-size:14px}.unique-error{color:#b91c1c}.wrap{padding:22px;max-width:1280px;margin:auto}.card{background:white;border:1px solid #d9e2ec;border-radius:10px;padding:18px;margin:0 0 18px 0;box-shadow:0 1px 2px #0001}table{border-collapse:collapse;width:100%;background:white}th,td{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left;vertical-align:top;font-size:14px}th{background:#f3f6fa}.muted{color:#6b7280}.ok{color:#047857;font-weight:700}.bad{color:#b91c1c;font-weight:700}input,button{font-size:14px;padding:8px;border:1px solid #cbd5e1;border-radius:6px}button{background:#1f7acb;color:white;cursor:pointer}.msg-seller{background:#eef6ff}.msg-buyer{background:#fff}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px}
+body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;margin:0;background:#f6f8fb;color:#1f2937}a{color:#0b65c2;text-decoration:none}.top{background:#1f7acb;color:white;padding:10px 22px;display:flex;align-items:center;gap:16px}.brand-logo{width:42px;height:42px;object-fit:contain;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0002}.top a{color:white;font-weight:600}.top-nav{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.nav-link-with-badge{position:relative;display:inline-flex;align-items:center;gap:5px}.nav-badge{display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:#ef4444;color:#fff;font-size:11px;font-weight:900;line-height:1;box-shadow:0 0 0 2px #1f7acb}.nav-badge[hidden]{display:none}.top-version{margin-left:auto;font-weight:700;white-space:nowrap}.top-online{border:1px solid #bfdbfe;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:800;white-space:nowrap;background:#dbeafe;color:#0f3b66}.top-online.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.top-online.bad{background:#fee2e2;color:#991b1b;border-color:#fecaca}.unique-lookup{position:relative;flex:1 1 320px;max-width:520px}.unique-lookup input{width:100%;box-sizing:border-box;border-color:#7db5e8;border-radius:3px;background:#fff;color:#1f2937;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.unique-results{position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:80;background:#fff;color:#1f2937;border:1px solid #9eb8ce;border-radius:0 0 4px 4px;box-shadow:0 8px 16px #0002;overflow:hidden}.unique-results[hidden]{display:none}.unique-title{background:#eef3f7;color:#5b6b7a;font-size:12px;font-weight:800;padding:8px 12px;text-transform:uppercase}.unique-result{display:flex;align-items:center;gap:12px;width:100%;box-sizing:border-box;padding:12px;background:#fff;color:#1f2937;border:0;border-radius:0;text-align:left}.unique-result:hover{background:#eef6ff}.unique-icon{width:28px;height:28px;flex:0 0 auto;border:1px solid #cbd5e1;background:#f8fafc;color:#64748b;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}.unique-main{min-width:0}.unique-product{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700}.unique-meta{display:block;color:#6b7280;font-size:12px;margin-top:2px}.unique-message{padding:12px;color:#6b7280;font-size:14px}.unique-error{color:#b91c1c}.wrap{padding:22px;max-width:1280px;margin:auto}.card{background:white;border:1px solid #d9e2ec;border-radius:10px;padding:18px;margin:0 0 18px 0;box-shadow:0 1px 2px #0001}table{border-collapse:collapse;width:100%;background:white}th,td{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left;vertical-align:top;font-size:14px}th{background:#f3f6fa}.muted{color:#6b7280}.ok{color:#047857;font-weight:700}.bad{color:#b91c1c;font-weight:700}input,button{font-size:14px;padding:8px;border:1px solid #cbd5e1;border-radius:6px}button{background:#1f7acb;color:white;cursor:pointer}.msg-seller{background:#eef6ff}.msg-buyer{background:#fff}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px}
 
 .messages-layout{display:grid;grid-template-columns:360px minmax(0,1fr);height:calc(100vh - 120px);min-height:0;background:white;border:1px solid #d9e2ec;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px #0001}.conversation-list{border-right:1px solid #e5e7eb;overflow-y:scroll;min-height:0;background:#fff}.conversation-title{font-size:34px;font-weight:800;padding:22px 22px 14px}.conversation-item{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;padding:12px 14px;border-bottom:1px solid #eef2f7;color:#1f2937}.conversation-item:hover{background:#f4f8ff}.conversation-item.active{background:#3f85d6;color:#fff}.conversation-item.active .muted,.conversation-item.active .preview{color:#eaf2ff}.avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#111827;color:#fff;font-weight:800}.product-logo-avatar{box-sizing:border-box;flex-direction:column;gap:1px;border:1px solid #cbd5e1;line-height:1}.product-logo-mark{font-size:15px;font-weight:900;letter-spacing:-.04em}.product-logo-name{max-width:42px;font-size:8px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.conversation-item.active .product-logo-avatar{border-color:#eff6ff;box-shadow:0 0 0 2px #ffffff55}.conversation-name{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.preview{color:#9ca3af;line-height:1.25;max-height:38px;overflow:hidden}.conversation-time{font-size:14px;white-space:nowrap}.badge{display:inline-block;min-width:18px;padding:2px 6px;border-radius:999px;background:#ef4444;color:white;font-size:12px;text-align:center;margin-top:6px}.conversation-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:#fff}.conversation-panel.loading{position:relative}.chat-loading{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#64748b;background:#fff}.chat-loading-spinner{width:34px;height:34px;border:4px solid #dbeafe;border-top-color:#1f7acb;border-radius:50%;animation:spin .8s linear infinite}.chat-loading-title{font-weight:800;color:#1f2937}.chat-loading-subtitle{font-size:13px}.loading-line{height:12px;border-radius:999px;background:linear-gradient(90deg,#eef2f7,#dbeafe,#eef2f7);background-size:200% 100%;animation:shine 1.1s linear infinite}.loading-lines{width:min(520px,70%);display:flex;flex-direction:column;gap:10px}.loading-lines .short{width:55%}@keyframes spin{to{transform:rotate(360deg)}}@keyframes shine{to{background-position:-200% 0}}.conversation-header{flex:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid #e5e7eb}.conversation-header-main{min-width:0}.conversation-header-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:360px;text-align:right}.conversation-header-title{font-size:18px;font-weight:800}.order-options{background:#f8fafc;border:1px solid #dbe4ee;border-radius:8px;padding:8px 10px;color:#334155;font-size:13px;line-height:1.35}.order-options-title{color:#64748b;font-size:12px;font-weight:800;margin-bottom:4px}.order-option-name{font-weight:800}.order-option-value{color:#0f172a}.conversation-body{padding:20px 24px;overflow-y:scroll;min-height:0;flex:1 1 auto;scrollbar-gutter:stable}.chat-row{margin:0 0 18px}.chat-meta{display:flex;justify-content:space-between;gap:12px;color:#6b7280;font-size:13px;margin-bottom:6px}.chat-author{font-weight:800;color:#1f2937}.chat-bubble{display:inline-block;max-width:78%;border-radius:10px;padding:10px 12px;line-height:1.45;background:#f3f4f6;white-space:pre-wrap;text-align:left}.chat-row.seller{text-align:right}.chat-row.seller .chat-meta{justify-content:flex-end}.chat-row.seller .chat-bubble{background:#eef6ff}.chat-row.buyer .chat-bubble{background:#fff;border:1px solid #e5e7eb}.read-receipt{display:inline-flex;align-items:center;gap:3px;margin:0 8px;color:#047857;font-size:12px;font-weight:800;white-space:nowrap}.toolbar a{margin-left:12px}.empty-state{padding:40px;color:#6b7280;text-align:center}.conversation-list::-webkit-scrollbar,.conversation-body::-webkit-scrollbar,.reply-editor::-webkit-scrollbar{width:12px}.conversation-list::-webkit-scrollbar-thumb,.conversation-body::-webkit-scrollbar-thumb,.reply-editor::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:999px;border:3px solid #f8fafc}@media(max-width:850px){.messages-layout{grid-template-columns:1fr;height:calc(100vh - 110px)}.conversation-panel{min-height:0}.conversation-list{max-height:260px;border-right:0;border-bottom:1px solid #e5e7eb}.conversation-header{flex-direction:column}.conversation-header-side{align-items:flex-start;text-align:left;max-width:none}}
 
@@ -836,12 +838,15 @@ def layout(title: str, body: str) -> bytes:
     chat_browser = CHAT_KEEPALIVE_BROWSER_STATUS.copy()
     chat_button_label = "Chat window active" if chat_browser.get("opened") else "Open chat window"
     chat_button_class = "ok" if chat_browser.get("opened") else "warn"
+    sales_badge = sales_order_badge_summary()
+    sales_badge_count = int(sales_badge.get("count") or 0)
+    sales_badge_hidden = " hidden" if sales_badge_count <= 0 else ""
     nav = f"""
     <div class="top">
       <a href="/" aria-label="Home"><img class="brand-logo" src="/assets/shinchan-logo.png" alt="Crayon Shin-chan"></a>
       <div class="top-nav">
         <a href="/">Dashboard</a>
-        <a href="/sales">Sales</a>
+        <a href="/sales" class="nav-link-with-badge">Sales<span id="sales-order-badge" class="nav-badge"{sales_badge_hidden}>{h(sales_badge_count)}</span></a>
         <a href="/chats">Messages</a>
         <a href="/unread">Unread</a>
         <a href="/admin-messages">Admin</a>
@@ -997,6 +1002,24 @@ def layout(title: str, body: str) -> bytes:
       btn.addEventListener('click', openChatKeepalive);
       updateLabel();
       setInterval(updateLabel, 15000);
+    }})();
+    (() => {{
+      const badge = document.getElementById('sales-order-badge');
+      if (!badge) return;
+      function setBadge(count) {{
+        const value = Number(count || 0);
+        badge.textContent = String(value);
+        badge.hidden = value <= 0;
+      }}
+      async function refreshSalesBadge() {{
+        try {{
+          const res = await fetch('/api/sales-order-count', {{cache: 'no-store'}});
+          if (!res.ok) return;
+          const data = await res.json();
+          setBadge(data.count || 0);
+        }} catch (e) {{}}
+      }}
+      setInterval(refreshSalesBadge, 30000);
     }})();
     </script>
     """
@@ -1383,6 +1406,88 @@ def unread_summary() -> dict[str, Any]:
 def clear_unread_cache() -> None:
     UNREAD_CACHE["time"] = 0.0
     UNREAD_CACHE["data"] = None
+
+
+def load_sales_order_state() -> dict[str, Any]:
+    if not SALES_ORDER_SEEN_FILE.exists():
+        return {"initialized": False, "seen_invoice_ids": []}
+    try:
+        data = json.loads(SALES_ORDER_SEEN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"initialized": False, "seen_invoice_ids": []}
+    if not isinstance(data, dict):
+        return {"initialized": False, "seen_invoice_ids": []}
+    seen = [str(item) for item in data.get("seen_invoice_ids") or [] if str(item)]
+    return {"initialized": bool(data.get("initialized")), "seen_invoice_ids": seen}
+
+
+def save_sales_order_state(state: dict[str, Any]) -> None:
+    seen = [str(item) for item in state.get("seen_invoice_ids") or [] if str(item)]
+    payload = {
+        "initialized": bool(state.get("initialized")),
+        "seen_invoice_ids": seen[:500],
+        "updated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
+    SALES_ORDER_SEEN_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def sales_invoice_id(row: dict[str, Any]) -> str:
+    return str(row.get("invoice_id") or row.get("id_i") or row.get("id") or "").strip()
+
+
+def sales_order_badge_summary(force: bool = False) -> dict[str, Any]:
+    now = time.time()
+    cached = SALES_ORDER_BADGE_CACHE.get("data")
+    if not force and cached is not None and now - float(SALES_ORDER_BADGE_CACHE.get("time") or 0) < 45:
+        return cached
+    try:
+        rows = [row for row in client.sales(3, 50).get("rows", []) if isinstance(row, dict)]
+        invoice_ids: list[str] = []
+        for row in rows:
+            invoice_id = sales_invoice_id(row)
+            if invoice_id and invoice_id not in invoice_ids:
+                invoice_ids.append(invoice_id)
+        state = load_sales_order_state()
+        if not state.get("initialized"):
+            save_sales_order_state({"initialized": True, "seen_invoice_ids": invoice_ids})
+            unseen_ids: list[str] = []
+        else:
+            seen = set(str(item) for item in state.get("seen_invoice_ids") or [])
+            unseen_ids = [invoice_id for invoice_id in invoice_ids if invoice_id not in seen]
+        data = {
+            "ok": True,
+            "count": len(unseen_ids),
+            "invoice_ids": unseen_ids,
+            "latest_invoice_id": invoice_ids[0] if invoice_ids else "",
+            "checked_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        }
+    except Exception as exc:
+        data = {"ok": False, "count": 0, "error": short(exc, 160)}
+    SALES_ORDER_BADGE_CACHE["time"] = now
+    SALES_ORDER_BADGE_CACHE["data"] = data
+    return data
+
+
+def mark_sales_orders_seen(rows: list[dict[str, Any]]) -> None:
+    invoice_ids: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        invoice_id = sales_invoice_id(row)
+        if invoice_id and invoice_id not in invoice_ids:
+            invoice_ids.append(invoice_id)
+    state = load_sales_order_state()
+    existing = [str(item) for item in state.get("seen_invoice_ids") or [] if str(item)]
+    merged = invoice_ids + [invoice_id for invoice_id in existing if invoice_id not in invoice_ids]
+    save_sales_order_state({"initialized": True, "seen_invoice_ids": merged})
+    SALES_ORDER_BADGE_CACHE["time"] = time.time()
+    SALES_ORDER_BADGE_CACHE["data"] = {
+        "ok": True,
+        "count": 0,
+        "invoice_ids": [],
+        "latest_invoice_id": invoice_ids[0] if invoice_ids else "",
+        "checked_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
 
 
 def phrase_user_key() -> str:
@@ -2261,6 +2366,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_unique_code()
             if path == "/api/unread-count":
                 return self.api_unread_count()
+            if path == "/api/sales-order-count":
+                return self.api_sales_order_count()
             if path == "/api/online-keepalive":
                 return self.api_online_keepalive()
             if path == "/api/version":
@@ -2637,6 +2744,7 @@ class Handler(BaseHTTPRequestHandler):
         rows = min(max(int(self.q("rows", "50")), 1), 50)
         page = int(self.q("page", "1"))
         data = client.sales(days, rows, page)
+        mark_sales_orders_seen(data.get("rows", []))
         trs = []
         for r in data.get("rows", []):
             trs.append([
@@ -3265,6 +3373,10 @@ class Handler(BaseHTTPRequestHandler):
         UNREAD_CACHE["time"] = now
         UNREAD_CACHE["data"] = data
         self.send_json(data)
+
+    def api_sales_order_count(self) -> None:
+        force = self.q("force", "0") in {"1", "true", "yes"}
+        self.send_json(sales_order_badge_summary(force=force))
 
     def api_online_keepalive(self) -> None:
         self.send_json(refresh_public_online_status(force=True))
