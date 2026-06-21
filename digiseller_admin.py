@@ -80,6 +80,10 @@ def h(value: Any) -> str:
     return html.escape(str(value or ""))
 
 
+def strip_path_prefix(path: str, prefix: str) -> str:
+    return path[len(prefix) :] if path.startswith(prefix) else path
+
+
 def short(value: Any, length: int = 110) -> str:
     text = clean_text(value)
     return text if len(text) <= length else text[: length - 1] + "…"
@@ -1508,6 +1512,9 @@ def phrase_stored_path(stored: str) -> Path | None:
 def phrase_file_url(stored: str) -> str:
     path = phrase_stored_path(stored)
     version = f"?v={int(path.stat().st_mtime)}" if path else ""
+    public_base = os.getenv("DIGISELLER_COMMON_PHRASE_PUBLIC_BASE_URL", "").strip()
+    if public_base:
+        return public_base.rstrip("/") + "/" + urllib.parse.quote(stored, safe="") + version
     return "/phrase-files/" + urllib.parse.quote(stored, safe="") + version
 
 
@@ -3186,7 +3193,7 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def serve_download(self, path: str) -> None:
-        rel = urllib.parse.unquote(path.removeprefix("/downloads/"))
+        rel = urllib.parse.unquote(strip_path_prefix(path, "/downloads/"))
         file_path = (DOWNLOAD_DIR / rel).resolve()
         if not str(file_path).startswith(str(DOWNLOAD_DIR.resolve())) or not file_path.exists():
             return self.send_html("Not found", "Not found", 404)
@@ -3210,7 +3217,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def serve_phrase_file(self, path: str) -> None:
-        rel = urllib.parse.unquote(path.removeprefix("/phrase-files/"))
+        rel = urllib.parse.unquote(strip_path_prefix(path, "/phrase-files/"))
         if not rel or "/" in rel or "\\" in rel:
             self.send_error(404)
             return
