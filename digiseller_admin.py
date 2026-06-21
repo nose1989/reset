@@ -2977,6 +2977,26 @@ class Handler(BaseHTTPRequestHandler):
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
             )
+        if selected_kind == "order" and selected_order and selected_chat is None:
+            selected_chat = {
+                "id_i": selected_order,
+                "email": self.q("email", f"order-{selected_order}"),
+                "product": self.q("product", "Direct order lookup"),
+            }
+            email = str(selected_chat.get("email") or f"order-{selected_order}")
+            name = email.split("@", 1)[0] or email
+            initials = (name[:1] or "?").upper()
+            product = selected_chat.get("product")
+            preview = short(product, 80)
+            href = order_chat_href(selected_order, email, product)
+            items.insert(
+                0,
+                f"<a class='conversation-item active' data-kind='order' data-order-id='{selected_order}' data-email='{h(email)}' data-product='{h(product)}' href='{h(href)}'>"
+                f"{product_avatar_html(product, initials)}"
+                f"<div><div class='conversation-name'>{h(name)}</div>"
+                f"<div class='preview'>{h(short(preview, 70))}</div></div>"
+                "<div class='conversation-time'>new</div></a>",
+            )
         if guest_chats or guest_error:
             items.append("<div class='conversation-title' style='font-size:18px;padding-top:18px'>Guest consultations</div>")
         if guest_error:
