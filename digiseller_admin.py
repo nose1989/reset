@@ -996,6 +996,7 @@ ggsel_client = GgselClient()
 UNREAD_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 SALES_ORDER_BADGE_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 PURCHASE_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
+GGSEL_ORDER_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
 ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
     "enabled": False,
     "last_ok": "",
@@ -1914,11 +1915,14 @@ def normalize_option_items(raw_options: Any) -> list[Any]:
     if raw_options is None:
         return []
     if isinstance(raw_options, dict):
-        for key in ("option", "options", "items", "values", "parameters", "params"):
+        for key in ("option", "options", "items", "values", "parameters", "params", "fields", "field", "answers"):
             if key in raw_options:
                 nested = normalize_option_items(raw_options.get(key))
                 if nested:
                     return nested
+        item_keys = {"name", "parameter", "title", "label", "caption", "field", "field_name", "question", "key", "value", "user_data", "text", "answer"}
+        if not item_keys.intersection(raw_options):
+            return [{"name": key, "value": value} for key, value in raw_options.items()]
         return [raw_options]
     if isinstance(raw_options, list):
         return raw_options
@@ -1926,15 +1930,24 @@ def normalize_option_items(raw_options: Any) -> list[Any]:
 
 
 def option_sources_from_info(info: dict[str, Any]) -> list[Any]:
+    source_keys = (
+        "options",
+        "option",
+        "parameters",
+        "params",
+        "fields",
+        "answers",
+        "user_data",
+        "form_data",
+        "additional_fields",
+    )
     sources: list[Any] = []
-    for key in ("options", "option", "parameters", "params"):
-        if key in info:
-            sources.append(info.get(key))
-    content = info.get("content")
-    if isinstance(content, dict):
-        for key in ("options", "option", "parameters", "params"):
-            if key in content:
-                sources.append(content.get(key))
+    for container in (info, info.get("content"), info.get("order"), info.get("purchase"), info.get("sale"), info.get("product")):
+        if not isinstance(container, dict):
+            continue
+        for key in source_keys:
+            if key in container:
+                sources.append(container.get(key))
     return sources
 
 
@@ -1944,7 +1957,7 @@ def purchase_options_from_info(info: dict[str, Any]) -> list[tuple[str, str]]:
     for source in option_sources_from_info(info):
         for raw in normalize_option_items(source):
             if isinstance(raw, dict):
-                name = first_option_text(raw, ("name", "parameter", "title", "label", "caption"))
+                name = first_option_text(raw, ("name", "parameter", "title", "label", "caption", "field", "field_name", "question", "key"))
                 value = first_option_text(
                     raw,
                     (
@@ -1956,6 +1969,12 @@ def purchase_options_from_info(info: dict[str, Any]) -> list[tuple[str, str]]:
                         "text",
                         "option_value",
                         "value_text",
+                        "answer",
+                        "answers",
+                        "user_value",
+                        "input",
+                        "choice",
+                        "choices",
                     ),
                 )
             else:
@@ -1999,8 +2018,7 @@ def cached_purchase_info(order_id: int) -> dict[str, Any]:
     return info
 
 
-def order_options_html(order_id: int) -> str:
-    options = purchase_options_from_info(cached_purchase_info(order_id))
+def order_options_block_html(options: list[tuple[str, str]]) -> str:
     if not options:
         return ""
     rows = "".join(
@@ -2009,6 +2027,45 @@ def order_options_html(order_id: int) -> str:
         for name, value in options
     )
     return f"<div class='order-options'><div class='order-options-title'>&#39069;&#22806;&#36873;&#39033;</div>{rows}</div>"
+
+
+def order_options_html(order_id: int) -> str:
+    return order_options_block_html(purchase_options_from_info(cached_purchase_info(order_id)))
+
+
+def cached_ggsel_order_info(order_id: int) -> dict[str, Any]:
+    if not order_id or not ggsel_client.configured():
+        return {}
+    now = time.time()
+    cached = GGSEL_ORDER_INFO_CACHE.get(order_id)
+    if cached and now - cached[0] < 300:
+        return cached[1]
+    info: dict[str, Any] = {}
+    try:
+        rows = ggsel_client.sales(100).get("sales") or []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_id = str(row.get("invoice_id") or row.get("id_i") or row.get("id") or "")
+            if row_id == str(order_id):
+                info = row
+                break
+    except Exception:
+        info = {}
+    GGSEL_ORDER_INFO_CACHE[order_id] = (now, info)
+    return info
+
+
+def ggsel_order_options_html(order_id: int, selected_chat: dict[str, Any]) -> str:
+    options: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for source in (selected_chat, cached_ggsel_order_info(order_id)):
+        for item in purchase_options_from_info(source):
+            if item in seen:
+                continue
+            seen.add(item)
+            options.append(item)
+    return order_options_block_html(options)
 
 
 def new_phrase_id(text: str) -> str:
@@ -3464,10 +3521,11 @@ class Handler(BaseHTTPRequestHandler):
         buyer_name = str(selected_chat.get("email") or f"GGSEL-{selected_order}").split("@", 1)[0]
         product = selected_chat.get("product") or "GGSEL order"
         buyer_lang = detect_buyer_language(selected_messages)
+        options_html = ggsel_order_options_html(selected_order, selected_chat)
         header = (
             f"<div class='conversation-header-main'><div class='conversation-header-title'>{h(buyer_name)}</div>"
             f"<div class='muted'>GGSEL Order {h(selected_order)} · {h(short(product, 110))} · Messages loaded: {len(selected_messages)} · Reply language: {h(lang_label(buyer_lang))}</div></div>"
-            "<div class='conversation-header-side'><div class='ggsel-readonly-note'>GGSEL messages are shown here; replies are sent through GGSEL API.</div></div>"
+            f"<div class='conversation-header-side'><div class='ggsel-readonly-note'>GGSEL messages are shown here; replies are sent through GGSEL API.</div>{options_html}</div>"
         )
         rows = []
         total_messages = len(selected_messages)
