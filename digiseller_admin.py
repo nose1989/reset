@@ -137,6 +137,133 @@ def sort_time(value: Any) -> float:
 
 
 TRANSLATE_CACHE: dict[tuple[str, str, str], tuple[str, str]] = {}
+TRANSLATE_CACHE_FILE = APP_DIR / "translation_cache.json"
+TRANSLATE_CACHE_TTL_SECONDS = 3 * 24 * 60 * 60
+TRANSLATE_CACHE_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
+TRANSLATE_CACHE_LOCK = threading.Lock()
+TRANSLATE_CACHE_LOADED = False
+
+
+def translation_cache_id(source_lang: str, target_lang: str, text: str) -> str:
+    payload = json.dumps([source_lang, target_lang, text], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def translation_cache_is_fresh(updated_at: object) -> bool:
+    try:
+        updated = dt.datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=dt.UTC)
+    return (dt.datetime.now(dt.UTC) - updated).total_seconds() < TRANSLATE_CACHE_TTL_SECONDS
+
+
+def load_translation_cache() -> None:
+    global TRANSLATE_CACHE_LOADED
+    if TRANSLATE_CACHE_LOADED:
+        return
+    with TRANSLATE_CACHE_LOCK:
+        if TRANSLATE_CACHE_LOADED:
+            return
+        fresh_data: dict[str, object] = {}
+        if TRANSLATE_CACHE_FILE.exists():
+            try:
+                data = json.loads(TRANSLATE_CACHE_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            if isinstance(data, dict):
+                for key, item in data.items():
+                    if not isinstance(item, dict) or not translation_cache_is_fresh(item.get("updated_at")):
+                        continue
+                    source_lang = str(item.get("source_lang") or "auto")
+                    target_lang = str(item.get("target_lang") or "")
+                    value = str(item.get("text") or "")
+                    translated = str(item.get("translated") or "")
+                    detected = str(item.get("detected") or source_lang)
+                    if target_lang and value and translated:
+                        TRANSLATE_CACHE[(source_lang, target_lang, value)] = (translated, detected)
+                        fresh_data[str(key)] = item
+                if len(fresh_data) != len(data):
+                    TRANSLATE_CACHE_FILE.write_text(json.dumps(fresh_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        TRANSLATE_CACHE_LOADED = True
+
+
+def prune_translation_cache() -> None:
+    global TRANSLATE_CACHE_LOADED
+    with TRANSLATE_CACHE_LOCK:
+        fresh_cache: dict[tuple[str, str, str], tuple[str, str]] = {}
+        fresh_data: dict[str, object] = {}
+        if TRANSLATE_CACHE_FILE.exists():
+            try:
+                data = json.loads(TRANSLATE_CACHE_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            if isinstance(data, dict):
+                for key, item in data.items():
+                    if not isinstance(item, dict) or not translation_cache_is_fresh(item.get("updated_at")):
+                        continue
+                    source_lang = str(item.get("source_lang") or "auto")
+                    target_lang = str(item.get("target_lang") or "")
+                    value = str(item.get("text") or "")
+                    translated = str(item.get("translated") or "")
+                    detected = str(item.get("detected") or source_lang)
+                    if target_lang and value and translated:
+                        fresh_cache[(source_lang, target_lang, value)] = (translated, detected)
+                        fresh_data[str(key)] = item
+        TRANSLATE_CACHE.clear()
+        TRANSLATE_CACHE.update(fresh_cache)
+        TRANSLATE_CACHE_LOADED = True
+        try:
+            if fresh_data:
+                TRANSLATE_CACHE_FILE.write_text(json.dumps(fresh_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                TRANSLATE_CACHE_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def start_translation_cache_cleanup() -> None:
+    load_translation_cache()
+
+    def cleanup_loop() -> None:
+        while True:
+            time.sleep(TRANSLATE_CACHE_CLEANUP_INTERVAL_SECONDS)
+            prune_translation_cache()
+
+    threading.Thread(target=cleanup_loop, daemon=True).start()
+
+
+def save_translation_cache_item(source_lang: str, target_lang: str, text: str, translated: str, detected: str) -> None:
+    with TRANSLATE_CACHE_LOCK:
+        try:
+            if TRANSLATE_CACHE_FILE.exists():
+                data = json.loads(TRANSLATE_CACHE_FILE.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            else:
+                data = {}
+            data[translation_cache_id(source_lang, target_lang, text)] = {
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "text": text,
+                "translated": translated,
+                "detected": detected,
+                "updated_at": dt.datetime.now(dt.UTC).isoformat(),
+            }
+            TRANSLATE_CACHE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+
+def cached_translation(text: str, target_lang: str, source_lang: str = "auto") -> tuple[str, str] | None:
+    value = clean_text(text)
+    if not value:
+        return None
+    load_translation_cache()
+    return TRANSLATE_CACHE.get((source_lang, target_lang, value))
+
+
 LANG_LABELS = {
     "zh": "中文",
     "zh-CN": "中文",
@@ -214,6 +341,7 @@ def google_translate(text: str, target_lang: str, source_lang: str = "auto") -> 
         return "", ""
     if target_lang in {"zh", "zh-CN"} and heuristic_language(value) in {"zh", "zh-CN"}:
         return value, "zh-CN"
+    load_translation_cache()
     cache_key = (source_lang, target_lang, value)
     if cache_key in TRANSLATE_CACHE:
         return TRANSLATE_CACHE[cache_key]
@@ -233,6 +361,7 @@ def google_translate(text: str, target_lang: str, source_lang: str = "auto") -> 
     except Exception:
         result = (value, heuristic_language(value) or source_lang)
     TRANSLATE_CACHE[cache_key] = result
+    save_translation_cache_item(source_lang, target_lang, value, result[0], result[1])
     return result
 
 
@@ -290,15 +419,20 @@ def translate_incoming_html(text: str, message_id: Any, should_translate: bool =
     if not should_translate or source_lang in {"zh", "zh-CN"} or not should_translate_text(text):
         return message_text_html(text, allow_save=not should_translate)
     message_key = h(message_id or hashlib.sha1(text.encode("utf-8")).hexdigest()[:12])
+    cached = cached_translation(text, "zh-CN")
+    pending = "0" if cached else "1"
+    translated_text = cached[0] if cached else "&#32763;&#35793;&#20013;..."
+    label = lang_label(cached[1] if cached else source_lang or "auto")
+    translated_html = h(translated_text) if cached else translated_text
     return (
-        f"<div class='translated-message' id='msg-{message_key}' data-pending='1'>"
-        f"<div class='translated-text'>&#32763;&#35793;&#20013;...</div>"
+        f"<div class='translated-message' id='msg-{message_key}' data-pending='{pending}'>"
+        f"<div class='translated-text'>{translated_html}</div>"
         f"<div class='original-inline'>&#21407;&#25991;&#65306;{h(text)}</div>"
         f"<div class='original-text' hidden>{h(text)}</div>"
         f"<div class='message-actions'>"
         f"<button class='toggle-original' type='button'>&#26597;&#30475;&#21407;&#25991;</button>"
         f"{save_common_phrase_button(text)}"
-        f"<span class='translation-label'>{h(lang_label(source_lang or 'auto'))} → &#20013;&#25991;</span>"
+        f"<span class='translation-label'>{h(label)} → &#20013;&#25991;</span>"
         f"</div>"
         f"</div>"
     )
@@ -816,9 +950,15 @@ class GgselClient:
         data = self.get("/seller-last-sales", {"top": min(max(top, 1), 100)})
         return data if isinstance(data, dict) else {"sales": data}
 
-    def chats(self, page_size: int = 20, page: int = 1) -> dict[str, Any]:
-        data = self.get("/debates/v2/chats", {"pagesize": min(max(page_size, 1), 100), "page": max(page, 1)})
+    def chats(self, page_size: int = 20, page: int = 1, only_unread: bool = False) -> dict[str, Any]:
+        params: dict[str, Any] = {"pagesize": min(max(page_size, 1), 100), "page": max(page, 1)}
+        if only_unread:
+            params["filter_new"] = 1
+        data = self.get("/debates/v2/chats", params)
         return data if isinstance(data, dict) else {"items": data}
+
+    def mark_chat_read(self, order_id: int) -> None:
+        self.post("/debates/v2/seen", params={"id_i": order_id})
 
     def chat_messages(self, order_id: int, count: int = 200) -> list[dict[str, Any]]:
         data = self.get("/debates/v2", {"id_i": order_id, "count": min(max(count, 1), 200)})
@@ -923,7 +1063,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 
 .messages-layout{height:calc(100vh - 116px)}
 .conversation-list-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 14px 12px;box-shadow:0 1px 0 #eef2f7}
-.conversation-list-title{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:10px}.conversation-list-title h2{margin:0;font-size:28px;line-height:1}.conversation-counts{font-size:12px;color:#64748b;text-align:right;white-space:nowrap}.conversation-search{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;padding:9px 10px;margin-bottom:10px;background:#f8fafc}.conversation-filters{display:flex;gap:8px;flex-wrap:wrap}.conversation-filter{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;cursor:pointer}.conversation-filter.active{background:#1f7acb;color:#fff;border-color:#1f7acb}.conversation-item[hidden]{display:none}.conversation-empty-filter{display:none;padding:28px 16px;color:#64748b;text-align:center}.conversation-empty-filter.visible{display:block}.conversation-section{padding:14px 14px 7px;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:#f8fafc;border-bottom:1px solid #eef2f7}.conversation-section[hidden]{display:none}.chat-bubble{word-break:break-word}.conversation-body{scroll-behavior:smooth}.reply-editor{border-top:1px solid #e5e7eb;background:#fbfdff}.reply-editor textarea{min-height:84px}
+.conversation-list-title{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:10px}.conversation-list-title h2{margin:0;font-size:28px;line-height:1}.conversation-counts{font-size:12px;color:#64748b;text-align:right;white-space:nowrap}.conversation-search{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;padding:9px 10px;margin-bottom:10px;background:#f8fafc}.conversation-filters{display:flex;gap:8px;flex-wrap:wrap}.conversation-filter{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;cursor:pointer}.conversation-filter.active{background:#1f7acb;color:#fff;border-color:#1f7acb}.conversation-item[hidden]{display:none}.conversation-empty-filter{display:none;padding:28px 16px;color:#64748b;text-align:center}.conversation-empty-filter.visible{display:block}.conversation-section{padding:14px 14px 7px;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:#f8fafc;border-bottom:1px solid #eef2f7}.conversation-section[hidden]{display:none}.chat-bubble{word-break:break-word}.conversation-body{scroll-behavior:smooth}.reply-editor{border-top:1px solid #e5e7eb;background:#fbfdff}.reply-editor textarea{min-height:84px}.pending-send .chat-bubble{opacity:.75}.pending-send.send-failed .chat-bubble{background:#fee2e2;color:#991b1b}
 
 .platform-badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:900;background:#e0f2fe;color:#075985}.platform-badge.ggsel{background:#fef3c7;color:#92400e}.sales-source{white-space:nowrap}.ggsel-readonly-note{background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 10px;color:#9a3412;font-size:13px;font-weight:700}
 .sales-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sales-toolbar input{max-width:90px}.sales-toolbar .sales-search{flex:1 1 260px;max-width:420px}.sales-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}.sales-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px}.sales-stat b{display:block;font-size:20px;margin-bottom:4px}.sales-table .order-link{font-weight:800}.sales-table .chat-action{display:inline-block;background:#1f7acb;color:#fff;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800}.sales-table tbody tr[hidden]{display:none}.sales-product{max-width:360px}.sales-empty-filter{display:none;padding:24px;text-align:center;color:#64748b}.sales-empty-filter.visible{display:block}
@@ -1477,7 +1617,17 @@ def parse_stock_lines(raw: str, variant_id: int = 0) -> list[dict[str, Any]]:
 
 
 def unread_summary() -> dict[str, Any]:
-    buyer = [c for c in client.chats(only_unread=True) if int(c.get("cnt_new") or 0) > 0]
+    try:
+        buyer = [c for c in client.chats(only_unread=True) if int(c.get("cnt_new") or 0) > 0]
+    except Exception:
+        buyer = []
+    ggsel_buyer: list[dict[str, Any]] = []
+    if ggsel_client.configured():
+        try:
+            ggsel_rows = ggsel_client.chats(page_size=50, only_unread=True).get("items") or []
+            ggsel_buyer = [c for c in ggsel_rows if isinstance(c, dict) and int(c.get("cnt_new") or 0) > 0]
+        except Exception:
+            ggsel_buyer = []
     try:
         guest = [
             c
@@ -1489,9 +1639,16 @@ def unread_summary() -> dict[str, Any]:
     admin: list[dict[str, Any]] = []
     latest: dict[str, Any] | None = None
     buyer_unread: list[dict[str, Any]] = []
+
+    def add_latest(rec: dict[str, Any]) -> None:
+        nonlocal latest
+        if latest is None or sort_time(rec.get("last_date")) > sort_time(latest.get("last_date")):
+            latest = rec
+
     for chat in buyer:
         rec = {
             "type": "buyer",
+            "platform": "digiseller",
             "order_id": chat.get("id_i"),
             "email": chat.get("email"),
             "product": clean_text(chat.get("product")),
@@ -1500,13 +1657,29 @@ def unread_summary() -> dict[str, Any]:
             "url": f"/chats?order_id={chat.get('id_i')}",
         }
         buyer_unread.append(rec)
-        if latest is None or str(rec.get("last_date") or "") > str(latest.get("last_date") or ""):
-            latest = rec
+        add_latest(rec)
+    for chat in ggsel_buyer:
+        order_id = chat.get("id_i")
+        email = chat.get("email") or f"ggsel-{order_id}"
+        product = clean_text(chat.get("product") or "GGSEL order")
+        rec = {
+            "type": "buyer",
+            "platform": "ggsel",
+            "order_id": order_id,
+            "email": email,
+            "product": product,
+            "last_date": chat.get("last_message"),
+            "cnt_new": int(chat.get("cnt_new") or 0),
+            "url": "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(order_id or ""), "email": str(email), "product": product}),
+        }
+        buyer_unread.append(rec)
+        add_latest(rec)
     for chat in guest:
         corr_id = int(chat.get("CorrID") or 0)
         corr_type = str(chat.get("CorrType") or chat.get("Type") or "visitor")
         rec = {
             "type": "guest",
+            "platform": "digiseller",
             "order_id": "",
             "email": chat.get("Name") or f"GUEST-{corr_id}",
             "product": clean_text(chat.get("PurchaseName") or chat.get("Text")),
@@ -1514,13 +1687,18 @@ def unread_summary() -> dict[str, Any]:
             "cnt_new": 1,
             "url": f"/chats?kind=guest&corr_type={urllib.parse.quote(corr_type)}&corr_id={corr_id}",
         }
-        if latest is None or sort_time(rec.get("last_date")) > sort_time(latest.get("last_date")):
-            latest = rec
-    total = sum(int(c.get("cnt_new") or 0) for c in buyer) + len(guest) + len(admin)
+        add_latest(rec)
+    digiseller_unread_messages = sum(int(c.get("cnt_new") or 0) for c in buyer)
+    ggsel_unread_messages = sum(int(c.get("cnt_new") or 0) for c in ggsel_buyer)
+    total = digiseller_unread_messages + ggsel_unread_messages + len(guest) + len(admin)
     return {
         "ok": True,
-        "buyer_unread_chats": len(buyer),
-        "buyer_unread_messages": sum(int(c.get("cnt_new") or 0) for c in buyer),
+        "buyer_unread_chats": len(buyer) + len(ggsel_buyer),
+        "buyer_unread_messages": digiseller_unread_messages + ggsel_unread_messages,
+        "digiseller_unread_chats": len(buyer),
+        "digiseller_unread_messages": digiseller_unread_messages,
+        "ggsel_unread_chats": len(ggsel_buyer),
+        "ggsel_unread_messages": ggsel_unread_messages,
         "buyer_unread": buyer_unread,
         "guest_unread_chats": len(guest),
         "admin_unread": len(admin),
@@ -1528,7 +1706,6 @@ def unread_summary() -> dict[str, Any]:
         "latest": latest,
         "checked_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
-
 
 def clear_unread_cache() -> None:
     UNREAD_CACHE["time"] = 0.0
@@ -1538,6 +1715,14 @@ def clear_unread_cache() -> None:
 def safe_mark_chat_read(order_id: int) -> None:
     try:
         client.mark_chat_read(order_id)
+    except Exception:
+        return
+    clear_unread_cache()
+
+
+def safe_mark_ggsel_chat_read(order_id: int) -> None:
+    try:
+        ggsel_client.mark_chat_read(order_id)
     except Exception:
         return
     clear_unread_cache()
@@ -2475,10 +2660,33 @@ class Handler(BaseHTTPRequestHandler):
               addFiles(event.dataTransfer.files);
             }});
           }});
-          root.addEventListener('submit', () => {{
+          root.addEventListener('submit', async (event) => {{
+            event.preventDefault();
             const button = root.querySelector('button[type="submit"]');
+            const originalText = button.textContent;
             button.disabled = true;
             button.textContent = '\u53d1\u9001\u4e2d...';
+            const body = root.closest('.conversation-panel')?.querySelector('.conversation-body');
+            const pending = document.createElement('div');
+            pending.className = 'chat-row seller pending-send';
+            const text = textarea.value.trim();
+            pending.innerHTML = '<div class="chat-meta"><span class="chat-author">nose1989 <span class="muted">\u53d1\u9001\u4e2d...</span></span></div><div class="chat-bubble"></div>';
+            pending.querySelector('.chat-bubble').textContent = text || '\u9644\u4ef6\u6b63\u5728\u53d1\u9001...';
+            if (body) {{
+              body.appendChild(pending);
+              body.scrollTop = body.scrollHeight;
+            }}
+            try {{
+              const res = await fetch(root.action, {{method: 'POST', body: new FormData(root), redirect: 'follow'}});
+              if (!res.ok) throw new Error(`HTTP ${{res.status}}`);
+              location.href = res.url || location.href;
+            }} catch (error) {{
+              pending.classList.add('send-failed');
+              const meta = pending.querySelector('.muted');
+              if (meta) meta.textContent = '\u53d1\u9001\u5931\u8d25';
+              button.disabled = false;
+              button.textContent = originalText;
+            }}
           }});
         }})();
         </script>
@@ -3313,8 +3521,10 @@ class Handler(BaseHTTPRequestHandler):
         platform = self.q("platform", "digiseller")
         if platform == "ggsel":
             messages = ggsel_client.chat_messages(order_id)
+            if messages:
+                safe_mark_ggsel_chat_read(order_id)
             selected_chat = {"id_i": order_id, "email": email, "product": product, "platform": "ggsel"}
-            return self.send_json({"ok": True, "platform": "ggsel", "order_id": order_id, "count": len(messages), "read": False, "html": self.ggsel_chat_panel_html(order_id, selected_chat, messages)})
+            return self.send_json({"ok": True, "platform": "ggsel", "order_id": order_id, "count": len(messages), "read": True, "html": self.ggsel_chat_panel_html(order_id, selected_chat, messages)})
         messages = client.all_chat_messages(order_id)
         if messages:
             safe_mark_chat_read(order_id)
@@ -3531,6 +3741,8 @@ class Handler(BaseHTTPRequestHandler):
             if selected_platform == "ggsel":
                 try:
                     selected_messages = ggsel_client.chat_messages(selected_order)
+                    if selected_messages:
+                        safe_mark_ggsel_chat_read(selected_order)
                     if selected_chat is None:
                         selected_chat = {"id_i": selected_order, "email": self.q("email", f"ggsel-{selected_order}"), "product": self.q("product", "GGSEL order"), "platform": "ggsel"}
                 except Exception as exc:
@@ -3699,18 +3911,21 @@ class Handler(BaseHTTPRequestHandler):
             const unreadByOrder = new Map();
             buyerUnread.forEach((item) => {
               const orderId = String(item.order_id || '');
+              const platform = String(item.platform || 'digiseller');
               const count = Number(item.cnt_new || 0);
-              if (orderId && count > 0) unreadByOrder.set(orderId, count);
+              if (orderId && count > 0) unreadByOrder.set(`${platform}:${orderId}`, count);
             });
-            list.querySelectorAll('.conversation-item[data-kind="order"][data-platform="digiseller"]').forEach((link) => {
-              const count = unreadByOrder.get(String(link.dataset.orderId || '')) || 0;
+            list.querySelectorAll('.conversation-item[data-kind="order"]').forEach((link) => {
+              const platform = link.dataset.platform || 'digiseller';
+              const count = unreadByOrder.get(`${platform}:${String(link.dataset.orderId || '')}`) || 0;
               if (count > 0) setConversationBadge(link, count);
               else if (!link.classList.contains('active')) clearConversationBadge(link);
             });
             applyConversationFilters();
-            const active = list.querySelector('.conversation-item.active[data-kind="order"][data-platform="digiseller"]');
+            const active = list.querySelector('.conversation-item.active[data-kind="order"]');
             if (!active) return;
-            const activeCount = unreadByOrder.get(String(active.dataset.orderId || '')) || 0;
+            const activePlatform = active.dataset.platform || 'digiseller';
+            const activeCount = unreadByOrder.get(`${activePlatform}:${String(active.dataset.orderId || '')}`) || 0;
             if (activeCount <= 0 || refreshingActiveOrder) return;
             active.dataset.pendingUnread = String(activeCount);
             setConversationBadge(active, activeCount);
@@ -3761,7 +3976,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_html("Chat", body)
 
     def unread(self) -> None:
-        buyer = [c for c in client.chats(only_unread=True) if int(c.get("cnt_new") or 0) > 0]
+        try:
+            buyer = [c for c in client.chats(only_unread=True) if int(c.get("cnt_new") or 0) > 0]
+        except Exception:
+            buyer = []
+        ggsel_buyer: list[dict[str, Any]] = []
+        if ggsel_client.configured():
+            try:
+                ggsel_rows = ggsel_client.chats(page_size=50, only_unread=True).get("items") or []
+                ggsel_buyer = [c for c in ggsel_rows if isinstance(c, dict) and int(c.get("cnt_new") or 0) > 0]
+            except Exception:
+                ggsel_buyer = []
         try:
             guest = [
                 c
@@ -3771,7 +3996,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             guest = []
         admin: list[dict[str, Any]] = []  # Do not count historical admin notices as unread.
-        b_rows = [[f"<a href='/chats?order_id={h(c.get('id_i'))}'>{h(c.get('id_i'))}</a>", h(c.get("last_date")), h(c.get("cnt_new")), h(c.get("email")), h(short(c.get("product"), 100))] for c in buyer]
+        b_rows = [["Digiseller", f"<a href='/chats?order_id={h(c.get('id_i'))}'>{h(c.get('id_i'))}</a>", h(c.get("last_date")), h(c.get("cnt_new")), h(c.get("email")), h(short(c.get("product"), 100))] for c in buyer]
+        for c in ggsel_buyer:
+            order_id = c.get("id_i")
+            email = c.get("email") or f"ggsel-{order_id}"
+            product = clean_text(c.get("product") or "GGSEL order")
+            href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(order_id or ""), "email": str(email), "product": product})
+            b_rows.append(["GGSEL", f"<a href='{h(href)}'>{h(order_id)}</a>", h(c.get("last_message")), h(c.get("cnt_new")), h(email), h(short(product, 100))])
         g_rows = [
             [
                 f"<a href='/chats?kind=guest&corr_type={h(c.get('CorrType') or c.get('Type') or 'visitor')}&corr_id={h(c.get('CorrID'))}'>{h(c.get('Name') or ('GUEST-' + str(c.get('CorrID') or '')))}</a>",
@@ -3783,7 +4014,7 @@ class Handler(BaseHTTPRequestHandler):
             for c in guest
         ]
         a_rows = [[h(m.get("date")), h(m.get("id")), h(short(m.get("text") or m.get("message"), 180))] for m in admin]
-        body = f"<div class='card'><h2>Unread</h2><p>Buyer unread: {len(buyer)} | Guest unread: {len(guest)} | Admin unread: {len(admin)}</p></div><h3>Buyer chats</h3>{table(['Order','Last','New','Email','Product'], b_rows)}<h3>Guest consultations</h3>{table(['Guest','Last','Type','Text','Product'], g_rows)}<h3>Admin messages</h3>{table(['Date','ID','Text'], a_rows)}"
+        body = f"<div class='card'><h2>Unread</h2><p>Buyer unread: {len(buyer) + len(ggsel_buyer)} | Guest unread: {len(guest)} | Admin unread: {len(admin)}</p></div><h3>Buyer chats</h3>{table(['Platform','Order','Last','New','Email','Product'], b_rows)}<h3>Guest consultations</h3>{table(['Guest','Last','Type','Text','Product'], g_rows)}<h3>Admin messages</h3>{table(['Date','ID','Text'], a_rows)}"
         self.send_html("Unread", body)
 
     def admin_messages_page(self) -> None:
@@ -4090,6 +4321,7 @@ def main() -> None:
     start_auto_reload()
     start_online_keepalive()
     start_chat_keepalive_browser()
+    start_translation_cache_cleanup()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Digiseller admin running at http://{host}:{port}")
     print("Open the page and click the alerts button to allow sound/voice notifications.")
