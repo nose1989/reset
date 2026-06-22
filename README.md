@@ -73,7 +73,7 @@ The page also exposes `/api/ggsel-products?page=1&count=50&q=` JSON for wiring G
 
 ## FunPay chat integration
 
-`/chats` also reads `FUNPAY_GOLDEN_KEY` from `.env` and lists recent FunPay conversations alongside Digiseller/GGSEL chats. FunPay replies are sent through the logged-in web session. Attachments and stock replenishment are not supported for FunPay replies yet.
+`/chats` also reads `FUNPAY_GOLDEN_KEY` from `.env` and lists recent FunPay conversations alongside Digiseller/GGSEL chats. FunPay replies are sent through the logged-in web session; image attachments and the stock replenishment button use the same reply editor flow as Plati/Digiseller orders.
 
 ## Alerts and keepalive
 
