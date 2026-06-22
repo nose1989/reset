@@ -286,6 +286,8 @@ PROTECTED_TOKEN_RE = re.compile(r"https?://\S+|[\w.+-]+@[\w.-]+\.\w+|(?=\b[A-Za-
 PRODUCT_BRANDS = [
     ("genspark", "Genspark", "GS", "https://www.google.com/s2/favicons?domain=genspark.ai&sz=64", "#ffffff"),
     ("manus", "Manus", "M", "/assets/brand-logos/manus.png", "#111111"),
+    ("windsurf", "Windsurf", "W", "https://www.google.com/s2/favicons?domain=windsurf.com&sz=64", "#ffffff"),
+    ("codeium", "Codeium", "C", "https://www.google.com/s2/favicons?domain=codeium.com&sz=64", "#ffffff"),
     ("cursor", "Cursor", "C", "https://www.google.com/s2/favicons?domain=cursor.com&sz=64", "#ffffff"),
     ("claude", "Claude", "C", "https://www.google.com/s2/favicons?domain=claude.ai&sz=64", "#ffffff"),
     ("openai", "OpenAI", "AI", "https://www.google.com/s2/favicons?domain=openai.com&sz=64", "#ffffff"),
@@ -985,6 +987,80 @@ class GgselClient:
         if isinstance(data, dict) and data.get("retval") not in (None, 0, "0"):
             raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL send failed: {data}")
 
+    def session_get(self, path: str) -> Any:
+        session_id = urllib.parse.quote(self.token, safe="")
+        r = self.http.get(self.api_base + path.format(session_id=session_id))
+        if r.status_code == 401:
+            self._token = None
+            session_id = urllib.parse.quote(self.token, safe="")
+            r = self.http.get(self.api_base + path.format(session_id=session_id))
+        if r.status_code >= 400:
+            raise RuntimeError(f"GGSEL API HTTP {r.status_code}: {short(r.text, 400)}")
+        content_type = r.headers.get("content-type", "")
+        if "json" not in content_type.lower():
+            raise RuntimeError(f"GGSEL API returned non-JSON from {path}: {short(r.text, 400)}")
+        return r.json()
+
+    def online_setting(self) -> dict[str, Any]:
+        data = self.session_get("/getonlinesetting/{session_id}")
+        return data if isinstance(data, dict) else {"raw": data}
+
+    def set_online(self) -> dict[str, Any]:
+        try:
+            value = int(os.getenv("GGSEL_ONLINE_VALUE", os.getenv("DIGISELLER_ONLINE_VALUE", "1")) or "1")
+        except ValueError:
+            value = 1
+        data = self.session_get(f"/setonlinesetting/{{session_id}}/{value}")
+        if isinstance(data, dict) and int(data.get("retval") or 0) != 0:
+            raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL setonlinesetting failed: {data}")
+        return data if isinstance(data, dict) else {"raw": data}
+
+    def seller_online_status(self) -> dict[str, Any]:
+        configured = os.getenv("GGSEL_ONLINE_VERIFY_TYPE", os.getenv("DIGISELLER_ONLINE_VERIFY_TYPE", "seller")).strip() or "seller"
+        corr_types = [configured] + [item for item in ("seller", "user", "visitor", "anonym") if item != configured]
+        errors = []
+        for corr_type in corr_types:
+            try:
+                data = self.session_get(
+                    "/getonlinestatus/{session_id}/"
+                    + urllib.parse.quote(corr_type, safe="")
+                    + "/"
+                    + urllib.parse.quote(str(self.seller_id), safe="")
+                )
+            except Exception as exc:
+                errors.append(f"{corr_type}: {exc}")
+                continue
+            if isinstance(data, dict):
+                if int(data.get("retval") or 0) == 0:
+                    data["corr_type"] = corr_type
+                    return data
+                errors.append(f"{corr_type}: {data.get('retdesc') or data.get('desc') or data}")
+            else:
+                return {"raw": data, "corr_type": corr_type}
+        raise RuntimeError("; ".join(errors) or "GGSEL getonlinestatus failed")
+
+    def messenger_heartbeat(self) -> dict[str, Any]:
+        errors = []
+        for path in (
+            "/checknewchats/{session_id}/-1/0/-1/0",
+            "/checknewchats/{session_id}/0/0/-1/0",
+            "/checknewchats/{session_id}/-1/-1/-1/-1",
+            "/unreadchats/{session_id}/buyer",
+            "/chatlist/{session_id}/buyer",
+        ):
+            try:
+                data = self.session_get(path)
+            except Exception as exc:
+                errors.append(str(exc))
+                continue
+            if isinstance(data, dict):
+                if int(data.get("retval") or 0) == 0:
+                    return data
+                errors.append(data.get("retdesc") or data.get("desc") or f"GGSEL checknewchats failed: {data}")
+            else:
+                return {"raw": data}
+        raise RuntimeError("; ".join(errors))
+
     def reviews(self, count: int = 20, page: int = 1, review_type: str = "all") -> dict[str, Any]:
         data = self.get("/reviews", {"type": review_type, "page": max(page, 1), "count": min(max(count, 1), 100)})
         return data if isinstance(data, dict) else {"reviews": data}
@@ -1023,6 +1099,16 @@ ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
     "public_checked_ts": 0.0,
     "recovery_error": "",
     "failure_count": 0,
+    "ggsel_last_set": "",
+    "ggsel_last_heartbeat": "",
+    "ggsel_setting": None,
+    "ggsel_period": None,
+    "ggsel_status": None,
+    "ggsel_verified_online": False,
+    "ggsel_set_error": "",
+    "ggsel_heartbeat_error": "",
+    "ggsel_setting_error": "",
+    "ggsel_verify_error": "",
 }
 CHAT_KEEPALIVE_BROWSER_STATUS: dict[str, Any] = {
     "enabled": False,
@@ -1089,13 +1175,15 @@ def layout(title: str, body: str) -> bytes:
     online_public_error = str(online.get("public_error") or "")
     online_public_checked_at = str(online.get("public_checked_at") or "")
     online_recovery_error = str(online.get("recovery_error") or "")
-    if online.get("verified_online") or online.get("public_online"):
+    ggsel_last_set = str(online.get("ggsel_last_set") or "")
+    ggsel_last_heartbeat = str(online.get("ggsel_last_heartbeat") or "")
+    if online.get("verified_online") or online.get("public_online") or online.get("ggsel_verified_online"):
         online_label = "Online verified"
         online_class = "ok"
     elif online_error and online_error != "disabled":
         online_label = "Online error"
         online_class = "bad"
-    elif online_last_set or online_last_heartbeat:
+    elif online_last_set or online_last_heartbeat or ggsel_last_set or ggsel_last_heartbeat:
         online_label = "Online heartbeat"
         online_class = ""
     elif online_last_ok:
@@ -1104,7 +1192,7 @@ def layout(title: str, body: str) -> bytes:
     else:
         online_label = "Online checking"
         online_class = ""
-    online_title = f"Last verified: {online_last_ok or '-'} | Last set: {online_last_set or '-'} | Last chat heartbeat: {online_last_heartbeat or '-'} | API status: {online.get('status') if online.get('status') is not None else '-'} | Public online: {'yes' if online.get('public_online') else 'no'} | Set error: {online_set_error or '-'} | Chat heartbeat error: {online_heartbeat_error or '-'} | Setting error: {online_setting_error or '-'} | Verify error: {online_verify_error or '-'} | Public checked: {online_public_checked_at or '-'} | Public verify error: {online_public_error or '-'} | Recovering: {online_recovery_error or '-'} | Error: {online_error or '-'}"
+    online_title = f"Last verified: {online_last_ok or '-'} | Last set: {online_last_set or '-'} | Last chat heartbeat: {online_last_heartbeat or '-'} | API status: {online.get('status') if online.get('status') is not None else '-'} | Public online: {'yes' if online.get('public_online') else 'no'} | GGSEL set: {ggsel_last_set or '-'} | GGSEL heartbeat: {ggsel_last_heartbeat or '-'} | GGSEL status: {online.get('ggsel_status') if online.get('ggsel_status') is not None else '-'} | Set error: {online_set_error or '-'} | Chat heartbeat error: {online_heartbeat_error or '-'} | Setting error: {online_setting_error or '-'} | Verify error: {online_verify_error or '-'} | GGSEL set error: {online.get('ggsel_set_error') or '-'} | GGSEL heartbeat error: {online.get('ggsel_heartbeat_error') or '-'} | GGSEL verify error: {online.get('ggsel_verify_error') or '-'} | Public checked: {online_public_checked_at or '-'} | Public verify error: {online_public_error or '-'} | Recovering: {online_recovery_error or '-'} | Error: {online_error or '-'}"
     chat_keepalive_url = get_chat_keepalive_url()
     chat_browser = CHAT_KEEPALIVE_BROWSER_STATUS.copy()
     chat_button_label = "Chat window active" if chat_browser.get("opened") else "Open chat window"
@@ -1218,6 +1306,8 @@ def layout(title: str, body: str) -> bytes:
         const lastOk = status.last_ok || '';
         const lastSet = status.last_set || '';
         const lastHeartbeat = status.last_heartbeat || '';
+        const ggselLastSet = status.ggsel_last_set || '';
+        const ggselLastHeartbeat = status.ggsel_last_heartbeat || '';
         const setError = status.set_error || '';
         const heartbeatError = status.heartbeat_error || '';
         const settingError = status.setting_error || '';
@@ -1227,14 +1317,14 @@ def layout(title: str, body: str) -> bytes:
         const recoveryError = status.recovery_error || '';
         let label = 'Online checking';
         let cls = '';
-        if (status.verified_online || status.public_online) {{
+        if (status.verified_online || status.public_online || status.ggsel_verified_online) {{
           label = 'Online verified';
           cls = 'ok';
         }} else if (error && error !== 'disabled') {{
           const chatOpened = status.chat_browser && status.chat_browser.opened;
           label = chatOpened ? 'Online verifying' : 'Online error';
           cls = chatOpened ? '' : 'bad';
-        }} else if (lastSet || lastHeartbeat) {{
+        }} else if (lastSet || lastHeartbeat || ggselLastSet || ggselLastHeartbeat) {{
           label = 'Online heartbeat';
         }} else if (lastOk) {{
           label = 'Online active';
@@ -1242,7 +1332,7 @@ def layout(title: str, body: str) -> bytes:
         }}
         pill.textContent = label;
         pill.className = `top-online ${{cls}}`;
-        pill.title = `Last verified: ${{lastOk || '-'}} | Last set: ${{lastSet || '-'}} | Last chat heartbeat: ${{lastHeartbeat || '-'}} | API status: ${{status.status ?? '-'}} | Public online: ${{status.public_online ? 'yes' : 'no'}} | Set error: ${{setError || '-'}} | Chat heartbeat error: ${{heartbeatError || '-'}} | Setting error: ${{settingError || '-'}} | Verify error: ${{verifyError || '-'}} | Public checked: ${{publicCheckedAt || '-'}} | Public verify error: ${{publicError || '-'}} | Recovering: ${{recoveryError || '-'}} | Error: ${{error || '-'}}`;
+        pill.title = `Last verified: ${{lastOk || '-'}} | Last set: ${{lastSet || '-'}} | Last chat heartbeat: ${{lastHeartbeat || '-'}} | API status: ${{status.status ?? '-'}} | Public online: ${{status.public_online ? 'yes' : 'no'}} | GGSEL set: ${{ggselLastSet || '-'}} | GGSEL heartbeat: ${{ggselLastHeartbeat || '-'}} | GGSEL status: ${{status.ggsel_status ?? '-'}} | Set error: ${{setError || '-'}} | Chat heartbeat error: ${{heartbeatError || '-'}} | Setting error: ${{settingError || '-'}} | Verify error: ${{verifyError || '-'}} | GGSEL set error: ${{status.ggsel_set_error || '-'}} | GGSEL heartbeat error: ${{status.ggsel_heartbeat_error || '-'}} | GGSEL verify error: ${{status.ggsel_verify_error || '-'}} | Public checked: ${{publicCheckedAt || '-'}} | Public verify error: ${{publicError || '-'}} | Recovering: ${{recoveryError || '-'}} | Error: ${{error || '-'}}`;
       }}
       async function refreshOnlineStatus() {{
         try {{
@@ -2065,21 +2155,30 @@ def cached_ggsel_order_info(order_id: int) -> dict[str, Any]:
     return info
 
 
+def looks_like_opaque_product_ref(value: Any) -> bool:
+    text = clean_text(value)
+    if not text:
+        return False
+    if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", text, flags=re.I):
+        return True
+    return bool(re.fullmatch(r"[0-9a-f]{24,}", text, flags=re.I))
+
+
 def ggsel_order_product_name_from_info(info: dict[str, Any]) -> str:
     containers: list[dict[str, Any]] = []
     for value in (info, info.get("content"), info.get("product"), info.get("sale")):
         if isinstance(value, dict):
             containers.append(value)
     for container in containers:
-        for key in ("name", "product_name", "name_goods", "title"):
+        for key in ("name", "product_name", "name_goods", "goods_name", "title", "product_title"):
             product = clean_text(container.get(key))
-            if product:
+            if product and not looks_like_opaque_product_ref(product):
                 return product
         product = container.get("product")
         if isinstance(product, dict):
-            for key in ("name", "product_name", "name_goods", "title"):
+            for key in ("name", "product_name", "name_goods", "goods_name", "title", "product_title"):
                 product_name = clean_text(product.get(key))
-                if product_name:
+                if product_name and not looks_like_opaque_product_ref(product_name):
                     return product_name
     return ""
 
@@ -2089,7 +2188,9 @@ def ggsel_order_product_name(order_id: int, fallback: Any = "") -> str:
     if product:
         return product
     fallback_text = clean_text(fallback)
-    return fallback_text or "GGSEL order"
+    if fallback_text and not looks_like_opaque_product_ref(fallback_text):
+        return fallback_text
+    return "GGSEL order"
 
 
 def ggsel_order_product_id_from_info(info: dict[str, Any]) -> str:
@@ -2305,7 +2406,8 @@ def refresh_public_online_status(force: bool = False) -> dict[str, Any]:
 
 def run_online_keepalive(interval: int) -> None:
     while True:
-        if not client.configured():
+        ggsel_enabled = os.getenv("GGSEL_KEEP_ONLINE", os.getenv("DIGISELLER_KEEP_ONLINE", "1")).strip().lower() not in {"0", "false", "no", "off"}
+        if not client.configured() and not (ggsel_enabled and ggsel_client.configured()):
             update_online_keepalive_status(enabled=False, last_error="missing .env")
             time.sleep(interval)
             continue
@@ -2320,26 +2422,52 @@ def run_online_keepalive(interval: int) -> None:
         setting_error = ""
         verify_error = ""
         public_error = ""
-        try:
-            set_data = client.set_online()
-        except Exception as exc:
-            set_error = str(exc)
-        try:
-            heartbeat_data = client.messenger_heartbeat()
-        except Exception as exc:
-            heartbeat_error = str(exc)
-        try:
-            setting_data = client.online_setting()
-        except Exception as exc:
-            setting_error = str(exc)
-        try:
-            status_data = client.seller_online_status()
-        except Exception as exc:
-            verify_error = str(exc)
-        try:
-            public_data = client.public_seller_online_status()
-        except Exception as exc:
-            public_error = str(exc)
+        if client.configured():
+            try:
+                set_data = client.set_online()
+            except Exception as exc:
+                set_error = str(exc)
+            try:
+                heartbeat_data = client.messenger_heartbeat()
+            except Exception as exc:
+                heartbeat_error = str(exc)
+            try:
+                setting_data = client.online_setting()
+            except Exception as exc:
+                setting_error = str(exc)
+            try:
+                status_data = client.seller_online_status()
+            except Exception as exc:
+                verify_error = str(exc)
+            try:
+                public_data = client.public_seller_online_status()
+            except Exception as exc:
+                public_error = str(exc)
+        ggsel_set_data: dict[str, Any] = {}
+        ggsel_heartbeat_data: dict[str, Any] = {}
+        ggsel_setting_data: dict[str, Any] = {}
+        ggsel_status_data: dict[str, Any] = {}
+        ggsel_set_error = ""
+        ggsel_heartbeat_error = ""
+        ggsel_setting_error = ""
+        ggsel_verify_error = ""
+        if ggsel_enabled and ggsel_client.configured():
+            try:
+                ggsel_set_data = ggsel_client.set_online()
+            except Exception as exc:
+                ggsel_set_error = str(exc)
+            try:
+                ggsel_heartbeat_data = ggsel_client.messenger_heartbeat()
+            except Exception as exc:
+                ggsel_heartbeat_error = str(exc)
+            try:
+                ggsel_setting_data = ggsel_client.online_setting()
+            except Exception as exc:
+                ggsel_setting_error = str(exc)
+            try:
+                ggsel_status_data = ggsel_client.seller_online_status()
+            except Exception as exc:
+                ggsel_verify_error = str(exc)
         status = status_data.get("status")
         try:
             status_value = int(status or 0)
@@ -2347,8 +2475,20 @@ def run_online_keepalive(interval: int) -> None:
             status_value = 0
         public_online = bool(public_data.get("online"))
         verified_online = status_value > 0 or public_online
+        ggsel_status = ggsel_status_data.get("status")
+        try:
+            ggsel_status_value = int(ggsel_status or 0)
+        except (TypeError, ValueError):
+            ggsel_status_value = 0
+        ggsel_verified_online = ggsel_status_value > 0
         keepalive_ok = not set_error or not heartbeat_error
-        cycle_error = "" if (verified_online or keepalive_ok) else " | ".join(item for item in (set_error, heartbeat_error) if item)
+        ggsel_keepalive_ok = not ggsel_enabled or not ggsel_client.configured() or not ggsel_set_error or not ggsel_heartbeat_error
+        cycle_errors = []
+        if not (verified_online or keepalive_ok):
+            cycle_errors.extend(item for item in (set_error, heartbeat_error) if item)
+        if not (ggsel_verified_online or ggsel_keepalive_ok):
+            cycle_errors.extend(item for item in (ggsel_set_error, ggsel_heartbeat_error) if item)
+        cycle_error = " | ".join(cycle_errors)
         failure_count = int(ONLINE_KEEPALIVE_STATUS.get("failure_count") or 0)
         failure_count = failure_count + 1 if cycle_error else 0
         visible_error = cycle_error if failure_count >= 3 else ""
@@ -2375,6 +2515,18 @@ def run_online_keepalive(interval: int) -> None:
             set_response=set_data,
             heartbeat_response=heartbeat_data,
             public_response=public_data,
+            ggsel_last_set=checked_at if not ggsel_set_error and ggsel_enabled and ggsel_client.configured() else ONLINE_KEEPALIVE_STATUS.get("ggsel_last_set", ""),
+            ggsel_last_heartbeat=checked_at if not ggsel_heartbeat_error and ggsel_enabled and ggsel_client.configured() else ONLINE_KEEPALIVE_STATUS.get("ggsel_last_heartbeat", ""),
+            ggsel_setting=ggsel_setting_data.get("setting", ONLINE_KEEPALIVE_STATUS.get("ggsel_setting")),
+            ggsel_period=ggsel_setting_data.get("period", ONLINE_KEEPALIVE_STATUS.get("ggsel_period")),
+            ggsel_status=ggsel_status,
+            ggsel_verified_online=ggsel_verified_online,
+            ggsel_set_error=ggsel_set_error,
+            ggsel_heartbeat_error=ggsel_heartbeat_error,
+            ggsel_setting_error=ggsel_setting_error,
+            ggsel_verify_error=ggsel_verify_error,
+            ggsel_set_response=ggsel_set_data,
+            ggsel_heartbeat_response=ggsel_heartbeat_data,
         )
         time.sleep(interval)
 
@@ -2955,9 +3107,9 @@ class Handler(BaseHTTPRequestHandler):
         online = ONLINE_KEEPALIVE_STATUS.copy()
         if online.get("last_error"):
             online_state = "<span class='bad'>error</span>"
-        elif online.get("verified_online") or online.get("public_online"):
+        elif online.get("verified_online") or online.get("public_online") or online.get("ggsel_verified_online"):
             online_state = "<span class='ok'>verified online</span>"
-        elif online.get("last_set") or online.get("last_heartbeat"):
+        elif online.get("last_set") or online.get("last_heartbeat") or online.get("ggsel_last_set") or online.get("ggsel_last_heartbeat"):
             online_state = "<span class='muted'>heartbeat sent, not verified</span>"
         else:
             online_state = "<span class='bad'>not active</span>"
@@ -2971,10 +3123,20 @@ class Handler(BaseHTTPRequestHandler):
             f"<br>Public URL: {h(online.get('public_url') or '-')}"
             f"<br>Setting: {h(online.get('setting') if online.get('setting') is not None else '-')}"
             f" · period: {h(online.get('period') if online.get('period') is not None else '-')}"
+            f"<br><b>GGSEL</b>: {h('verified online' if online.get('ggsel_verified_online') else 'heartbeat sent' if online.get('ggsel_last_set') or online.get('ggsel_last_heartbeat') else 'not active')}"
+            f"<br>GGSEL last set: {h(online.get('ggsel_last_set') or '-')}"
+            f"<br>GGSEL last chat heartbeat: {h(online.get('ggsel_last_heartbeat') or '-')}"
+            f"<br>GGSEL buyer-visible status: {h(online.get('ggsel_status') if online.get('ggsel_status') is not None else '-')}"
+            f"<br>GGSEL setting: {h(online.get('ggsel_setting') if online.get('ggsel_setting') is not None else '-')}"
+            f" · period: {h(online.get('ggsel_period') if online.get('ggsel_period') is not None else '-')}"
             f"<br>Set error: {h(online.get('set_error') or '-')}"
             f"<br>Chat heartbeat error: {h(online.get('heartbeat_error') or '-')}"
             f"<br>Setting error: {h(online.get('setting_error') or '-')}"
             f"<br>Verify error: {h(online.get('verify_error') or '-')}"
+            f"<br>GGSEL set error: {h(online.get('ggsel_set_error') or '-')}"
+            f"<br>GGSEL chat heartbeat error: {h(online.get('ggsel_heartbeat_error') or '-')}"
+            f"<br>GGSEL setting error: {h(online.get('ggsel_setting_error') or '-')}"
+            f"<br>GGSEL verify error: {h(online.get('ggsel_verify_error') or '-')}"
             f"<br>Public verify error: {h(online.get('public_error') or '-')}"
             f"<br>Recovering: {h(online.get('recovery_error') or '-')}"
             f"<br>Error: {h(online.get('last_error') or '-')}</div>"
@@ -3603,8 +3765,9 @@ class Handler(BaseHTTPRequestHandler):
         return f"<div id='chat-panel' class='conversation-panel' data-kind='guest' data-corr-id='{corr_id}' data-message-count='{len(messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{''.join(rows)}</div></div>"
 
     def ggsel_chat_panel_html(self, selected_order: int, selected_chat: dict[str, Any], selected_messages: list[dict[str, Any]]) -> str:
-        buyer_name = str(selected_chat.get("email") or f"GGSEL-{selected_order}").split("@", 1)[0]
-        product = selected_chat.get("product") or "GGSEL order"
+        buyer_email = ggsel_order_buyer_email(selected_order, selected_chat.get("email") or f"GGSEL-{selected_order}")
+        buyer_name = buyer_email.split("@", 1)[0]
+        product = ggsel_order_product_name(selected_order, selected_chat.get("product") or "GGSEL order")
         buyer_lang = detect_buyer_language(selected_messages)
         options_html = ggsel_order_options_html(selected_order, selected_chat)
         header = (
