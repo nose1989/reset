@@ -1065,6 +1065,34 @@ class GgselClient:
         data = self.get("/reviews", {"type": review_type, "page": max(page, 1), "count": min(max(count, 1), 100)})
         return data if isinstance(data, dict) else {"reviews": data}
 
+    def public_product_title(self, product_id: Any) -> str:
+        url = self.product_url(product_id)
+        if not url:
+            return ""
+        r = self.http.get(
+            url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "User-Agent": "Mozilla/5.0",
+            },
+            follow_redirects=True,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"GGSEL product page HTTP {r.status_code}: {short(r.text, 400)}")
+        text = r.text
+        for pattern in (
+            r"<meta[^>]+property=[\"']og:title[\"'][^>]+content=[\"']([^\"']+)",
+            r"<title[^>]*>(.*?)</title>",
+            r"<h1[^>]*>(.*?)</h1>",
+        ):
+            match = re.search(pattern, text, flags=re.I | re.S)
+            if match:
+                title = clean_text(match.group(1))
+                title = re.sub(r"\s*[|—-]\s*ggsel\s*$", "", title, flags=re.I).strip()
+                if title and not looks_like_opaque_product_ref(title):
+                    return title
+        return ""
+
     def product_url(self, product_id: Any) -> str:
         if not product_id:
             return ""
@@ -1077,6 +1105,7 @@ UNREAD_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 SALES_ORDER_BADGE_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 PURCHASE_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
 GGSEL_ORDER_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
+GGSEL_PRODUCT_TITLE_CACHE: dict[str, tuple[float, str]] = {}
 ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
     "enabled": False,
     "last_ok": "",
@@ -2164,6 +2193,27 @@ def looks_like_opaque_product_ref(value: Any) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{24,}", text, flags=re.I))
 
 
+def looks_like_ggsel_product_id(value: Any) -> bool:
+    return bool(re.fullmatch(r"\d{5,}", clean_text(value)))
+
+
+def cached_ggsel_product_title(product_id: Any) -> str:
+    product_id_text = clean_text(product_id)
+    if not looks_like_ggsel_product_id(product_id_text):
+        return ""
+    now = time.time()
+    cached = GGSEL_PRODUCT_TITLE_CACHE.get(product_id_text)
+    if cached and now - cached[0] < 6 * 60 * 60:
+        return cached[1]
+    title = ""
+    try:
+        title = ggsel_client.public_product_title(product_id_text)
+    except Exception:
+        title = ""
+    GGSEL_PRODUCT_TITLE_CACHE[product_id_text] = (now, title)
+    return title
+
+
 def ggsel_order_product_name_from_info(info: dict[str, Any]) -> str:
     containers: list[dict[str, Any]] = []
     for value in (info, info.get("content"), info.get("product"), info.get("sale")):
@@ -2187,6 +2237,10 @@ def ggsel_order_product_name(order_id: int, fallback: Any = "") -> str:
     product = ggsel_order_product_name_from_info(cached_ggsel_order_info(order_id))
     if product:
         return product
+    product_id = ggsel_order_product_id(order_id, fallback)
+    title = cached_ggsel_product_title(product_id)
+    if title:
+        return title
     fallback_text = clean_text(fallback)
     if fallback_text and not looks_like_opaque_product_ref(fallback_text):
         return fallback_text
