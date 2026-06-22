@@ -129,12 +129,54 @@ def sort_time(value: Any) -> float:
     text = str(value or "").strip()
     if not text:
         return 0.0
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M"):
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%y", "%d.%m.%Y"):
         try:
             return dt.datetime.strptime(text[:19], fmt).timestamp()
         except ValueError:
             pass
+    now = dt.datetime.now()
+    if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", text):
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                parsed = dt.datetime.strptime(text, fmt)
+                return now.replace(hour=parsed.hour, minute=parsed.minute, second=parsed.second, microsecond=0).timestamp()
+            except ValueError:
+                pass
+    date_match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})", text)
+    if date_match:
+        try:
+            parsed = dt.datetime(now.year, int(date_match.group(2)), int(date_match.group(1)))
+            if parsed.timestamp() > time.time() + 86400:
+                parsed = parsed.replace(year=now.year - 1)
+            return parsed.timestamp()
+        except ValueError:
+            pass
+    relative_match = re.fullmatch(r"(today|yesterday),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?", text, re.I)
+    if relative_match:
+        base = now
+        if relative_match.group(1).lower() == "yesterday":
+            base = base - dt.timedelta(days=1)
+        return base.replace(
+            hour=int(relative_match.group(2)),
+            minute=int(relative_match.group(3)),
+            second=int(relative_match.group(4) or 0),
+            microsecond=0,
+        ).timestamp()
+    for fmt in ("%d %B, %H:%M:%S", "%d %b, %H:%M:%S"):
+        try:
+            parsed = dt.datetime.strptime(text, fmt)
+            parsed = parsed.replace(year=now.year)
+            if parsed.timestamp() > time.time() + 86400:
+                parsed = parsed.replace(year=now.year - 1)
+            return parsed.timestamp()
+        except ValueError:
+            pass
     return 0.0
+
+
+def is_recent_time(value: Any, days: int) -> bool:
+    timestamp = sort_time(value)
+    return bool(timestamp and timestamp >= time.time() - max(int(days), 1) * 86400)
 
 
 TRANSLATE_CACHE: dict[tuple[str, str, str], tuple[str, str]] = {}
@@ -301,6 +343,8 @@ PRODUCT_BRANDS = [
 ]
 CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 FUNPAY_CHAT_BASE = "https://funpay.com"
+RECENT_ORDER_DAYS = 3
+RECENT_CHAT_DAYS = 2
 
 
 def lang_label(lang: str) -> str:
@@ -1375,6 +1419,47 @@ class FunPayClient:
                 break
         return rows
 
+    def recent_orders(self, order_days: int = RECENT_ORDER_DAYS, chat_days: int = RECENT_CHAT_DAYS, limit: int = 50) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen_orders: set[str] = set()
+        for chat in self.chats(limit=limit):
+            if not is_recent_time(chat.get("last_date"), chat_days):
+                continue
+            node_id = int(chat.get("node_id") or 0)
+            if not node_id:
+                continue
+            messages = self.chat_messages(node_id)
+            product = self.chat_product(node_id)
+            for message in messages:
+                text = clean_text(message.get("message"))
+                if not is_recent_time(message.get("date_written"), order_days):
+                    continue
+                order_match = re.search(r"\border\s+#([A-Za-z0-9]+)", text, re.I)
+                if not order_match or "has paid for" not in text.lower():
+                    continue
+                order_id = order_match.group(1)
+                if order_id in seen_orders:
+                    continue
+                seen_orders.add(order_id)
+                rows.append(
+                    {
+                        "source": "FunPay",
+                        "platform": "funpay",
+                        "date_pay": message.get("date_written") or chat.get("last_date"),
+                        "invoice_id": order_id,
+                        "chat_node_id": node_id,
+                        "email": chat.get("name") or f"FunPay-{node_id}",
+                        "product_id": "",
+                        "product_name": product or chat.get("message") or "FunPay order",
+                        "amount_in": "",
+                        "amount_currency": "",
+                        "partner_id": "-",
+                        "referer": "funpay.com",
+                    }
+                )
+        rows.sort(key=lambda item: sort_time(item.get("date_pay")), reverse=True)
+        return rows
+
     def chat_messages(self, node_id: int) -> list[dict[str, Any]]:
         page = self.chat_page(node_id)
         app_data = self.app_data(page)
@@ -2120,20 +2205,32 @@ def parse_stock_lines(raw: str, variant_id: int = 0) -> list[dict[str, Any]]:
 
 def unread_summary() -> dict[str, Any]:
     try:
-        buyer = [c for c in client.chats(only_unread=True) if int(c.get("cnt_new") or 0) > 0]
+        buyer = [
+            c
+            for c in client.chats(only_unread=True)
+            if int(c.get("cnt_new") or 0) > 0 and is_recent_time(c.get("last_date"), RECENT_CHAT_DAYS)
+        ]
     except Exception:
         buyer = []
     ggsel_buyer: list[dict[str, Any]] = []
     if ggsel_client.configured():
         try:
             ggsel_rows = ggsel_client.chats(page_size=50, only_unread=True).get("items") or []
-            ggsel_buyer = [c for c in ggsel_rows if isinstance(c, dict) and int(c.get("cnt_new") or 0) > 0]
+            ggsel_buyer = [
+                c
+                for c in ggsel_rows
+                if isinstance(c, dict) and int(c.get("cnt_new") or 0) > 0 and is_recent_time(c.get("last_message"), RECENT_CHAT_DAYS)
+            ]
         except Exception:
             ggsel_buyer = []
     funpay_buyer: list[dict[str, Any]] = []
     if funpay_client.configured():
         try:
-            funpay_buyer = [c for c in funpay_client.chats(limit=50) if int(c.get("cnt_new") or 0) > 0]
+            funpay_buyer = [
+                c
+                for c in funpay_client.chats(limit=50)
+                if int(c.get("cnt_new") or 0) > 0 and is_recent_time(c.get("last_date"), RECENT_CHAT_DAYS)
+            ]
         except Exception:
             funpay_buyer = []
     try:
@@ -4207,10 +4304,29 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return default
 
-        days = max(parse_int("days", 3), 1)
+        days = min(max(parse_int("days", RECENT_ORDER_DAYS), 1), RECENT_ORDER_DAYS)
         rows_limit = min(max(parse_int("rows", 50), 1), 50)
         page = max(parse_int("page", 1), 1)
         errors: list[str] = []
+        recent_digiseller_chat_ids: set[str] = set()
+        try:
+            recent_digiseller_chat_ids = {
+                str(chat.get("id_i"))
+                for chat in client.chats(page_size=100)
+                if chat.get("id_i") and is_recent_time(chat.get("last_date"), RECENT_CHAT_DAYS)
+            }
+        except Exception as exc:
+            errors.append(f"Digiseller chats: {exc}")
+        recent_ggsel_chat_ids: set[str] = set()
+        if ggsel_client.configured():
+            try:
+                recent_ggsel_chat_ids = {
+                    str(chat.get("id_i"))
+                    for chat in (ggsel_client.chats(page_size=50).get("items") or [])
+                    if isinstance(chat, dict) and chat.get("id_i") and is_recent_time(chat.get("last_message"), RECENT_CHAT_DAYS)
+                }
+            except Exception as exc:
+                errors.append(f"GGSEL chats: {exc}")
         digiseller_data: dict[str, Any] = {"rows": [], "total_rows": 0, "pages": 1}
         try:
             digiseller_data = client.sales(days, rows_limit, page)
@@ -4218,15 +4334,21 @@ class Handler(BaseHTTPRequestHandler):
             errors.append(f"Digiseller: {exc}")
 
         digiseller_rows = [row for row in digiseller_data.get("rows", []) if isinstance(row, dict)][:rows_limit]
+        digiseller_rows = [row for row in digiseller_rows if str(row.get("invoice_id") or row.get("id") or "") in recent_digiseller_chat_ids]
         if digiseller_rows:
             mark_sales_orders_seen(digiseller_rows)
 
         ggsel_rows: list[dict[str, Any]] = []
         if ggsel_client.configured():
             try:
-                ggsel_data = ggsel_client.sales(rows_limit)
+                ggsel_data = ggsel_client.sales(100)
                 for sale in ggsel_data.get("sales") or []:
                     if not isinstance(sale, dict):
+                        continue
+                    if not is_recent_time(sale.get("date"), days):
+                        continue
+                    invoice_id = sale.get("invoice_id")
+                    if str(invoice_id or "") not in recent_ggsel_chat_ids:
                         continue
                     product = sale.get("product") if isinstance(sale.get("product"), dict) else {}
                     product_id = product.get("id") or sale.get("product_id") or sale.get("id_goods")
@@ -4234,7 +4356,7 @@ class Handler(BaseHTTPRequestHandler):
                         {
                             "source": "GGSEL",
                             "date_pay": sale.get("date"),
-                            "invoice_id": sale.get("invoice_id"),
+                            "invoice_id": invoice_id,
                             "email": sale.get("email") or "",
                             "product_id": product_id,
                             "product_name": product.get("name") or sale.get("product_name") or sale.get("name") or f"GGSEL product {product_id}",
@@ -4249,11 +4371,19 @@ class Handler(BaseHTTPRequestHandler):
                 errors.append(f"GGSEL: {exc}")
         else:
             errors.append("GGSEL: GGSEL_API_KEY or GGSEL_SELLER_ID missing")
+        funpay_rows: list[dict[str, Any]] = []
+        if funpay_client.configured():
+            try:
+                funpay_rows = funpay_client.recent_orders(order_days=days, chat_days=RECENT_CHAT_DAYS, limit=50)
+            except Exception as exc:
+                errors.append(f"FunPay: {exc}")
+        else:
+            errors.append("FunPay: FUNPAY_GOLDEN_KEY missing")
 
         for row in digiseller_rows:
             row.setdefault("source", "Digiseller")
             row.setdefault("platform", "digiseller")
-        order_rows = sorted(digiseller_rows + ggsel_rows, key=lambda row: sort_time(row.get("date_pay") or row.get("date")), reverse=True)[:rows_limit]
+        order_rows = sorted(digiseller_rows + ggsel_rows + funpay_rows, key=lambda row: sort_time(row.get("date_pay") or row.get("date")), reverse=True)[:rows_limit]
         totals: dict[str, float] = {}
         platform_counts: dict[str, int] = {}
         for row in order_rows:
@@ -4273,15 +4403,18 @@ class Handler(BaseHTTPRequestHandler):
             product_id = row.get("product_id")
             product_name = row.get("product_name")
             platform = str(row.get("platform") or "digiseller")
-            source = "GGSEL" if platform == "ggsel" else "Digiseller"
+            source = "GGSEL" if platform == "ggsel" else "FunPay" if platform == "funpay" else "Digiseller"
             buyer_email = next((row.get(key) for key in ("email", "buyer_email", "user_email", "client_email") if row.get(key)), "")
             if platform == "ggsel":
                 chat_href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(invoice_id or ""), "email": str(buyer_email or f"ggsel-{invoice_id}"), "product": str(product_name or "GGSEL order")})
+            elif platform == "funpay":
+                chat_node_id = row.get("chat_node_id") or invoice_id
+                chat_href = "/chats?" + urllib.parse.urlencode({"platform": "funpay", "order_id": str(chat_node_id or ""), "email": str(buyer_email or f"FunPay-{chat_node_id}"), "product": str(product_name or "FunPay order")})
             else:
                 chat_href = order_chat_href(invoice_id, buyer_email, product_name)
             amount = f"{row.get('amount_in') or ''} {row.get('amount_currency') or ''}".strip()
             search_text = " ".join(str(value or "") for value in [source, invoice_id, product_id, product_name, buyer_email, amount, row.get("partner_id"), row.get("referer")]).lower()
-            platform_class = "ggsel" if platform == "ggsel" else "digiseller"
+            platform_class = "ggsel" if platform == "ggsel" else "funpay" if platform == "funpay" else "digiseller"
             trs.append(
                 "<tr data-search='" + h(search_text) + "'>"
                 + f"<td class='sales-source'><span class='platform-badge {platform_class}'>{h(source)}</span></td>"
@@ -4309,7 +4442,7 @@ class Handler(BaseHTTPRequestHandler):
             <input id='sales-search' class='sales-search' placeholder='Search platform, order, buyer, product, referer...' autocomplete='off'>
             <button>Refresh</button>
           </form>
-          <p class='muted'>Default is 3 days; rows are capped at 50 per request. Digiseller and GGSEL orders are merged by paid time.</p>
+          <p class='muted'>Default is {RECENT_ORDER_DAYS} days; rows are capped at 50 per request. Digiseller, GGSEL, and FunPay orders are merged by paid time, and only orders with chat activity in the last {RECENT_CHAT_DAYS} days are shown.</p>
           {errors_html}
         </div>
         <div class='sales-summary'>
@@ -4605,6 +4738,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             chats = []
             chat_error = str(exc)
+        chats = [chat for chat in chats if is_recent_time(chat.get("last_date"), RECENT_CHAT_DAYS)]
         guest_error = ""
         try:
             guest_chats = client.guest_chats(limit=10)
@@ -4617,12 +4751,22 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             ggsel_chats = []
             ggsel_error = str(exc)
+        ggsel_chats = [chat for chat in ggsel_chats if is_recent_time(chat.get("last_message"), RECENT_CHAT_DAYS)]
         funpay_error = ""
         try:
             funpay_chats = funpay_client.chats(limit=50) if funpay_client.configured() else []
         except Exception as exc:
             funpay_chats = []
             funpay_error = str(exc)
+        funpay_chats = [chat for chat in funpay_chats if is_recent_time(chat.get("last_date"), RECENT_CHAT_DAYS)]
+        for chat in funpay_chats:
+            node_id = int(chat.get("node_id") or 0)
+            if not node_id:
+                continue
+            try:
+                chat["product"] = funpay_client.chat_product(node_id) or chat.get("message") or "FunPay chat"
+            except Exception:
+                chat["product"] = chat.get("message") or "FunPay chat"
         selected_kind = self.q("kind", "order")
         selected_platform_param = self.q("platform", "").strip()
         selected_platform = selected_platform_param or "digiseller"
@@ -4673,15 +4817,15 @@ class Handler(BaseHTTPRequestHandler):
         selected_guest_chat: dict[str, Any] | None = None
         for chat in chats:
             order_id = int(chat.get("id_i") or 0)
-            if selected_kind == "order" and selected_platform != "ggsel" and order_id == selected_order:
+            if selected_kind == "order" and selected_platform not in ("ggsel", "funpay") and order_id == selected_order:
                 selected_chat = chat
             email = str(chat.get("email") or "unknown")
             name = email.split("@", 1)[0] or email
             initials = (name[:1] or "?").upper()
             raw_unread = int(chat.get("cnt_new") or 0)
             order_unread_total += raw_unread
-            unread = 0 if selected_kind == "order" and selected_platform != "ggsel" and order_id == selected_order else raw_unread
-            active = " active" if selected_kind == "order" and selected_platform != "ggsel" and order_id == selected_order else ""
+            unread = 0 if selected_kind == "order" and selected_platform not in ("ggsel", "funpay") and order_id == selected_order else raw_unread
+            active = " active" if selected_kind == "order" and selected_platform not in ("ggsel", "funpay") and order_id == selected_order else ""
             preview = short(chat.get("product"), 80)
             avatar = product_avatar_html(chat.get("product"), initials)
             when = str(chat.get("last_date") or "")
@@ -4735,8 +4879,9 @@ class Handler(BaseHTTPRequestHandler):
             node_id = int(chat.get("node_id") or 0)
             if not node_id:
                 continue
+            product = str(chat.get("product") or "FunPay chat")
             if selected_kind == "order" and selected_platform == "funpay" and node_id == selected_order:
-                selected_chat = {"node_id": node_id, "name": chat.get("name") or f"FunPay-{node_id}", "platform": "funpay"}
+                selected_chat = {"node_id": node_id, "name": chat.get("name") or f"FunPay-{node_id}", "product": product, "platform": "funpay"}
             name = str(chat.get("name") or f"FunPay-{node_id}")
             raw_unread = int(chat.get("cnt_new") or 0)
             unread = 0 if selected_kind == "order" and selected_platform == "funpay" and node_id == selected_order else raw_unread
@@ -4744,14 +4889,14 @@ class Handler(BaseHTTPRequestHandler):
             preview = str(chat.get("message") or "FunPay chat")
             when = str(chat.get("last_date") or "")
             badge = f"<div class='badge'>{unread}</div>" if unread else ""
-            href = "/chats?" + urllib.parse.urlencode({"platform": "funpay", "order_id": str(node_id), "email": name, "product": "FunPay chat"})
-            search_text = " ".join(["funpay", str(node_id), name, preview]).lower()
+            href = "/chats?" + urllib.parse.urlencode({"platform": "funpay", "order_id": str(node_id), "email": name, "product": product})
+            search_text = " ".join(["funpay", str(node_id), name, product, preview]).lower()
             order_items.append((
                 sort_time(when) or (time.time() - funpay_index),
-                f"<a class='conversation-item{active}' data-kind='order' data-platform='funpay' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{node_id}' data-email='{h(name)}' data-product='FunPay chat' href='{h(href)}'>"
-                f"{product_avatar_html('FunPay chat', 'FP')}"
-                f"<div><div class='conversation-name'>{h(name)}</div>"
-                f"<div class='preview'>{h(short(preview, 70))}</div></div>"
+                f"<a class='conversation-item{active}' data-kind='order' data-platform='funpay' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{node_id}' data-email='{h(name)}' data-product='{h(product)}' href='{h(href)}'>"
+                f"{product_avatar_html(product, 'FP')}"
+                f"<div><div class='conversation-name'>{h(short(product, 70))}</div>"
+                f"<div class='preview'>{h(short(name + ': ' + preview, 70))}</div></div>"
                 f"<div class='conversation-time'>{h(when)}{badge}</div></a>"
             ))
         items.extend(html for _, html in sorted(order_items, key=lambda item: item[0], reverse=True))
@@ -5101,20 +5246,32 @@ class Handler(BaseHTTPRequestHandler):
 
     def unread(self) -> None:
         try:
-            buyer = [c for c in client.chats(only_unread=True) if int(c.get("cnt_new") or 0) > 0]
+            buyer = [
+                c
+                for c in client.chats(only_unread=True)
+                if int(c.get("cnt_new") or 0) > 0 and is_recent_time(c.get("last_date"), RECENT_CHAT_DAYS)
+            ]
         except Exception:
             buyer = []
         ggsel_buyer: list[dict[str, Any]] = []
         if ggsel_client.configured():
             try:
                 ggsel_rows = ggsel_client.chats(page_size=50, only_unread=True).get("items") or []
-                ggsel_buyer = [c for c in ggsel_rows if isinstance(c, dict) and int(c.get("cnt_new") or 0) > 0]
+                ggsel_buyer = [
+                    c
+                    for c in ggsel_rows
+                    if isinstance(c, dict) and int(c.get("cnt_new") or 0) > 0 and is_recent_time(c.get("last_message"), RECENT_CHAT_DAYS)
+                ]
             except Exception:
                 ggsel_buyer = []
         funpay_buyer: list[dict[str, Any]] = []
         if funpay_client.configured():
             try:
-                funpay_buyer = [c for c in funpay_client.chats(limit=50) if int(c.get("cnt_new") or 0) > 0]
+                funpay_buyer = [
+                    c
+                    for c in funpay_client.chats(limit=50)
+                    if int(c.get("cnt_new") or 0) > 0 and is_recent_time(c.get("last_date"), RECENT_CHAT_DAYS)
+                ]
             except Exception:
                 funpay_buyer = []
         try:
