@@ -1154,6 +1154,62 @@ class GgselClient:
     def seller_office_delete(self, path: str) -> None:
         self.seller_office_request("DELETE", path)
 
+    def seller_office_fetch_text(self, url_or_path: str) -> str:
+        if not self.seller_cookie:
+            raise RuntimeError("GGSEL_SELLER_COOKIE is missing. Put the seller login cookie in .env to send stock items.")
+        target = url_or_path.strip()
+        if not target:
+            return ""
+        if target.startswith("//"):
+            target = "https:" + target
+        elif target.startswith("/"):
+            target = self.seller_office_base + target
+        elif not re.match(r"https?://", target, flags=re.I):
+            target = self.seller_office_base + "/" + target.lstrip("/")
+        headers = {
+            "Accept": "text/plain, application/octet-stream, application/json;q=0.9, */*;q=0.8",
+            "User-Agent": "Digiseller Local Admin",
+            "Referer": f"{self.seller_office_base}/en/offers",
+        }
+        if urllib.parse.urlparse(target).netloc == urllib.parse.urlparse(self.seller_office_base).netloc:
+            headers["Cookie"] = self.seller_cookie
+        r = self.http.get(target, headers=headers, follow_redirects=True)
+        content_length = r.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > 1_000_000:
+                    raise RuntimeError("Stock file is too large to send as text")
+            except ValueError:
+                pass
+        if r.status_code in (401, 403):
+            raise RuntimeError("GGSEL seller cookie is missing or expired")
+        if r.status_code >= 400:
+            raise RuntimeError(f"GGSEL seller office file HTTP {r.status_code}: {short(r.text, 400)}")
+        content = r.content
+        if len(content) > 1_000_000:
+            raise RuntimeError("Stock file is too large to send as text")
+        if not content:
+            return ""
+        content_type = r.headers.get("content-type", "").lower()
+        if "json" in content_type:
+            try:
+                data = r.json()
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
+                for key in ("content", "text", "value", "data"):
+                    value = data.get(key)
+                    if isinstance(value, str) and clean_text(value):
+                        return clean_text(value)
+        if b"\x00" in content[:2048]:
+            raise RuntimeError("Stock file is not a text file")
+        for encoding in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
+            try:
+                return clean_text(content.decode(encoding))
+            except UnicodeDecodeError:
+                continue
+        return clean_text(content.decode("utf-8", errors="replace"))
+
     def seller_office_offer_by_ggsel_id(self, ggsel_product_id: Any) -> dict[str, Any]:
         data = self.seller_office_get(f"/api/v1/offers/ggsel/{urllib.parse.quote(str(ggsel_product_id), safe='')}")
         offer = data.get("data") if isinstance(data, dict) else None
@@ -2405,6 +2461,70 @@ def digiseller_order_product_name(order_id: int, fallback: Any = "") -> str:
     return ""
 
 
+STOCK_FILE_URL_KEYS = ("download_url", "file_url", "url", "href", "link", "file", "path")
+STOCK_TEXT_FILE_EXTENSIONS = (".txt", ".csv", ".log", ".md", ".json", ".yaml", ".yml")
+
+
+def looks_like_stock_file_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    path = urllib.parse.unquote(parsed.path or url).lower()
+    if path.endswith(STOCK_TEXT_FILE_EXTENSIONS):
+        return True
+    return any(part in path for part in ("/download", "/downloads", "/files/", "/uploads/", "/attachments/"))
+
+
+def stock_file_url_from_value(value: Any, *, require_file_hint: bool = True) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    href = re.search(r'''href=["']([^"']+)["']''', raw, flags=re.I)
+    if href:
+        candidate = html.unescape(href.group(1)).strip()
+        if candidate and (not require_file_hint or looks_like_stock_file_url(candidate)):
+            return candidate
+    plain = clean_text(raw)
+    is_url = re.match(r"https?://", plain, flags=re.I) or plain.startswith("//")
+    is_relative = plain.startswith(("/api/", "/api_", "/uploads/", "/storage/", "/files/", "/download"))
+    if (is_url or is_relative) and (not require_file_hint or looks_like_stock_file_url(plain)):
+        return plain
+    return ""
+
+
+def stock_file_url_from_item(item: dict[str, Any]) -> str:
+    for key in STOCK_FILE_URL_KEYS:
+        value = item.get(key)
+        require_file_hint = key not in {"download_url", "file_url", "file"}
+        if isinstance(value, str):
+            candidate = stock_file_url_from_value(value, require_file_hint=require_file_hint)
+            if candidate:
+                return candidate
+        if isinstance(value, dict):
+            candidate = stock_file_url_from_item(value)
+            if candidate:
+                return candidate
+    attachments = item.get("attachments") or item.get("files")
+    if isinstance(attachments, list):
+        for attachment in attachments:
+            if isinstance(attachment, dict):
+                candidate = stock_file_url_from_item(attachment)
+                if candidate:
+                    return candidate
+            elif isinstance(attachment, str):
+                candidate = stock_file_url_from_value(attachment)
+                if candidate:
+                    return candidate
+    return stock_file_url_from_value(item.get("value"))
+
+
+def stock_item_message_text(offer_id: int, item: dict[str, Any]) -> str:
+    file_url = stock_file_url_from_item(item)
+    if file_url:
+        file_text = ggsel_client.seller_office_fetch_text(file_url)
+        if file_text:
+            return file_text
+    return clean_text(item.get("value"))
+
+
 def seller_office_stock_for_offer(offer: dict[str, Any]) -> dict[str, Any]:
     offer_id = int(offer.get("id") or 0)
     if not offer_id:
@@ -2413,13 +2533,22 @@ def seller_office_stock_for_offer(offer: dict[str, Any]) -> dict[str, Any]:
     products = products_data.get("data") if isinstance(products_data, dict) else []
     if not isinstance(products, list) or not products:
         raise RuntimeError("No stock items are available for this offer")
-    stock_item = next((item for item in products if isinstance(item, dict) and clean_text(item.get("value"))), None)
+    stock_item: dict[str, Any] | None = None
+    stock_message = ""
+    for item in products:
+        if not isinstance(item, dict):
+            continue
+        message = stock_item_message_text(offer_id, item)
+        if message:
+            stock_item = item
+            stock_message = message
+            break
     if not stock_item:
         raise RuntimeError("No usable stock item value is available for this offer")
     stock_item_id = int(stock_item.get("id") or 0)
     if not stock_item_id:
         raise RuntimeError("Stock item ID is missing")
-    return {"offer_id": offer_id, "stock_item_id": stock_item_id, "message": clean_text(stock_item.get("value")), "product": clean_text(offer.get("title"))}
+    return {"offer_id": offer_id, "stock_item_id": stock_item_id, "message": stock_message, "product": clean_text(offer.get("title"))}
 
 
 def send_stock_item_to_chat(order_id: int, platform: str, fallback_product: Any = "") -> dict[str, Any]:
