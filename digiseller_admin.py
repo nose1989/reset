@@ -343,7 +343,7 @@ PRODUCT_BRANDS = [
 ]
 CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 FUNPAY_CHAT_BASE = "https://funpay.com"
-RECENT_ORDER_DAYS = 5
+RECENT_ORDER_DAYS = 3
 RECENT_CHAT_DAYS = 2
 
 
@@ -4304,7 +4304,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return default
 
-        days = max(parse_int("days", RECENT_ORDER_DAYS), 1)
+        days = min(max(parse_int("days", RECENT_ORDER_DAYS), 1), RECENT_ORDER_DAYS)
         rows_limit = min(max(parse_int("rows", 50), 1), 50)
         page = max(parse_int("page", 1), 1)
         errors: list[str] = []
