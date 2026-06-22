@@ -139,6 +139,7 @@ def sort_time(value: Any) -> float:
 TRANSLATE_CACHE: dict[tuple[str, str, str], tuple[str, str]] = {}
 TRANSLATE_CACHE_FILE = APP_DIR / "translation_cache.json"
 TRANSLATE_CACHE_TTL_SECONDS = 3 * 24 * 60 * 60
+TRANSLATE_CACHE_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 TRANSLATE_CACHE_LOCK = threading.Lock()
 TRANSLATE_CACHE_LOADED = False
 
@@ -188,13 +189,36 @@ def load_translation_cache() -> None:
         TRANSLATE_CACHE_LOADED = True
 
 
-def clear_translation_cache() -> None:
+def prune_translation_cache() -> None:
     global TRANSLATE_CACHE_LOADED
     with TRANSLATE_CACHE_LOCK:
+        fresh_cache: dict[tuple[str, str, str], tuple[str, str]] = {}
+        fresh_data: dict[str, Any] = {}
+        if TRANSLATE_CACHE_FILE.exists():
+            try:
+                data = json.loads(TRANSLATE_CACHE_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            if isinstance(data, dict):
+                for key, item in data.items():
+                    if not isinstance(item, dict) or not translation_cache_is_fresh(item.get("updated_at")):
+                        continue
+                    source_lang = str(item.get("source_lang") or "auto")
+                    target_lang = str(item.get("target_lang") or "")
+                    value = str(item.get("text") or "")
+                    translated = str(item.get("translated") or "")
+                    detected = str(item.get("detected") or source_lang)
+                    if target_lang and value and translated:
+                        fresh_cache[(source_lang, target_lang, value)] = (translated, detected)
+                        fresh_data[str(key)] = item
         TRANSLATE_CACHE.clear()
+        TRANSLATE_CACHE.update(fresh_cache)
         TRANSLATE_CACHE_LOADED = True
         try:
-            TRANSLATE_CACHE_FILE.unlink(missing_ok=True)
+            if fresh_data:
+                TRANSLATE_CACHE_FILE.write_text(json.dumps(fresh_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                TRANSLATE_CACHE_FILE.unlink(missing_ok=True)
         except Exception:
             pass
 
@@ -204,8 +228,8 @@ def start_translation_cache_cleanup() -> None:
 
     def cleanup_loop() -> None:
         while True:
-            time.sleep(TRANSLATE_CACHE_TTL_SECONDS)
-            clear_translation_cache()
+            time.sleep(TRANSLATE_CACHE_CLEANUP_INTERVAL_SECONDS)
+            prune_translation_cache()
 
     threading.Thread(target=cleanup_loop, daemon=True).start()
 
