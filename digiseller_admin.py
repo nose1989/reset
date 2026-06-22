@@ -3444,7 +3444,7 @@ class Handler(BaseHTTPRequestHandler):
             unread = 0 if selected_kind == "order" and selected_platform == "ggsel" and order_id == selected_order else raw_unread
             active = " active" if selected_kind == "order" and selected_platform == "ggsel" and order_id == selected_order else ""
             product = chat.get("product") or "GGSEL order"
-            preview = f"GGSEL · {product}"
+            preview = str(product or "")
             avatar = product_avatar_html(product, initials)
             when = str(chat.get("last_message") or "")
             short_when = when[11:16] if len(when) >= 16 and "-" in when[:10] else when[-5:]
@@ -3455,7 +3455,7 @@ class Handler(BaseHTTPRequestHandler):
                 sort_time(when),
                 f"<a class='conversation-item{active}' data-kind='order' data-platform='ggsel' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(product)}' href='{h(href)}'>"
                 f"{avatar}"
-                f"<div><div class='conversation-name'><span class='platform-badge ggsel'>GGSEL</span> {h(name)}</div>"
+                f"<div><div class='conversation-name'>{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
             ))
@@ -3472,15 +3472,14 @@ class Handler(BaseHTTPRequestHandler):
             name = email.split("@", 1)[0] or email
             initials = "GG" if selected_platform == "ggsel" else (name[:1] or "?").upper()
             product = selected_chat.get("product")
-            preview = ("GGSEL · " if selected_platform == "ggsel" else "") + short(product, 80)
+            preview = short(product, 80)
             href = ("/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(selected_order), "email": email, "product": str(product or "")})) if selected_platform == "ggsel" else order_chat_href(selected_order, email, product)
             search_text = " ".join([selected_platform, str(selected_order), email, str(product or ""), name]).lower()
-            badge_html = "<span class='platform-badge ggsel'>GGSEL</span> " if selected_platform == "ggsel" else ""
             items.insert(
                 0,
                 f"<a class='conversation-item active' data-kind='order' data-platform='{h(selected_platform)}' data-has-unread='0' data-search='{h(search_text)}' data-order-id='{selected_order}' data-email='{h(email)}' data-product='{h(product)}' href='{h(href)}'>"
                 f"{product_avatar_html(product, initials)}"
-                f"<div><div class='conversation-name'>{badge_html}{h(name)}</div>"
+                f"<div><div class='conversation-name'>{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 "<div class='conversation-time'>new</div></a>",
             )
@@ -3728,23 +3727,16 @@ class Handler(BaseHTTPRequestHandler):
         </script>
         """
         unread_total = order_unread_total + guest_unread_total
+        order_total = len(chats) + len(ggsel_chats)
         list_header = f"""
         <div class='conversation-list-header'>
           <div class='conversation-list-title'>
             <h2>Messages</h2>
-            <div class='conversation-counts'>{len(chats)} Digiseller · {len(ggsel_chats)} GGSEL · {len(guest_chats)} guests · {unread_total} unread</div>
-          </div>
-          <input id='conversation-search' class='conversation-search' placeholder='Search order, buyer, product...' autocomplete='off'>
-          <div class='conversation-filters'>
-            <button class='conversation-filter active' type='button' data-filter='all'>All</button>
-            <button class='conversation-filter' type='button' data-filter='unread'>Unread</button>
-            <button class='conversation-filter' type='button' data-filter='orders'>Orders</button>
-            <button class='conversation-filter' type='button' data-filter='ggsel'>GGSEL</button>
-            <button class='conversation-filter' type='button' data-filter='guest'>Guests</button>
+            <div class='conversation-counts'>{order_total} orders · {len(guest_chats)} guests · {unread_total} unread</div>
           </div>
         </div>
         """
-        body = f"<div class='messages-layout'><div id='conversation-list' class='conversation-list'>{list_header}{''.join(items)}<div id='conversation-empty-filter' class='conversation-empty-filter'>No matching conversations</div></div>{panel}</div>{ajax}"
+        body = f"<div class='messages-layout'><div id='conversation-list' class='conversation-list'>{list_header}{''.join(items)}</div>{panel}</div>{ajax}"
         self.send_html("Messages", body)
 
     def chat(self) -> None:
