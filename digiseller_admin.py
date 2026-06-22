@@ -300,6 +300,7 @@ PRODUCT_BRANDS = [
     ("sora", "Sora", "S", "https://www.google.com/s2/favicons?domain=openai.com&sz=64", "#ffffff"),
 ]
 CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+FUNPAY_CHAT_BASE = "https://funpay.com"
 
 
 def lang_label(lang: str) -> str:
@@ -1244,8 +1245,229 @@ class GgselClient:
         self.seller_office_delete(f"/api_seller_office/v1/offers/{offer_id}/products/{product_id}")
 
 
+class FunPayClient:
+    def __init__(self) -> None:
+        load_env()
+        self.golden_key = os.getenv("FUNPAY_GOLDEN_KEY", "").strip()
+        self.http = httpx.Client(
+            timeout=30,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            cookies={"golden_key": self.golden_key} if self.golden_key else {},
+            follow_redirects=True,
+        )
+
+    def configured(self) -> bool:
+        return bool(self.golden_key)
+
+    def ensure_configured(self) -> None:
+        if not self.golden_key:
+            raise RuntimeError("FUNPAY_GOLDEN_KEY is missing. Put it in .env")
+
+    def get(self, path: str, params: dict[str, Any] | None = None) -> httpx.Response:
+        self.ensure_configured()
+        url = path if path.startswith("http") else FUNPAY_CHAT_BASE + path
+        r = self.http.get(url, params=params or {})
+        if "account/login" in str(r.url) or "Log In / FunPay" in r.text[:2000]:
+            raise RuntimeError("FunPay golden_key is missing or expired")
+        if r.status_code >= 400:
+            raise RuntimeError(f"FunPay HTTP {r.status_code}: {short(r.text, 400)}")
+        return r
+
+    def post(self, path: str, data: dict[str, Any], referer: str) -> Any:
+        self.ensure_configured()
+        r = self.http.post(
+            FUNPAY_CHAT_BASE + path,
+            data=data,
+            headers={
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": FUNPAY_CHAT_BASE + referer if referer.startswith("/") else referer,
+            },
+        )
+        if "account/login" in str(r.url) or "Log In / FunPay" in r.text[:2000]:
+            raise RuntimeError("FunPay golden_key is missing or expired")
+        if r.status_code >= 400:
+            raise RuntimeError(f"FunPay HTTP {r.status_code}: {short(r.text, 400)}")
+        content_type = r.headers.get("content-type", "")
+        if "json" not in content_type.lower():
+            raise RuntimeError(f"FunPay returned non-JSON from {path}: {short(r.text, 400)}")
+        return r.json()
+
+    def upload_chat_files(self, uploads: list[UploadItem], referer: str) -> list[str]:
+        file_ids: list[str] = []
+        for item in uploads:
+            r = self.http.post(
+                FUNPAY_CHAT_BASE + "/en/file/addChatImage",
+                files={"file": (item.filename, item.data, item.content_type or "application/octet-stream")},
+                headers={
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": FUNPAY_CHAT_BASE + referer if referer.startswith("/") else referer,
+                },
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(f"FunPay upload HTTP {r.status_code}: {short(r.text, 400)}")
+            data = r.json()
+            file_id = str(data.get("fileId") or data.get("id") or "")
+            if not file_id:
+                raise RuntimeError(f"FunPay upload did not return fileId: {short(r.text, 400)}")
+            file_ids.append(file_id)
+        return file_ids
+
+    def app_data(self, html_text: str) -> dict[str, Any]:
+        match = re.search(r'data-app-data="([^"]+)"', html_text)
+        if not match:
+            return {}
+        try:
+            data = json.loads(html.unescape(match.group(1)))
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def tag_attrs(self, tag: str) -> dict[str, str]:
+        return {name: html.unescape(value) for name, value in re.findall(r'([A-Za-z0-9_:-]+)="([^"]*)"', tag)}
+
+    def first_text(self, html_text: str, class_name: str) -> str:
+        match = re.search(
+            rf'<[^>]*class="[^"]*\b{re.escape(class_name)}\b[^"]*"[^>]*>(.*?)</[^>]+>',
+            html_text,
+            re.S | re.I,
+        )
+        return clean_text(match.group(1) if match else "")
+
+    def chat_page(self, node_id: int | None = None) -> str:
+        params = {"node": str(node_id)} if node_id else None
+        return self.get("/en/chat/", params=params).text
+
+    def chat_product_from_page(self, page: str) -> str:
+        match = re.search(r'<a\b[^>]*href="https://funpay\.com/en/lots/offer\?id=\d+"[^>]*>(.*?)</a>', page, re.S | re.I)
+        return clean_text(match.group(1) if match else "")
+
+    def chat_product(self, node_id: int) -> str:
+        return self.chat_product_from_page(self.chat_page(node_id))
+
+    def chats(self, limit: int = 50) -> list[dict[str, Any]]:
+        page = self.chat_page()
+        rows: list[dict[str, Any]] = []
+        pattern = re.compile(r'<a\b[^>]*class="[^"]*\bcontact-item\b[^"]*"[^>]*>.*?</a>', re.S | re.I)
+        for item in pattern.findall(page):
+            attrs = self.tag_attrs(item)
+            node_id = int(attrs.get("data-id") or 0)
+            if not node_id:
+                continue
+            node_msg = int(attrs.get("data-node-msg") or 0)
+            user_msg = int(attrs.get("data-user-msg") or 0)
+            rows.append(
+                {
+                    "node_id": node_id,
+                    "name": self.first_text(item, "media-user-name") or f"FunPay-{node_id}",
+                    "message": self.first_text(item, "contact-item-message"),
+                    "last_date": self.first_text(item, "contact-item-time"),
+                    "node_msg": node_msg,
+                    "user_msg": user_msg,
+                    "cnt_new": 1 if node_msg and user_msg and node_msg != user_msg else 0,
+                }
+            )
+            if len(rows) >= limit:
+                break
+        return rows
+
+    def chat_messages(self, node_id: int) -> list[dict[str, Any]]:
+        page = self.chat_page(node_id)
+        app_data = self.app_data(page)
+        my_user_id = int(app_data.get("userId") or 0)
+        messages: list[dict[str, Any]] = []
+        matches = list(re.finditer(r'<div\b[^>]*class="[^"]*\bchat-msg-item\b[^"]*"[^>]*id="message-(\d+)"[^>]*>', page, re.I))
+        last_author = ""
+        last_seller = 0
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else page.find("</form>", match.end())
+            if end < 0:
+                end = len(page)
+            block = page[match.start() : end]
+            author = last_author
+            seller = last_seller
+            author_match = re.search(r'<a\b[^>]*href="https://funpay\.com/en/users/(\d+)/"[^>]*class="[^"]*\bchat-msg-author-link\b[^"]*"[^>]*>(.*?)</a>', block, re.S | re.I)
+            if author_match:
+                author = clean_text(author_match.group(2))
+                seller = 1 if my_user_id and int(author_match.group(1)) == my_user_id else 0
+                last_author = author
+                last_seller = seller
+            elif "chat-msg-with-head" in match.group(0):
+                media = self.first_text(block, "media-user-name")
+                if media:
+                    author = media.replace("notification", "").replace("auto-reply", "").strip() or "FunPay"
+                    seller = 1 if author == "FunPay" else 0
+                    last_author = author
+                    last_seller = seller
+            date_match = re.search(r'<div\b[^>]*class="[^"]*\bchat-msg-date\b[^"]*"[^>]*title="([^"]*)"[^>]*>(.*?)</div>', block, re.S | re.I)
+            date_written = clean_text(date_match.group(1) if date_match else "")
+            if not date_written and date_match:
+                date_written = clean_text(date_match.group(2))
+            text = self.first_text(block, "chat-msg-text") or self.first_text(block, "chat-msg-body")
+            messages.append(
+                {
+                    "id": int(match.group(1)),
+                    "seller": seller,
+                    "author": author or "FunPay",
+                    "message": text,
+                    "date_written": date_written,
+                    "platform": "funpay",
+                }
+            )
+        return messages
+
+    def send_chat_payload(self, node_id: int, page: str, content: str, image_id: str = "") -> None:
+        data = self.app_data(page)
+        csrf_token = str(data.get("csrf-token") or "")
+        chat_tag = re.search(r'<div\b[^>]*class="[^"]*\bchat\b[^"]*"[^>]*>', page, re.I)
+        attrs = self.tag_attrs(chat_tag.group(0) if chat_tag else "")
+        node_name = attrs.get("data-name") or ""
+        if not csrf_token or not node_name:
+            raise RuntimeError("FunPay chat page did not expose a send token")
+        ids = [int(value) for value in re.findall(r'id="message-(\d+)"', page)]
+        request = {
+            "action": "chat_message",
+            "data": {
+                "node": node_name,
+                "last_message": max(ids) if ids else 0,
+                "content": content,
+                "compact": attrs.get("data-compact") or "",
+                "show_avatar": attrs.get("data-show_avatar") or "",
+            },
+        }
+        if image_id:
+            request["data"]["image_id"] = image_id
+        response = self.post(
+            "/en/runner/",
+            {
+                "objects": "[]",
+                "request": json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+                "csrf_token": csrf_token,
+            },
+            referer=f"/en/chat/?node={node_id}",
+        )
+        result = response.get("response") if isinstance(response, dict) else None
+        if isinstance(result, dict) and result.get("error"):
+            raise RuntimeError(str(result.get("error")))
+
+    def send_chat_message(self, node_id: int, message: str, uploads: list[UploadItem]) -> None:
+        page = self.chat_page(node_id)
+        referer = f"/en/chat/?node={node_id}"
+        if message or not uploads:
+            self.send_chat_payload(node_id, page, message)
+            page = self.chat_page(node_id)
+        for file_id in self.upload_chat_files(uploads, referer):
+            self.send_chat_payload(node_id, page, "", file_id)
+            page = self.chat_page(node_id)
+
+
 client = DigisellerClient()
 ggsel_client = GgselClient()
+funpay_client = FunPayClient()
 UNREAD_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 SALES_ORDER_BADGE_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 PURCHASE_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
@@ -1330,7 +1552,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .conversation-list-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 14px 12px;box-shadow:0 1px 0 #eef2f7}
 .conversation-list-title{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:10px}.conversation-list-title h2{margin:0;font-size:28px;line-height:1}.conversation-counts{font-size:12px;color:#64748b;text-align:right;white-space:nowrap}.conversation-search{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;padding:9px 10px;margin-bottom:10px;background:#f8fafc}.conversation-filters{display:flex;gap:8px;flex-wrap:wrap}.conversation-filter{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;cursor:pointer}.conversation-filter.active{background:#1f7acb;color:#fff;border-color:#1f7acb}.conversation-item[hidden]{display:none}.conversation-empty-filter{display:none;padding:28px 16px;color:#64748b;text-align:center}.conversation-empty-filter.visible{display:block}.conversation-section{padding:14px 14px 7px;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:#f8fafc;border-bottom:1px solid #eef2f7}.conversation-section[hidden]{display:none}.chat-bubble{word-break:break-word}.conversation-body{scroll-behavior:smooth}.reply-editor{border-top:1px solid #e5e7eb;background:#fbfdff}.reply-editor textarea{min-height:84px}.pending-send .chat-bubble{opacity:.75}.pending-send.send-failed .chat-bubble{background:#fee2e2;color:#991b1b}
 
-.platform-badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:900;background:#e0f2fe;color:#075985}.platform-badge.ggsel{background:#fef3c7;color:#92400e}.sales-source{white-space:nowrap}
+.platform-badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:900;background:#e0f2fe;color:#075985}.platform-badge.ggsel{background:#fef3c7;color:#92400e}.platform-badge.funpay{background:#dcfce7;color:#166534}.sales-source{white-space:nowrap}
 .sales-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sales-toolbar input{max-width:90px}.sales-toolbar .sales-search{flex:1 1 260px;max-width:420px}.sales-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}.sales-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px}.sales-stat b{display:block;font-size:20px;margin-bottom:4px}.sales-table .order-link{font-weight:800}.sales-table .chat-action{display:inline-block;background:#1f7acb;color:#fff;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800}.sales-table tbody tr[hidden]{display:none}.sales-product{max-width:360px}.sales-empty-filter{display:none;padding:24px;text-align:center;color:#64748b}.sales-empty-filter.visible{display:block}
 </style>
 """
@@ -1908,6 +2130,12 @@ def unread_summary() -> dict[str, Any]:
             ggsel_buyer = [c for c in ggsel_rows if isinstance(c, dict) and int(c.get("cnt_new") or 0) > 0]
         except Exception:
             ggsel_buyer = []
+    funpay_buyer: list[dict[str, Any]] = []
+    if funpay_client.configured():
+        try:
+            funpay_buyer = [c for c in funpay_client.chats(limit=50) if int(c.get("cnt_new") or 0) > 0]
+        except Exception:
+            funpay_buyer = []
     try:
         guest = [
             c
@@ -1954,6 +2182,21 @@ def unread_summary() -> dict[str, Any]:
         }
         buyer_unread.append(rec)
         add_latest(rec)
+    for chat in funpay_buyer:
+        node_id = chat.get("node_id")
+        name = chat.get("name") or f"FunPay-{node_id}"
+        rec = {
+            "type": "buyer",
+            "platform": "funpay",
+            "order_id": node_id,
+            "email": name,
+            "product": clean_text(chat.get("message") or "FunPay chat"),
+            "last_date": chat.get("last_date"),
+            "cnt_new": int(chat.get("cnt_new") or 0),
+            "url": "/chats?" + urllib.parse.urlencode({"platform": "funpay", "order_id": str(node_id or ""), "email": str(name), "product": "FunPay chat"}),
+        }
+        buyer_unread.append(rec)
+        add_latest(rec)
     for chat in guest:
         corr_id = int(chat.get("CorrID") or 0)
         corr_type = str(chat.get("CorrType") or chat.get("Type") or "visitor")
@@ -1970,15 +2213,18 @@ def unread_summary() -> dict[str, Any]:
         add_latest(rec)
     digiseller_unread_messages = sum(int(c.get("cnt_new") or 0) for c in buyer)
     ggsel_unread_messages = sum(int(c.get("cnt_new") or 0) for c in ggsel_buyer)
-    total = digiseller_unread_messages + ggsel_unread_messages + len(guest) + len(admin)
+    funpay_unread_messages = sum(int(c.get("cnt_new") or 0) for c in funpay_buyer)
+    total = digiseller_unread_messages + ggsel_unread_messages + funpay_unread_messages + len(guest) + len(admin)
     return {
         "ok": True,
-        "buyer_unread_chats": len(buyer) + len(ggsel_buyer),
-        "buyer_unread_messages": digiseller_unread_messages + ggsel_unread_messages,
+        "buyer_unread_chats": len(buyer) + len(ggsel_buyer) + len(funpay_buyer),
+        "buyer_unread_messages": digiseller_unread_messages + ggsel_unread_messages + funpay_unread_messages,
         "digiseller_unread_chats": len(buyer),
         "digiseller_unread_messages": digiseller_unread_messages,
         "ggsel_unread_chats": len(ggsel_buyer),
         "ggsel_unread_messages": ggsel_unread_messages,
+        "funpay_unread_chats": len(funpay_buyer),
+        "funpay_unread_messages": funpay_unread_messages,
         "buyer_unread": buyer_unread,
         "guest_unread_chats": len(guest),
         "admin_unread": len(admin),
@@ -2551,10 +2797,25 @@ def seller_office_stock_for_offer(offer: dict[str, Any]) -> dict[str, Any]:
     return {"offer_id": offer_id, "stock_item_id": stock_item_id, "message": stock_message, "product": clean_text(offer.get("title"))}
 
 
+def funpay_offer_search_text(product_name: str) -> str:
+    product = clean_text(product_name)
+    parts = [part.strip() for part in product.split(",") if part.strip()]
+    if len(parts) >= 3:
+        product = ", ".join(parts[2:])
+    product = re.sub(r",\s*(?:Free|[\d.]+\s*[A-Z$€₽]+),\s*\d+\s+pcs?\.?$", "", product, flags=re.I)
+    product = re.sub(r",\s*\d+\s+pcs?\.?$", "", product, flags=re.I)
+    return clean_text(product)
+
+
 def send_stock_item_to_chat(order_id: int, platform: str, fallback_product: Any = "") -> dict[str, Any]:
-    normalized_platform = "ggsel" if platform == "ggsel" else "digiseller"
+    normalized_platform = platform if platform in ("ggsel", "funpay") else "digiseller"
     if normalized_platform == "ggsel":
         offer = ggsel_seller_office_offer_for_order(order_id, fallback_product)
+    elif normalized_platform == "funpay":
+        product_name = funpay_client.chat_product(order_id) or clean_text(fallback_product)
+        offer = ggsel_client.seller_office_search_offer(product_name)
+        if not offer:
+            offer = ggsel_client.seller_office_search_offer(funpay_offer_search_text(product_name))
     else:
         product_name = digiseller_order_product_name(order_id, fallback_product)
         offer = ggsel_client.seller_office_search_offer(product_name)
@@ -2564,6 +2825,8 @@ def send_stock_item_to_chat(order_id: int, platform: str, fallback_product: Any 
     stock_item_id = int(stock["stock_item_id"])
     if normalized_platform == "ggsel":
         ggsel_client.send_chat_message(order_id, message, [])
+    elif normalized_platform == "funpay":
+        funpay_client.send_chat_message(order_id, message, [])
     else:
         client.send_chat_message(order_id, message, [])
     try:
@@ -3464,6 +3727,10 @@ class Handler(BaseHTTPRequestHandler):
             ggsel_client.send_chat_message(order_id, message, uploads)
             self.redirect(f"/chats?platform=ggsel&order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
             return
+        if platform == "funpay":
+            funpay_client.send_chat_message(order_id, message, uploads)
+            self.redirect(f"/chats?platform=funpay&order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
+            return
         client.send_chat_message(order_id, message, uploads)
         self.redirect(f"/chats?order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
 
@@ -3482,6 +3749,8 @@ class Handler(BaseHTTPRequestHandler):
         result = send_stock_item_to_chat(order_id, platform, product)
         if result.get("platform") == "ggsel":
             safe_mark_ggsel_chat_read(order_id)
+        elif result.get("platform") == "funpay":
+            clear_unread_cache()
         else:
             safe_mark_chat_read(order_id)
         params = {"platform": str(result.get("platform") or platform), "order_id": str(order_id), "stock_sent": "1", "tl": target_lang}
@@ -4204,6 +4473,40 @@ class Handler(BaseHTTPRequestHandler):
             notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
         return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-platform='ggsel' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang, platform='ggsel', email=buyer_email, product=product)}</div>"
 
+    def funpay_chat_panel_html(self, node_id: int, chat: dict[str, Any], messages: list[dict[str, Any]]) -> str:
+        buyer_name = str(chat.get("name") or f"FunPay-{node_id}")
+        product = clean_text(chat.get("product") or "FunPay chat")
+        buyer_lang = detect_buyer_language(messages)
+        header = (
+            f"<div class='conversation-header-main'><div class='conversation-header-title'>{h(buyer_name)}</div>"
+            f"<div class='muted'>FunPay chat #{node_id} · {h(short(product, 110))} · Messages loaded: {len(messages)} · Reply language: {h(lang_label(buyer_lang))}</div></div>"
+            "<div class='conversation-header-side'><span class='platform-badge funpay'>FunPay</span></div>"
+        )
+        rows = []
+        total_messages = len(messages)
+        for idx, msg in enumerate(messages, 1):
+            is_seller = msg.get("seller") == 1
+            cls = "seller" if is_seller else "buyer"
+            author = str(msg.get("author") or ("nose1989" if is_seller else buyer_name))
+            text = clean_text(msg.get("message"))
+            try:
+                text_html = translate_incoming_html(text, msg.get("id"), should_translate=not is_seller)
+            except Exception as exc:
+                text_html = h(text or f"Message render error: {exc}")
+            msg_no = f"#{idx}/{total_messages}"
+            msg_id = f" · ID {h(msg.get('id'))}" if msg.get("id") else ""
+            rows.append(
+                f"<div class='chat-row {cls}'>"
+                f"<div class='chat-meta'><span class='chat-author'>{h(author)} <span class='muted'>{msg_no}{msg_id}</span></span><span>{h(msg.get('date_written'))}</span></div>"
+                f"<div class='chat-bubble'>{text_html}</div></div>"
+            )
+        if not rows:
+            rows.append("<div class='empty-state'>No FunPay messages loaded</div>")
+        notice = ""
+        if self.q("sent") == "1":
+            notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
+        return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-platform='funpay' data-order-id='{node_id}' data-message-count='{len(messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(node_id, buyer_lang, platform='funpay', email=buyer_name, product=product)}</div>"
+
     def api_chat_panel(self) -> None:
         if self.q("kind") == "guest":
             corr_id = int(self.q("corr_id", "0") or 0)
@@ -4227,6 +4530,11 @@ class Handler(BaseHTTPRequestHandler):
         product = self.q("product", "Direct order lookup")
         platform_param = self.q("platform", "").strip()
         platform = platform_param or "digiseller"
+        if platform == "funpay":
+            messages = funpay_client.chat_messages(order_id)
+            product = funpay_client.chat_product(order_id) or product
+            selected_chat = {"node_id": order_id, "name": email if email != f"order-{order_id}" else f"FunPay-{order_id}", "product": product, "platform": "funpay"}
+            return self.send_json({"ok": True, "platform": "funpay", "order_id": order_id, "email": selected_chat["name"], "product": product, "count": len(messages), "read": True, "html": self.funpay_chat_panel_html(order_id, selected_chat, messages)})
         ggsel_messages: list[dict[str, Any]] | None = None
         if not platform_param and ggsel_client.configured():
             try:
@@ -4309,6 +4617,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             ggsel_chats = []
             ggsel_error = str(exc)
+        funpay_error = ""
+        try:
+            funpay_chats = funpay_client.chats(limit=50) if funpay_client.configured() else []
+        except Exception as exc:
+            funpay_chats = []
+            funpay_error = str(exc)
         selected_kind = self.q("kind", "order")
         selected_platform_param = self.q("platform", "").strip()
         selected_platform = selected_platform_param or "digiseller"
@@ -4326,6 +4640,10 @@ class Handler(BaseHTTPRequestHandler):
                 order_id = int(chat.get("id_i") or 0)
                 if order_id:
                     order_candidates.append((sort_time(chat.get("last_message")), "ggsel", order_id))
+            for funpay_index, chat in enumerate(funpay_chats):
+                node_id = int(chat.get("node_id") or 0)
+                if node_id:
+                    order_candidates.append((sort_time(chat.get("last_date")) or (time.time() - funpay_index), "funpay", node_id))
             if order_candidates:
                 _, selected_platform, selected_order = max(order_candidates, key=lambda item: item[0])
                 selected_kind = "order"
@@ -4383,6 +4701,8 @@ class Handler(BaseHTTPRequestHandler):
             items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>Digiseller API error</div><div class='preview'>{h(short(chat_error, 100))}</div></div><div></div></div>")
         if ggsel_error:
             items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>GGSEL API error</div><div class='preview'>{h(short(ggsel_error, 100))}</div></div><div></div></div>")
+        if funpay_error:
+            items.append(f"<div class='conversation-item'><div class='avatar'>!</div><div><div class='conversation-name'>FunPay API error</div><div class='preview'>{h(short(funpay_error, 100))}</div></div><div></div></div>")
         for chat in ggsel_chats:
             order_id = int(chat.get("id_i") or 0)
             if not order_id:
@@ -4411,6 +4731,29 @@ class Handler(BaseHTTPRequestHandler):
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
             ))
+        for funpay_index, chat in enumerate(funpay_chats):
+            node_id = int(chat.get("node_id") or 0)
+            if not node_id:
+                continue
+            if selected_kind == "order" and selected_platform == "funpay" and node_id == selected_order:
+                selected_chat = {"node_id": node_id, "name": chat.get("name") or f"FunPay-{node_id}", "platform": "funpay"}
+            name = str(chat.get("name") or f"FunPay-{node_id}")
+            raw_unread = int(chat.get("cnt_new") or 0)
+            unread = 0 if selected_kind == "order" and selected_platform == "funpay" and node_id == selected_order else raw_unread
+            active = " active" if selected_kind == "order" and selected_platform == "funpay" and node_id == selected_order else ""
+            preview = str(chat.get("message") or "FunPay chat")
+            when = str(chat.get("last_date") or "")
+            badge = f"<div class='badge'>{unread}</div>" if unread else ""
+            href = "/chats?" + urllib.parse.urlencode({"platform": "funpay", "order_id": str(node_id), "email": name, "product": "FunPay chat"})
+            search_text = " ".join(["funpay", str(node_id), name, preview]).lower()
+            order_items.append((
+                sort_time(when) or (time.time() - funpay_index),
+                f"<a class='conversation-item{active}' data-kind='order' data-platform='funpay' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{node_id}' data-email='{h(name)}' data-product='FunPay chat' href='{h(href)}'>"
+                f"{product_avatar_html('FunPay chat', 'FP')}"
+                f"<div><div class='conversation-name'>{h(name)}</div>"
+                f"<div class='preview'>{h(short(preview, 70))}</div></div>"
+                f"<div class='conversation-time'>{h(when)}{badge}</div></a>"
+            ))
         items.extend(html for _, html in sorted(order_items, key=lambda item: item[0], reverse=True))
 
         if selected_kind == "order" and selected_order and selected_chat is None:
@@ -4419,6 +4762,9 @@ class Handler(BaseHTTPRequestHandler):
             if selected_platform == "ggsel":
                 fallback_email = ggsel_order_buyer_email(selected_order, fallback_email)
                 fallback_product = ggsel_order_product_name(selected_order, fallback_product)
+            elif selected_platform == "funpay":
+                fallback_email = self.q("email", f"FunPay-{selected_order}")
+                fallback_product = "FunPay chat"
             selected_chat = {
                 "id_i": selected_order,
                 "email": fallback_email,
@@ -4427,10 +4773,10 @@ class Handler(BaseHTTPRequestHandler):
             }
             email = str(selected_chat.get("email") or f"order-{selected_order}")
             name = email.split("@", 1)[0] or email
-            initials = "GG" if selected_platform == "ggsel" else (name[:1] or "?").upper()
+            initials = "GG" if selected_platform == "ggsel" else "FP" if selected_platform == "funpay" else (name[:1] or "?").upper()
             product = selected_chat.get("product")
             preview = short(product, 80)
-            href = ("/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(selected_order), "email": email, "product": str(product or "")})) if selected_platform == "ggsel" else order_chat_href(selected_order, email, product)
+            href = ("/chats?" + urllib.parse.urlencode({"platform": selected_platform, "order_id": str(selected_order), "email": email, "product": str(product or "")})) if selected_platform in ("ggsel", "funpay") else order_chat_href(selected_order, email, product)
             search_text = " ".join([selected_platform, str(selected_order), email, str(product or ""), name]).lower()
             items.insert(
                 0,
@@ -4485,7 +4831,17 @@ class Handler(BaseHTTPRequestHandler):
             clear_unread_cache()
             selected_messages = client.guest_messages(selected_corr_type, selected_corr_id)[-10:]
         elif selected_order:
-            if selected_platform == "ggsel":
+            if selected_platform == "funpay":
+                try:
+                    selected_messages = funpay_client.chat_messages(selected_order)
+                    funpay_product = funpay_client.chat_product(selected_order) or self.q("product", "FunPay chat")
+                    if selected_chat is None:
+                        selected_chat = {"node_id": selected_order, "name": self.q("email", f"FunPay-{selected_order}"), "product": funpay_product, "platform": "funpay"}
+                    else:
+                        selected_chat["product"] = funpay_product
+                except Exception as exc:
+                    selected_chat = {"node_id": selected_order, "name": self.q("email", f"FunPay-{selected_order}"), "product": f"FunPay chat load failed: {exc}", "platform": "funpay"}
+            elif selected_platform == "ggsel":
                 try:
                     selected_messages = selected_ggsel_messages if selected_ggsel_messages is not None else ggsel_client.chat_messages(selected_order)
                     if selected_messages:
@@ -4506,6 +4862,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if selected_kind == "guest" and selected_guest_chat:
             panel = self.guest_chat_panel_html(selected_guest_chat, selected_messages)
+        elif selected_platform == "funpay" and selected_chat:
+            panel = self.funpay_chat_panel_html(selected_order, selected_chat, selected_messages)
         elif selected_platform == "ggsel" and selected_chat:
             panel = self.ggsel_chat_panel_html(selected_order, selected_chat, selected_messages)
         else:
@@ -4706,13 +5064,14 @@ class Handler(BaseHTTPRequestHandler):
         })();
         </script>
         """
-        unread_total = order_unread_total + guest_unread_total
-        order_total = len(chats) + len(ggsel_chats)
+        funpay_unread_total = sum(int(chat.get("cnt_new") or 0) for chat in funpay_chats)
+        unread_total = order_unread_total + guest_unread_total + funpay_unread_total
+        order_total = len(chats) + len(ggsel_chats) + len(funpay_chats)
         list_header = f"""
         <div class='conversation-list-header'>
           <div class='conversation-list-title'>
             <h2>Messages</h2>
-            <div class='conversation-counts'>{order_total} orders · {len(guest_chats)} guests · {unread_total} unread</div>
+            <div class='conversation-counts'>{order_total} chats · {len(guest_chats)} guests · {unread_total} unread</div>
           </div>
         </div>
         """
@@ -4752,6 +5111,12 @@ class Handler(BaseHTTPRequestHandler):
                 ggsel_buyer = [c for c in ggsel_rows if isinstance(c, dict) and int(c.get("cnt_new") or 0) > 0]
             except Exception:
                 ggsel_buyer = []
+        funpay_buyer: list[dict[str, Any]] = []
+        if funpay_client.configured():
+            try:
+                funpay_buyer = [c for c in funpay_client.chats(limit=50) if int(c.get("cnt_new") or 0) > 0]
+            except Exception:
+                funpay_buyer = []
         try:
             guest = [
                 c
@@ -4768,6 +5133,11 @@ class Handler(BaseHTTPRequestHandler):
             product = clean_text(c.get("product") or "GGSEL order")
             href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(order_id or ""), "email": str(email), "product": product})
             b_rows.append(["GGSEL", f"<a href='{h(href)}'>{h(order_id)}</a>", h(c.get("last_message")), h(c.get("cnt_new")), h(email), h(short(product, 100))])
+        for c in funpay_buyer:
+            node_id = c.get("node_id")
+            name = c.get("name") or f"FunPay-{node_id}"
+            href = "/chats?" + urllib.parse.urlencode({"platform": "funpay", "order_id": str(node_id or ""), "email": str(name), "product": "FunPay chat"})
+            b_rows.append(["FunPay", f"<a href='{h(href)}'>{h(node_id)}</a>", h(c.get("last_date")), h(c.get("cnt_new")), h(name), h(short(c.get("message"), 100))])
         g_rows = [
             [
                 f"<a href='/chats?kind=guest&corr_type={h(c.get('CorrType') or c.get('Type') or 'visitor')}&corr_id={h(c.get('CorrID'))}'>{h(c.get('Name') or ('GUEST-' + str(c.get('CorrID') or '')))}</a>",
@@ -4779,7 +5149,7 @@ class Handler(BaseHTTPRequestHandler):
             for c in guest
         ]
         a_rows = [[h(m.get("date")), h(m.get("id")), h(short(m.get("text") or m.get("message"), 180))] for m in admin]
-        body = f"<div class='card'><h2>Unread</h2><p>Buyer unread: {len(buyer) + len(ggsel_buyer)} | Guest unread: {len(guest)} | Admin unread: {len(admin)}</p></div><h3>Buyer chats</h3>{table(['Platform','Order','Last','New','Email','Product'], b_rows)}<h3>Guest consultations</h3>{table(['Guest','Last','Type','Text','Product'], g_rows)}<h3>Admin messages</h3>{table(['Date','ID','Text'], a_rows)}"
+        body = f"<div class='card'><h2>Unread</h2><p>Buyer unread: {len(buyer) + len(ggsel_buyer) + len(funpay_buyer)} | Guest unread: {len(guest)} | Admin unread: {len(admin)}</p></div><h3>Buyer chats</h3>{table(['Platform','Order','Last','New','Email','Product'], b_rows)}<h3>Guest consultations</h3>{table(['Guest','Last','Type','Text','Product'], g_rows)}<h3>Admin messages</h3>{table(['Date','ID','Text'], a_rows)}"
         self.send_html("Unread", body)
 
     def admin_messages_page(self) -> None:
