@@ -2901,12 +2901,12 @@ class Handler(BaseHTTPRequestHandler):
             stock_button = (
                 f"<button type='submit' formaction='/chats/send-stock' formmethod='post' "
                 f"onclick=\""
-                f"if (!confirm('\\u7b2c\\u4e00\\u6b65\\uff1a\\u786e\\u5b9a\\u53d1\\u9001\\u4e00\\u6761\\u5e93\\u5b58\\u5546\\u54c1\\u7ed9\\u4e70\\u5bb6\\uff1f\\u53d1\\u9001\\u6210\\u529f\\u540e\\u4f1a\\u4ece GGSEL \\u5e93\\u5b58\\u5220\\u9664\\u3002')) return false;"
-                f"const stockAnswer = prompt('\\u7b2c\\u4e8c\\u6b65\\uff1a\\u8bf7\\u8f93\\u5165\\u8ba2\\u5355\\u53f7 {order_id} \\u786e\\u8ba4\\u53d1\\u9001');"
-                f"if (stockAnswer !== '{order_id}') {{ alert('\\u8ba2\\u5355\\u53f7\\u4e0d\\u5339\\u914d\\uff0c\\u5df2\\u53d6\\u6d88\\u53d1\\u9001\\u3002'); return false; }}"
+                f"if (!confirm('\\u7b2c\\u4e00\\u6b65\\uff1a\\u786e\\u5b9a\\u7ed9\\u4e70\\u5bb6\\u53d1\\u8d27\\uff1f\\u53d1\\u8d27\\u6210\\u529f\\u540e\\u4f1a\\u4ece GGSEL \\u5e93\\u5b58\\u5220\\u9664\\u4e00\\u6761\\u5546\\u54c1\\u3002')) return false;"
+                f"const stockAnswer = prompt('\\u7b2c\\u4e8c\\u6b65\\uff1a\\u8bf7\\u8f93\\u5165\\u8ba2\\u5355\\u53f7 {order_id} \\u786e\\u8ba4\\u53d1\\u8d27');"
+                f"if (stockAnswer !== '{order_id}') {{ alert('\\u8ba2\\u5355\\u53f7\\u4e0d\\u5339\\u914d\\uff0c\\u5df2\\u53d6\\u6d88\\u53d1\\u8d27\\u3002'); return false; }}"
                 f"document.getElementById('{editor_id}-stock-confirm').value = '{order_id}';"
                 f"return true;\">"
-                "&#21457;&#36865;&#24211;&#23384;&#21830;&#21697;</button>"
+                "&#21457;&#36135;</button>"
             )
         phrase_forms = []
         for phrase in load_common_phrases():
@@ -4020,7 +4020,7 @@ class Handler(BaseHTTPRequestHandler):
             rows.append("<div class='empty-state'>No GGSEL messages loaded</div>")
         notice = ""
         if self.q("stock_sent") == "1":
-            notice = "<div class='notice ok-bg'>&#24050;&#21457;&#36865;&#19968;&#26465;&#24211;&#23384;&#21830;&#21697;&#65292;&#24182;&#20174; GGSEL &#24211;&#23384;&#20013;&#31227;&#38500;&#12290;</div>"
+            notice = "<div class='notice ok-bg'>&#24050;&#21457;&#36135;&#65292;&#24182;&#20174; GGSEL &#24211;&#23384;&#20013;&#31227;&#38500;&#19968;&#26465;&#21830;&#21697;&#12290;</div>"
         elif self.q("sent") == "1":
             notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
         return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-platform='ggsel' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang, platform='ggsel', email=buyer_email, product=product)}</div>"
@@ -4114,7 +4114,8 @@ class Handler(BaseHTTPRequestHandler):
             ggsel_chats = []
             ggsel_error = str(exc)
         selected_kind = self.q("kind", "order")
-        selected_platform = self.q("platform", "digiseller")
+        selected_platform_param = self.q("platform", "").strip()
+        selected_platform = selected_platform_param or "digiseller"
         selected_order = 0 if selected_kind == "guest" else int(self.q("order_id", "0") or 0)
         selected_corr_id = int(self.q("corr_id", "0") or 0) if selected_kind == "guest" else 0
         selected_corr_type = self.q("corr_type", "visitor")
@@ -4131,6 +4132,13 @@ class Handler(BaseHTTPRequestHandler):
             if order_candidates:
                 _, selected_platform, selected_order = max(order_candidates, key=lambda item: item[0])
                 selected_kind = "order"
+        if (
+            selected_kind == "order"
+            and selected_order
+            and not selected_platform_param
+            and any(int(chat.get("id_i") or 0) == selected_order for chat in ggsel_chats)
+        ):
+            selected_platform = "ggsel"
         if selected_kind != "guest" and not selected_order and not selected_corr_id and guest_chats:
             selected_kind = "guest"
             selected_corr_id = int(guest_chats[0].get("CorrID") or 0)
