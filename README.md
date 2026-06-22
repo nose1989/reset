@@ -29,6 +29,9 @@ GGSEL_API_KEY=PUT_YOUR_GGSEL_API_KEY_HERE
 GGSEL_API_BASE=https://seller.ggsel.com/api_sellers/api
 GGSEL_SELLER_ID=132809753
 GGSEL_PARTNER_ID=
+GGSEL_KEEP_ONLINE=1
+GGSEL_ONLINE_VALUE=1
+GGSEL_ONLINE_VERIFY_TYPE=seller
 ```
 
 If any API key was pasted into chat or exposed publicly, rotate it in the provider dashboard before saving it in `.env`.
@@ -61,6 +64,8 @@ http://127.0.0.1:8765
 - `GGSEL_SELLER_ID`: filter the catalog to one seller when needed.
 - `GGSEL_PARTNER_ID`: generate product links with `ai` when needed.
 - `GGSEL_API_BASE`: defaults to `https://seller.ggsel.com/api_sellers/api`.
+- `GGSEL_KEEP_ONLINE`: keep the GGSEL seller chat online with `setonlinesetting` and heartbeat APIs.
+- `GGSEL_ONLINE_VALUE` / `GGSEL_ONLINE_VERIFY_TYPE`: override the GGSEL online setting value and verification corr type.
 
 The page also exposes `/api/ggsel-products?page=1&count=50&q=` JSON for wiring GGSEL data into other admin modules.
 
@@ -68,7 +73,7 @@ The page also exposes `/api/ggsel-products?page=1&count=50&q=` JSON for wiring G
 
 After opening the web UI, click `Enable alerts` so browser sound/voice notifications are allowed.
 
-Online keepalive calls `setonlinesetting` plus chat heartbeat APIs every 15 seconds, then verifies buyer-visible status with `getonlinestatus` and the public seller page. Disable with `DIGISELLER_KEEP_ONLINE=0`.
+Online keepalive calls `setonlinesetting` plus chat heartbeat APIs every 15 seconds, then verifies buyer-visible status with `getonlinestatus` and the public seller page. It also keeps GGSEL online when `GGSEL_API_KEY`/`GGSEL_SELLER_ID` are configured. Disable Digiseller with `DIGISELLER_KEEP_ONLINE=0` or GGSEL with `GGSEL_KEEP_ONLINE=0`.
 
 If the API token cannot set chat online status, the app opens the seller chat keepalive URL as a top-level browser window on startup. Set `DIGISELLER_CHAT_OPEN_BROWSER=0` to disable, or use the top-bar button to reopen the chat window.
 
