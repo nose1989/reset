@@ -1708,7 +1708,7 @@ def layout(title: str, body: str) -> bytes:
             const translated = node.querySelector('.translated-text');
             const label = node.querySelector('.translation-label');
             if (translated) translated.textContent = item.translated || item.text || '';
-            if (label) label.textContent = `${item.label || item.source_lang || 'auto'} → 中`;
+            if (label) label.textContent = String(item.label || item.source_lang || 'auto') + ' \u2192 \u4e2d';
             node.dataset.pending = '0';
             delete node.dataset.loading;
           });
