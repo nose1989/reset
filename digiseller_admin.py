@@ -137,6 +137,109 @@ def sort_time(value: Any) -> float:
 
 
 TRANSLATE_CACHE: dict[tuple[str, str, str], tuple[str, str]] = {}
+TRANSLATE_CACHE_FILE = APP_DIR / "translation_cache.json"
+TRANSLATE_CACHE_TTL_SECONDS = 3 * 24 * 60 * 60
+TRANSLATE_CACHE_LOCK = threading.Lock()
+TRANSLATE_CACHE_LOADED = False
+
+
+def translation_cache_id(source_lang: str, target_lang: str, text: str) -> str:
+    payload = json.dumps([source_lang, target_lang, text], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def translation_cache_is_fresh(updated_at: Any) -> bool:
+    try:
+        updated = dt.datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=dt.UTC)
+    return (dt.datetime.now(dt.UTC) - updated).total_seconds() < TRANSLATE_CACHE_TTL_SECONDS
+
+
+def load_translation_cache() -> None:
+    global TRANSLATE_CACHE_LOADED
+    if TRANSLATE_CACHE_LOADED:
+        return
+    with TRANSLATE_CACHE_LOCK:
+        if TRANSLATE_CACHE_LOADED:
+            return
+        fresh_data: dict[str, Any] = {}
+        if TRANSLATE_CACHE_FILE.exists():
+            try:
+                data = json.loads(TRANSLATE_CACHE_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            if isinstance(data, dict):
+                for key, item in data.items():
+                    if not isinstance(item, dict) or not translation_cache_is_fresh(item.get("updated_at")):
+                        continue
+                    source_lang = str(item.get("source_lang") or "auto")
+                    target_lang = str(item.get("target_lang") or "")
+                    value = str(item.get("text") or "")
+                    translated = str(item.get("translated") or "")
+                    detected = str(item.get("detected") or source_lang)
+                    if target_lang and value and translated:
+                        TRANSLATE_CACHE[(source_lang, target_lang, value)] = (translated, detected)
+                        fresh_data[str(key)] = item
+                if len(fresh_data) != len(data):
+                    TRANSLATE_CACHE_FILE.write_text(json.dumps(fresh_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        TRANSLATE_CACHE_LOADED = True
+
+
+def clear_translation_cache() -> None:
+    global TRANSLATE_CACHE_LOADED
+    with TRANSLATE_CACHE_LOCK:
+        TRANSLATE_CACHE.clear()
+        TRANSLATE_CACHE_LOADED = True
+        try:
+            TRANSLATE_CACHE_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def start_translation_cache_cleanup() -> None:
+    load_translation_cache()
+
+    def cleanup_loop() -> None:
+        while True:
+            time.sleep(TRANSLATE_CACHE_TTL_SECONDS)
+            clear_translation_cache()
+
+    threading.Thread(target=cleanup_loop, daemon=True).start()
+
+
+def save_translation_cache_item(source_lang: str, target_lang: str, text: str, translated: str, detected: str) -> None:
+    with TRANSLATE_CACHE_LOCK:
+        try:
+            if TRANSLATE_CACHE_FILE.exists():
+                data = json.loads(TRANSLATE_CACHE_FILE.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            else:
+                data = {}
+            data[translation_cache_id(source_lang, target_lang, text)] = {
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "text": text,
+                "translated": translated,
+                "detected": detected,
+                "updated_at": dt.datetime.now(dt.UTC).isoformat(),
+            }
+            TRANSLATE_CACHE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+
+def cached_translation(text: str, target_lang: str, source_lang: str = "auto") -> tuple[str, str] | None:
+    value = clean_text(text)
+    if not value:
+        return None
+    load_translation_cache()
+    return TRANSLATE_CACHE.get((source_lang, target_lang, value))
+
+
 LANG_LABELS = {
     "zh": "中文",
     "zh-CN": "中文",
@@ -214,6 +317,7 @@ def google_translate(text: str, target_lang: str, source_lang: str = "auto") -> 
         return "", ""
     if target_lang in {"zh", "zh-CN"} and heuristic_language(value) in {"zh", "zh-CN"}:
         return value, "zh-CN"
+    load_translation_cache()
     cache_key = (source_lang, target_lang, value)
     if cache_key in TRANSLATE_CACHE:
         return TRANSLATE_CACHE[cache_key]
@@ -233,6 +337,7 @@ def google_translate(text: str, target_lang: str, source_lang: str = "auto") -> 
     except Exception:
         result = (value, heuristic_language(value) or source_lang)
     TRANSLATE_CACHE[cache_key] = result
+    save_translation_cache_item(source_lang, target_lang, value, result[0], result[1])
     return result
 
 
@@ -290,15 +395,20 @@ def translate_incoming_html(text: str, message_id: Any, should_translate: bool =
     if not should_translate or source_lang in {"zh", "zh-CN"} or not should_translate_text(text):
         return message_text_html(text, allow_save=not should_translate)
     message_key = h(message_id or hashlib.sha1(text.encode("utf-8")).hexdigest()[:12])
+    cached = cached_translation(text, "zh-CN")
+    pending = "0" if cached else "1"
+    translated_text = cached[0] if cached else "&#32763;&#35793;&#20013;..."
+    label = lang_label(cached[1] if cached else source_lang or "auto")
+    translated_html = h(translated_text) if cached else translated_text
     return (
-        f"<div class='translated-message' id='msg-{message_key}' data-pending='1'>"
-        f"<div class='translated-text'>&#32763;&#35793;&#20013;...</div>"
+        f"<div class='translated-message' id='msg-{message_key}' data-pending='{pending}'>"
+        f"<div class='translated-text'>{translated_html}</div>"
         f"<div class='original-inline'>&#21407;&#25991;&#65306;{h(text)}</div>"
         f"<div class='original-text' hidden>{h(text)}</div>"
         f"<div class='message-actions'>"
         f"<button class='toggle-original' type='button'>&#26597;&#30475;&#21407;&#25991;</button>"
         f"{save_common_phrase_button(text)}"
-        f"<span class='translation-label'>{h(lang_label(source_lang or 'auto'))} → &#20013;&#25991;</span>"
+        f"<span class='translation-label'>{h(label)} → &#20013;&#25991;</span>"
         f"</div>"
         f"</div>"
     )
@@ -923,7 +1033,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 
 .messages-layout{height:calc(100vh - 116px)}
 .conversation-list-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 14px 12px;box-shadow:0 1px 0 #eef2f7}
-.conversation-list-title{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:10px}.conversation-list-title h2{margin:0;font-size:28px;line-height:1}.conversation-counts{font-size:12px;color:#64748b;text-align:right;white-space:nowrap}.conversation-search{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;padding:9px 10px;margin-bottom:10px;background:#f8fafc}.conversation-filters{display:flex;gap:8px;flex-wrap:wrap}.conversation-filter{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;cursor:pointer}.conversation-filter.active{background:#1f7acb;color:#fff;border-color:#1f7acb}.conversation-item[hidden]{display:none}.conversation-empty-filter{display:none;padding:28px 16px;color:#64748b;text-align:center}.conversation-empty-filter.visible{display:block}.conversation-section{padding:14px 14px 7px;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:#f8fafc;border-bottom:1px solid #eef2f7}.conversation-section[hidden]{display:none}.chat-bubble{word-break:break-word}.conversation-body{scroll-behavior:smooth}.reply-editor{border-top:1px solid #e5e7eb;background:#fbfdff}.reply-editor textarea{min-height:84px}
+.conversation-list-title{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:10px}.conversation-list-title h2{margin:0;font-size:28px;line-height:1}.conversation-counts{font-size:12px;color:#64748b;text-align:right;white-space:nowrap}.conversation-search{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;padding:9px 10px;margin-bottom:10px;background:#f8fafc}.conversation-filters{display:flex;gap:8px;flex-wrap:wrap}.conversation-filter{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;cursor:pointer}.conversation-filter.active{background:#1f7acb;color:#fff;border-color:#1f7acb}.conversation-item[hidden]{display:none}.conversation-empty-filter{display:none;padding:28px 16px;color:#64748b;text-align:center}.conversation-empty-filter.visible{display:block}.conversation-section{padding:14px 14px 7px;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:#f8fafc;border-bottom:1px solid #eef2f7}.conversation-section[hidden]{display:none}.chat-bubble{word-break:break-word}.conversation-body{scroll-behavior:smooth}.reply-editor{border-top:1px solid #e5e7eb;background:#fbfdff}.reply-editor textarea{min-height:84px}.pending-send .chat-bubble{opacity:.75}.pending-send.send-failed .chat-bubble{background:#fee2e2;color:#991b1b}
 
 .platform-badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:900;background:#e0f2fe;color:#075985}.platform-badge.ggsel{background:#fef3c7;color:#92400e}.sales-source{white-space:nowrap}.ggsel-readonly-note{background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 10px;color:#9a3412;font-size:13px;font-weight:700}
 .sales-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sales-toolbar input{max-width:90px}.sales-toolbar .sales-search{flex:1 1 260px;max-width:420px}.sales-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}.sales-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px}.sales-stat b{display:block;font-size:20px;margin-bottom:4px}.sales-table .order-link{font-weight:800}.sales-table .chat-action{display:inline-block;background:#1f7acb;color:#fff;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800}.sales-table tbody tr[hidden]{display:none}.sales-product{max-width:360px}.sales-empty-filter{display:none;padding:24px;text-align:center;color:#64748b}.sales-empty-filter.visible{display:block}
@@ -2475,10 +2585,33 @@ class Handler(BaseHTTPRequestHandler):
               addFiles(event.dataTransfer.files);
             }});
           }});
-          root.addEventListener('submit', () => {{
+          root.addEventListener('submit', async (event) => {{
+            event.preventDefault();
             const button = root.querySelector('button[type="submit"]');
+            const originalText = button.textContent;
             button.disabled = true;
             button.textContent = '\u53d1\u9001\u4e2d...';
+            const body = root.closest('.conversation-panel')?.querySelector('.conversation-body');
+            const pending = document.createElement('div');
+            pending.className = 'chat-row seller pending-send';
+            const text = textarea.value.trim();
+            pending.innerHTML = '<div class="chat-meta"><span class="chat-author">nose1989 <span class="muted">\u53d1\u9001\u4e2d...</span></span></div><div class="chat-bubble"></div>';
+            pending.querySelector('.chat-bubble').textContent = text || '\u9644\u4ef6\u6b63\u5728\u53d1\u9001...';
+            if (body) {{
+              body.appendChild(pending);
+              body.scrollTop = body.scrollHeight;
+            }}
+            try {{
+              const res = await fetch(root.action, {{method: 'POST', body: new FormData(root), redirect: 'follow'}});
+              if (!res.ok) throw new Error(`HTTP ${{res.status}}`);
+              location.href = res.url || location.href;
+            }} catch (error) {{
+              pending.classList.add('send-failed');
+              const meta = pending.querySelector('.muted');
+              if (meta) meta.textContent = '\u53d1\u9001\u5931\u8d25';
+              button.disabled = false;
+              button.textContent = originalText;
+            }}
           }});
         }})();
         </script>
@@ -4090,6 +4223,7 @@ def main() -> None:
     start_auto_reload()
     start_online_keepalive()
     start_chat_keepalive_browser()
+    start_translation_cache_cleanup()
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Digiseller admin running at http://{host}:{port}")
     print("Open the page and click the alerts button to allow sound/voice notifications.")
