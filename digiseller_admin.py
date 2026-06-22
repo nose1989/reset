@@ -298,6 +298,7 @@ PRODUCT_BRANDS = [
     ("elevenlabs", "ElevenLabs", "11", "https://www.google.com/s2/favicons?domain=elevenlabs.io&sz=64", "#ffffff"),
     ("sora", "Sora", "S", "https://www.google.com/s2/favicons?domain=openai.com&sz=64", "#ffffff"),
 ]
+CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
 def lang_label(lang: str) -> str:
@@ -310,12 +311,20 @@ def heuristic_language(text: str) -> str:
         return ""
     if re.search(r"[\u0400-\u04ff]", value):
         return "ru"
-    if re.search(r"[\u4e00-\u9fff]", value):
+    if CHINESE_TEXT_RE.search(value):
         return "zh-CN"
     latin = len(re.findall(r"[A-Za-z]", value))
     if latin >= 3:
         return "en"
     return ""
+
+
+def has_chinese_text(text: str) -> bool:
+    return bool(CHINESE_TEXT_RE.search(clean_text(text)))
+
+
+def should_translate_outgoing_message(text: str, target_lang: str) -> bool:
+    return target_lang not in {"zh", "zh-CN"} and has_chinese_text(text)
 
 
 def protect_tokens(text: str) -> tuple[str, list[str]]:
@@ -3139,7 +3148,7 @@ class Handler(BaseHTTPRequestHandler):
                 uploads.extend(phrase_upload_items(phrase))
         if not message and not uploads:
             raise RuntimeError("Type a message or choose at least one file")
-        if message and target_lang not in {"zh", "zh-CN"} and heuristic_language(message) in {"zh", "zh-CN"}:
+        if message and should_translate_outgoing_message(message, target_lang):
             message, _ = google_translate(message, target_lang, "zh-CN")
         if platform == "ggsel":
             ggsel_client.send_chat_message(order_id, message, uploads)
