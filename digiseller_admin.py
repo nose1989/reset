@@ -950,6 +950,10 @@ class GgselClient:
         data = self.get("/seller-last-sales", {"top": min(max(top, 1), 100)})
         return data if isinstance(data, dict) else {"sales": data}
 
+    def purchase_info(self, invoice_id: int) -> dict[str, Any]:
+        data = self.get(f"/purchase/info/{urllib.parse.quote(str(invoice_id), safe='')}")
+        return data if isinstance(data, dict) else {}
+
     def chats(self, page_size: int = 20, page: int = 1, only_unread: bool = False) -> dict[str, Any]:
         params: dict[str, Any] = {"pagesize": min(max(page_size, 1), 100), "page": max(page, 1)}
         if only_unread:
@@ -2042,24 +2046,102 @@ def cached_ggsel_order_info(order_id: int) -> dict[str, Any]:
         return cached[1]
     info: dict[str, Any] = {}
     try:
-        rows = ggsel_client.sales(100).get("sales") or []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            row_id = str(row.get("invoice_id") or row.get("id_i") or row.get("id") or "")
-            if row_id == str(order_id):
-                info = row
-                break
+        info = ggsel_client.purchase_info(order_id)
     except Exception:
         info = {}
+    if not info:
+        try:
+            rows = ggsel_client.sales(100).get("sales") or []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                row_id = str(row.get("invoice_id") or row.get("id_i") or row.get("id") or "")
+                if row_id == str(order_id):
+                    info = row
+                    break
+        except Exception:
+            info = {}
     GGSEL_ORDER_INFO_CACHE[order_id] = (now, info)
     return info
+
+
+def ggsel_order_product_name_from_info(info: dict[str, Any]) -> str:
+    containers: list[dict[str, Any]] = []
+    for value in (info, info.get("content"), info.get("product"), info.get("sale")):
+        if isinstance(value, dict):
+            containers.append(value)
+    for container in containers:
+        for key in ("name", "product_name", "name_goods", "title"):
+            product = clean_text(container.get(key))
+            if product:
+                return product
+        product = container.get("product")
+        if isinstance(product, dict):
+            for key in ("name", "product_name", "name_goods", "title"):
+                product_name = clean_text(product.get(key))
+                if product_name:
+                    return product_name
+    return ""
+
+
+def ggsel_order_product_name(order_id: int, fallback: Any = "") -> str:
+    product = ggsel_order_product_name_from_info(cached_ggsel_order_info(order_id))
+    if product:
+        return product
+    fallback_text = clean_text(fallback)
+    return fallback_text or "GGSEL order"
+
+
+def ggsel_order_product_id_from_info(info: dict[str, Any]) -> str:
+    containers: list[dict[str, Any]] = []
+    for value in (info, info.get("content"), info.get("product"), info.get("sale")):
+        if isinstance(value, dict):
+            containers.append(value)
+    for container in containers:
+        for key in ("item_id", "product_id", "id_goods", "id", "good"):
+            product_id = clean_text(container.get(key))
+            if product_id:
+                return product_id
+        product = container.get("product")
+        if isinstance(product, dict):
+            for key in ("id", "product_id", "id_goods", "good"):
+                product_id = clean_text(product.get(key))
+                if product_id:
+                    return product_id
+    return ""
+
+
+def ggsel_order_product_id(order_id: int, fallback: Any = "") -> str:
+    product_id = ggsel_order_product_id_from_info(cached_ggsel_order_info(order_id))
+    if product_id:
+        return product_id
+    fallback_text = clean_text(fallback)
+    return fallback_text or str(order_id)
+
+
+def ggsel_order_buyer_email_from_info(info: dict[str, Any]) -> str:
+    content = info.get("content")
+    content_buyer = content.get("buyer_info") if isinstance(content, dict) else None
+    for value in (info.get("buyer_info"), content_buyer, content):
+        if isinstance(value, dict):
+            email = clean_text(value.get("email") or value.get("buyer_email"))
+            if email:
+                return email
+    return clean_text(info.get("email") or info.get("buyer_email"))
+
+
+def ggsel_order_buyer_email(order_id: int, fallback: Any = "") -> str:
+    email = ggsel_order_buyer_email_from_info(cached_ggsel_order_info(order_id))
+    if email:
+        return email
+    fallback_text = clean_text(fallback)
+    return fallback_text or f"ggsel-{order_id}"
 
 
 def ggsel_order_options_html(order_id: int, selected_chat: dict[str, Any]) -> str:
     options: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for source in (selected_chat, cached_ggsel_order_info(order_id)):
+    for source in (cached_ggsel_order_info(order_id), selected_chat):
         for item in purchase_options_from_info(source):
             if item in seen:
                 continue
@@ -2965,15 +3047,18 @@ class Handler(BaseHTTPRequestHandler):
             ])
         chat_rows = []
         for chat in chats_data.get("items") or chats_data.get("chats") or []:
-            product_id = chat.get("product") or chat.get("id_goods")
-            product_url = ggsel_client.product_url(product_id)
             invoice_id = chat.get("id_i") or chat.get("invoice_id")
-            product_name = f"GGSEL product {product_id}" if product_id else "GGSEL order"
-            chat_href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(invoice_id or ""), "email": str(chat.get("email") or f"ggsel-{invoice_id}"), "product": product_name})
+            order_id = int(invoice_id or 0)
+            raw_product = chat.get("product") or chat.get("id_goods")
+            product_id = ggsel_order_product_id(order_id, raw_product) if order_id else clean_text(raw_product)
+            product_url = ggsel_client.product_url(product_id)
+            product_name = ggsel_order_product_name(order_id, raw_product) if order_id else "GGSEL order"
+            email = ggsel_order_buyer_email(order_id, chat.get("email") or f"ggsel-{invoice_id}") if order_id else str(chat.get("email") or f"ggsel-{invoice_id}")
+            chat_href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(invoice_id or ""), "email": email, "product": product_name})
             chat_rows.append([
                 h(chat.get("last_message") or chat.get("date")),
                 f"<a class='order-link' href='{h(chat_href)}'>{h(invoice_id)}</a>",
-                h(chat.get("email") or ""),
+                h(email),
                 f"<a href='{h(product_url)}' target='_blank'>{h(product_id)}</a>" if product_url else h(product_id),
                 h(chat.get("cnt_new") or ""),
             ])
@@ -3703,15 +3788,15 @@ class Handler(BaseHTTPRequestHandler):
             order_id = int(chat.get("id_i") or 0)
             if not order_id:
                 continue
+            product = ggsel_order_product_name(order_id, chat.get("product") or "GGSEL order")
+            email = ggsel_order_buyer_email(order_id, chat.get("email") or f"ggsel-{order_id}")
             if selected_kind == "order" and selected_platform == "ggsel" and order_id == selected_order:
-                selected_chat = {"id_i": order_id, "email": chat.get("email") or f"ggsel-{order_id}", "product": chat.get("product") or "GGSEL order", "platform": "ggsel"}
-            email = str(chat.get("email") or f"ggsel-{order_id}")
+                selected_chat = {"id_i": order_id, "email": email, "product": product, "platform": "ggsel"}
             name = email.split("@", 1)[0] or email
             initials = "GG"
             raw_unread = int(chat.get("cnt_new") or 0)
             unread = 0 if selected_kind == "order" and selected_platform == "ggsel" and order_id == selected_order else raw_unread
             active = " active" if selected_kind == "order" and selected_platform == "ggsel" and order_id == selected_order else ""
-            product = chat.get("product") or "GGSEL order"
             preview = str(product or "")
             avatar = product_avatar_html(product, initials)
             when = str(chat.get("last_message") or "")
@@ -3730,10 +3815,15 @@ class Handler(BaseHTTPRequestHandler):
         items.extend(html for _, html in sorted(order_items, key=lambda item: item[0], reverse=True))
 
         if selected_kind == "order" and selected_order and selected_chat is None:
+            fallback_email = self.q("email", f"order-{selected_order}")
+            fallback_product = self.q("product", "Direct order lookup")
+            if selected_platform == "ggsel":
+                fallback_email = ggsel_order_buyer_email(selected_order, fallback_email)
+                fallback_product = ggsel_order_product_name(selected_order, fallback_product)
             selected_chat = {
                 "id_i": selected_order,
-                "email": self.q("email", f"order-{selected_order}"),
-                "product": self.q("product", "Direct order lookup"),
+                "email": fallback_email,
+                "product": fallback_product,
                 "platform": selected_platform,
             }
             email = str(selected_chat.get("email") or f"order-{selected_order}")
