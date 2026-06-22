@@ -149,7 +149,7 @@ def translation_cache_id(source_lang: str, target_lang: str, text: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def translation_cache_is_fresh(updated_at: Any) -> bool:
+def translation_cache_is_fresh(updated_at: object) -> bool:
     try:
         updated = dt.datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
     except ValueError:
@@ -166,7 +166,7 @@ def load_translation_cache() -> None:
     with TRANSLATE_CACHE_LOCK:
         if TRANSLATE_CACHE_LOADED:
             return
-        fresh_data: dict[str, Any] = {}
+        fresh_data: dict[str, object] = {}
         if TRANSLATE_CACHE_FILE.exists():
             try:
                 data = json.loads(TRANSLATE_CACHE_FILE.read_text(encoding="utf-8"))
@@ -193,7 +193,7 @@ def prune_translation_cache() -> None:
     global TRANSLATE_CACHE_LOADED
     with TRANSLATE_CACHE_LOCK:
         fresh_cache: dict[tuple[str, str, str], tuple[str, str]] = {}
-        fresh_data: dict[str, Any] = {}
+        fresh_data: dict[str, object] = {}
         if TRANSLATE_CACHE_FILE.exists():
             try:
                 data = json.loads(TRANSLATE_CACHE_FILE.read_text(encoding="utf-8"))
