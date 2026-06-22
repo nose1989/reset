@@ -32,6 +32,7 @@ GGSEL_PARTNER_ID=
 GGSEL_KEEP_ONLINE=1
 GGSEL_ONLINE_VALUE=1
 GGSEL_ONLINE_VERIFY_TYPE=seller
+FUNPAY_GOLDEN_KEY=PUT_YOUR_FUNPAY_GOLDEN_KEY_COOKIE_HERE
 ```
 
 If any API key was pasted into chat or exposed publicly, rotate it in the provider dashboard before saving it in `.env`.
@@ -69,6 +70,10 @@ http://127.0.0.1:8765
 - `GGSEL_ONLINE_VALUE` / `GGSEL_ONLINE_VERIFY_TYPE`: override the GGSEL online setting value and verification corr type.
 
 The page also exposes `/api/ggsel-products?page=1&count=50&q=` JSON for wiring GGSEL data into other admin modules.
+
+## FunPay chat integration
+
+`/chats` also reads `FUNPAY_GOLDEN_KEY` from `.env` and lists recent FunPay conversations alongside Digiseller/GGSEL chats. FunPay replies are sent through the logged-in web session. Attachments and stock replenishment are not supported for FunPay replies yet.
 
 ## Alerts and keepalive
 
