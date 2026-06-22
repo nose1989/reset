@@ -834,6 +834,13 @@ class GgselClient:
         messages.sort(key=lambda item: sort_time(item.get("date_written")))
         return messages
 
+    def send_chat_message(self, order_id: int, message: str, uploads: list[UploadItem]) -> None:
+        if uploads:
+            raise RuntimeError("GGSEL replies do not support attachments from this admin yet")
+        data = self.post("/debates/v2", json_body={"message": message}, params={"id_i": order_id})
+        if isinstance(data, dict) and data.get("retval") not in (None, 0, "0"):
+            raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL send failed: {data}")
+
     def reviews(self, count: int = 20, page: int = 1, review_type: str = "all") -> dict[str, Any]:
         data = self.get("/reviews", {"type": review_type, "page": max(page, 1), "count": min(max(count, 1), 100)})
         return data if isinstance(data, dict) else {"reviews": data}
@@ -2232,8 +2239,8 @@ class Handler(BaseHTTPRequestHandler):
             fields = {key: values[0] for key, values in parsed.items() if values}
         return fields, uploads
 
-    def reply_editor(self, order_id: int, target_lang: str) -> str:
-        editor_id = f"reply-{order_id}"
+    def reply_editor(self, order_id: int, target_lang: str, platform: str = "digiseller") -> str:
+        editor_id = f"reply-{platform}-{order_id}"
         phrase_forms = []
         for phrase in load_common_phrases():
             text = str(phrase.get("text") or "")
@@ -2260,6 +2267,7 @@ class Handler(BaseHTTPRequestHandler):
             phrase_forms.append(
                 f"<form class='common-phrase-card' method='post' action='/chats/send'>"
                 f"<input type='hidden' name='order_id' value='{order_id}'>"
+                f"<input type='hidden' name='platform' value='{h(platform)}'>"
                 f"<input type='hidden' name='target_lang' value='{h(target_lang)}'>"
                 f"<input type='hidden' name='phrase_id' value='{h(phrase['id'])}'>"
                 f"{previews_html}"
@@ -2276,6 +2284,7 @@ class Handler(BaseHTTPRequestHandler):
         return f"""
         <form id="{editor_id}" class="reply-editor" method="post" action="/chats/send" enctype="multipart/form-data">
           <input type="hidden" name="order_id" value="{order_id}">
+          <input type="hidden" name="platform" value="{h(platform)}">
           <input type="hidden" name="target_lang" value="{h(target_lang)}">
           <textarea id="{editor_id}-message" name="message" placeholder="&#22312;&#36825;&#37324;&#22238;&#22797;&#20250;&#21592;&#20449;&#24687;&#65292;&#21487;&#22635;&#20889;&#36134;&#21495;&#12289;&#23494;&#30721;&#12289;&#38142;&#25509;&#12289;&#20351;&#29992;&#35828;&#26126;&#31561;&#12290;"></textarea>
           <div class="reply-actions">
@@ -2566,6 +2575,7 @@ class Handler(BaseHTTPRequestHandler):
         message = fields.get("message", "").strip()
         phrase_id = fields.get("phrase_id", "").strip()
         target_lang = fields.get("target_lang", "").strip() or "en"
+        platform = fields.get("platform", "digiseller").strip() or "digiseller"
         if not order_id:
             raise RuntimeError("Order ID is missing")
         if phrase_id:
@@ -2578,6 +2588,10 @@ class Handler(BaseHTTPRequestHandler):
             raise RuntimeError("Type a message or choose at least one file")
         if message and target_lang not in {"zh", "zh-CN"} and heuristic_language(message) in {"zh", "zh-CN"}:
             message, _ = google_translate(message, target_lang, "zh-CN")
+        if platform == "ggsel":
+            ggsel_client.send_chat_message(order_id, message, uploads)
+            self.redirect(f"/chats?platform=ggsel&order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
+            return
         client.send_chat_message(order_id, message, uploads)
         self.redirect(f"/chats?order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
 
@@ -3245,7 +3259,7 @@ class Handler(BaseHTTPRequestHandler):
         header = (
             f"<div class='conversation-header-main'><div class='conversation-header-title'>{h(buyer_name)}</div>"
             f"<div class='muted'>GGSEL Order {h(selected_order)} · {h(short(product, 110))} · Messages loaded: {len(selected_messages)} · Reply language: {h(lang_label(buyer_lang))}</div></div>"
-            "<div class='conversation-header-side'><div class='ggsel-readonly-note'>GGSEL messages are shown here; reply from GGSEL seller backend for now.</div></div>"
+            "<div class='conversation-header-side'><div class='ggsel-readonly-note'>GGSEL messages are shown here; replies are sent through GGSEL API.</div></div>"
         )
         rows = []
         total_messages = len(selected_messages)
@@ -3270,7 +3284,10 @@ class Handler(BaseHTTPRequestHandler):
             )
         if not rows:
             rows.append("<div class='empty-state'>No GGSEL messages loaded</div>")
-        return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-platform='ggsel' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{''.join(rows)}</div></div>"
+        notice = ""
+        if self.q("sent") == "1":
+            notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
+        return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-platform='ggsel' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang, platform='ggsel')}</div>"
 
     def api_chat_panel(self) -> None:
         if self.q("kind") == "guest":
@@ -3427,7 +3444,7 @@ class Handler(BaseHTTPRequestHandler):
             unread = 0 if selected_kind == "order" and selected_platform == "ggsel" and order_id == selected_order else raw_unread
             active = " active" if selected_kind == "order" and selected_platform == "ggsel" and order_id == selected_order else ""
             product = chat.get("product") or "GGSEL order"
-            preview = f"GGSEL · {product}"
+            preview = str(product or "")
             avatar = product_avatar_html(product, initials)
             when = str(chat.get("last_message") or "")
             short_when = when[11:16] if len(when) >= 16 and "-" in when[:10] else when[-5:]
@@ -3438,7 +3455,7 @@ class Handler(BaseHTTPRequestHandler):
                 sort_time(when),
                 f"<a class='conversation-item{active}' data-kind='order' data-platform='ggsel' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{order_id}' data-email='{h(email)}' data-product='{h(product)}' href='{h(href)}'>"
                 f"{avatar}"
-                f"<div><div class='conversation-name'><span class='platform-badge ggsel'>GGSEL</span> {h(name)}</div>"
+                f"<div><div class='conversation-name'>{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 f"<div class='conversation-time'>{h(short_when)}{badge}</div></a>"
             ))
@@ -3455,15 +3472,14 @@ class Handler(BaseHTTPRequestHandler):
             name = email.split("@", 1)[0] or email
             initials = "GG" if selected_platform == "ggsel" else (name[:1] or "?").upper()
             product = selected_chat.get("product")
-            preview = ("GGSEL · " if selected_platform == "ggsel" else "") + short(product, 80)
+            preview = short(product, 80)
             href = ("/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(selected_order), "email": email, "product": str(product or "")})) if selected_platform == "ggsel" else order_chat_href(selected_order, email, product)
             search_text = " ".join([selected_platform, str(selected_order), email, str(product or ""), name]).lower()
-            badge_html = "<span class='platform-badge ggsel'>GGSEL</span> " if selected_platform == "ggsel" else ""
             items.insert(
                 0,
                 f"<a class='conversation-item active' data-kind='order' data-platform='{h(selected_platform)}' data-has-unread='0' data-search='{h(search_text)}' data-order-id='{selected_order}' data-email='{h(email)}' data-product='{h(product)}' href='{h(href)}'>"
                 f"{product_avatar_html(product, initials)}"
-                f"<div><div class='conversation-name'>{badge_html}{h(name)}</div>"
+                f"<div><div class='conversation-name'>{h(name)}</div>"
                 f"<div class='preview'>{h(short(preview, 70))}</div></div>"
                 "<div class='conversation-time'>new</div></a>",
             )
@@ -3711,23 +3727,16 @@ class Handler(BaseHTTPRequestHandler):
         </script>
         """
         unread_total = order_unread_total + guest_unread_total
+        order_total = len(chats) + len(ggsel_chats)
         list_header = f"""
         <div class='conversation-list-header'>
           <div class='conversation-list-title'>
             <h2>Messages</h2>
-            <div class='conversation-counts'>{len(chats)} Digiseller · {len(ggsel_chats)} GGSEL · {len(guest_chats)} guests · {unread_total} unread</div>
-          </div>
-          <input id='conversation-search' class='conversation-search' placeholder='Search order, buyer, product...' autocomplete='off'>
-          <div class='conversation-filters'>
-            <button class='conversation-filter active' type='button' data-filter='all'>All</button>
-            <button class='conversation-filter' type='button' data-filter='unread'>Unread</button>
-            <button class='conversation-filter' type='button' data-filter='orders'>Orders</button>
-            <button class='conversation-filter' type='button' data-filter='ggsel'>GGSEL</button>
-            <button class='conversation-filter' type='button' data-filter='guest'>Guests</button>
+            <div class='conversation-counts'>{order_total} orders · {len(guest_chats)} guests · {unread_total} unread</div>
           </div>
         </div>
         """
-        body = f"<div class='messages-layout'><div id='conversation-list' class='conversation-list'>{list_header}{''.join(items)}<div id='conversation-empty-filter' class='conversation-empty-filter'>No matching conversations</div></div>{panel}</div>{ajax}"
+        body = f"<div class='messages-layout'><div id='conversation-list' class='conversation-list'>{list_header}{''.join(items)}</div>{panel}</div>{ajax}"
         self.send_html("Messages", body)
 
     def chat(self) -> None:
