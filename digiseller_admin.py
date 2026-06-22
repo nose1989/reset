@@ -49,7 +49,7 @@ COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.13-ggsel-admin"
+APP_VERSION = "v8.14-ggsel-stock-send"
 
 
 @dataclass
@@ -883,6 +883,8 @@ class GgselClient:
         self.seller_id = os.getenv("GGSEL_SELLER_ID", "").strip()
         self.api_key = os.getenv("GGSEL_API_KEY", "").strip()
         self.api_base = os.getenv("GGSEL_API_BASE", "https://seller.ggsel.com/api_sellers/api").strip().rstrip("/")
+        self.seller_cookie = os.getenv("GGSEL_SELLER_COOKIE", os.getenv("GGSEL_COOKIE", "")).strip()
+        self.seller_office_base = os.getenv("GGSEL_SELLER_OFFICE_BASE", "https://seller.ggsel.com").strip().rstrip("/")
         self.http = httpx.Client(timeout=35, headers={"Accept": "application/json", "User-Agent": "Digiseller Local Admin"})
         self._token: str | None = None
         self.valid_thru: str | None = None
@@ -1106,6 +1108,83 @@ class GgselClient:
         if not product_id:
             return ""
         return f"https://ggsel.net/en/catalog/product/{urllib.parse.quote(str(product_id))}"
+
+    def seller_office_configured(self) -> bool:
+        return bool(self.seller_cookie)
+
+    def seller_office_request(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> Any:
+        if not self.seller_cookie:
+            raise RuntimeError("GGSEL_SELLER_COOKIE is missing. Put the seller login cookie in .env to send stock items.")
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "Digiseller Local Admin",
+            "Cookie": self.seller_cookie,
+            "Origin": self.seller_office_base,
+            "Referer": f"{self.seller_office_base}/en/offers",
+        }
+        r = self.http.request(
+            method,
+            self.seller_office_base + path,
+            params=params or {},
+            json=json_body,
+            headers=headers,
+            follow_redirects=True,
+        )
+        if r.status_code in (401, 403):
+            raise RuntimeError("GGSEL seller cookie is missing or expired")
+        if r.status_code >= 400:
+            raise RuntimeError(f"GGSEL seller office HTTP {r.status_code}: {short(r.text, 400)}")
+        if not r.content:
+            return {}
+        content_type = r.headers.get("content-type", "")
+        if "json" not in content_type.lower():
+            raise RuntimeError(f"GGSEL seller office returned non-JSON from {path}: {short(r.text, 400)}")
+        return r.json()
+
+    def seller_office_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        return self.seller_office_request("GET", path, params=params)
+
+    def seller_office_delete(self, path: str) -> None:
+        self.seller_office_request("DELETE", path)
+
+    def seller_office_offer_by_ggsel_id(self, ggsel_product_id: Any) -> dict[str, Any]:
+        data = self.seller_office_get(f"/api/v1/offers/ggsel/{urllib.parse.quote(str(ggsel_product_id), safe='')}")
+        offer = data.get("data") if isinstance(data, dict) else None
+        return offer if isinstance(offer, dict) else {}
+
+    def seller_office_search_offer(self, query: str) -> dict[str, Any]:
+        search = clean_text(query)
+        if not search:
+            return {}
+        data = self.seller_office_get("/api/v1/offers", {"search": search, "page": 1, "limit": 20})
+        rows = data.get("data") if isinstance(data, dict) else []
+        if not isinstance(rows, list):
+            return {}
+        normalized_search = search.casefold()
+        best = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            title = clean_text(row.get("title"))
+            normalized_title = title.casefold()
+            if normalized_title == normalized_search:
+                return row
+            if not best and (normalized_search in normalized_title or normalized_title in normalized_search):
+                best = row
+        return best if isinstance(best, dict) else {}
+
+    def seller_office_offer_products(self, offer_id: int, page: int = 1, limit: int = 20) -> dict[str, Any]:
+        data = self.seller_office_get(f"/api/v1/offers/{offer_id}/products", {"page": page, "limit": limit})
+        return data if isinstance(data, dict) else {}
+
+    def seller_office_delete_product(self, offer_id: int, product_id: int) -> None:
+        self.seller_office_delete(f"/api_seller_office/v1/offers/{offer_id}/products/{product_id}")
 
 
 client = DigisellerClient()
@@ -2283,6 +2362,43 @@ def ggsel_order_product_id(order_id: int, fallback: Any = "") -> str:
     return fallback_text or str(order_id)
 
 
+def ggsel_seller_office_offer_for_order(order_id: int, fallback_product: Any = "") -> dict[str, Any]:
+    product_id = ggsel_order_product_id(order_id, fallback_product)
+    if looks_like_ggsel_product_id(product_id):
+        try:
+            offer = ggsel_client.seller_office_offer_by_ggsel_id(product_id)
+        except Exception:
+            offer = {}
+        if offer:
+            return offer
+    product_name = ggsel_order_product_name(order_id, fallback_product)
+    return ggsel_client.seller_office_search_offer(product_name)
+
+
+def ggsel_send_stock_item_to_chat(order_id: int, fallback_product: Any = "") -> dict[str, Any]:
+    offer = ggsel_seller_office_offer_for_order(order_id, fallback_product)
+    offer_id = int(offer.get("id") or 0)
+    if not offer_id:
+        raise RuntimeError("Could not match this GGSEL order to a seller-office offer")
+    products_data = ggsel_client.seller_office_offer_products(offer_id, page=1, limit=20)
+    products = products_data.get("data") if isinstance(products_data, dict) else []
+    if not isinstance(products, list) or not products:
+        raise RuntimeError("No stock items are available for this GGSEL offer")
+    stock_item = next((item for item in products if isinstance(item, dict) and clean_text(item.get("value"))), None)
+    if not stock_item:
+        raise RuntimeError("No usable stock item value is available for this GGSEL offer")
+    stock_item_id = int(stock_item.get("id") or 0)
+    if not stock_item_id:
+        raise RuntimeError("Stock item ID is missing")
+    message = clean_text(stock_item.get("value"))
+    ggsel_client.send_chat_message(order_id, message, [])
+    try:
+        ggsel_client.seller_office_delete_product(offer_id, stock_item_id)
+    except Exception as exc:
+        raise RuntimeError(f"Stock item was sent, but removing it from GGSEL stock failed: {exc}") from exc
+    return {"offer_id": offer_id, "stock_item_id": stock_item_id, "product": clean_text(offer.get("title"))}
+
+
 def ggsel_order_buyer_email_from_info(info: dict[str, Any]) -> str:
     content = info.get("content")
     content_buyer = content.get("buyer_info") if isinstance(content, dict) else None
@@ -2778,8 +2894,20 @@ class Handler(BaseHTTPRequestHandler):
             fields = {key: values[0] for key, values in parsed.items() if values}
         return fields, uploads
 
-    def reply_editor(self, order_id: int, target_lang: str, platform: str = "digiseller") -> str:
+    def reply_editor(self, order_id: int, target_lang: str, platform: str = "digiseller", email: str = "", product: str = "") -> str:
         editor_id = f"reply-{platform}-{order_id}"
+        stock_button = ""
+        if platform == "ggsel":
+            stock_button = (
+                f"<button type='submit' formaction='/chats/send-stock' formmethod='post' "
+                f"onclick=\""
+                f"if (!confirm('\\u7b2c\\u4e00\\u6b65\\uff1a\\u786e\\u5b9a\\u53d1\\u9001\\u4e00\\u6761\\u5e93\\u5b58\\u5546\\u54c1\\u7ed9\\u4e70\\u5bb6\\uff1f\\u53d1\\u9001\\u6210\\u529f\\u540e\\u4f1a\\u4ece GGSEL \\u5e93\\u5b58\\u5220\\u9664\\u3002')) return false;"
+                f"const stockAnswer = prompt('\\u7b2c\\u4e8c\\u6b65\\uff1a\\u8bf7\\u8f93\\u5165\\u8ba2\\u5355\\u53f7 {order_id} \\u786e\\u8ba4\\u53d1\\u9001');"
+                f"if (stockAnswer !== '{order_id}') {{ alert('\\u8ba2\\u5355\\u53f7\\u4e0d\\u5339\\u914d\\uff0c\\u5df2\\u53d6\\u6d88\\u53d1\\u9001\\u3002'); return false; }}"
+                f"document.getElementById('{editor_id}-stock-confirm').value = '{order_id}';"
+                f"return true;\">"
+                "&#21457;&#36865;&#24211;&#23384;&#21830;&#21697;</button>"
+            )
         phrase_forms = []
         for phrase in load_common_phrases():
             text = str(phrase.get("text") or "")
@@ -2825,6 +2953,9 @@ class Handler(BaseHTTPRequestHandler):
           <input type="hidden" name="order_id" value="{order_id}">
           <input type="hidden" name="platform" value="{h(platform)}">
           <input type="hidden" name="target_lang" value="{h(target_lang)}">
+          <input type="hidden" name="email" value="{h(email)}">
+          <input type="hidden" name="product" value="{h(product)}">
+          <input id="{editor_id}-stock-confirm" type="hidden" name="stock_confirm" value="">
           <textarea id="{editor_id}-message" name="message" placeholder="&#22312;&#36825;&#37324;&#22238;&#22797;&#20250;&#21592;&#20449;&#24687;&#65292;&#21487;&#22635;&#20889;&#36134;&#21495;&#12289;&#23494;&#30721;&#12289;&#38142;&#25509;&#12289;&#20351;&#29992;&#35828;&#26126;&#31561;&#12290;"></textarea>
           <div class="reply-actions">
             <div id="{editor_id}-dropzone" class="reply-dropzone">
@@ -2832,6 +2963,7 @@ class Handler(BaseHTTPRequestHandler):
               <span class="reply-dropzone-text">&#25302;&#25341;&#22270;&#29255;/&#38468;&#20214;&#21040;&#36825;&#37324;&#65292;&#25110;&#28857;&#20987;&#36873;&#25321;&#25991;&#20214;</span>
             </div>
             <button type="submit">&#21457;&#36865;&#22238;&#22797;</button>
+            {stock_button}
             <button id="{editor_id}-phrase-toggle" type="button" aria-expanded="false" aria-controls="{editor_id}-phrases">&#24120;&#29992;&#35821;</button>
             <span class="reply-hint">&#20013;&#25991;&#20250;&#33258;&#21160;&#32763;&#35793;&#20026; {h(lang_label(target_lang))} &#20877;&#21457;&#36865;&#12290;&#25903;&#25345;&#22270;&#29255;&#12289;&#38468;&#20214;&#12289;&#25991;&#26723;/&#25991;&#29486;&#65292;&#20063;&#21487;&#30452;&#25509; Ctrl+V &#31896;&#36148;&#21098;&#36148;&#26495;&#22270;&#29255;&#12290;</span>
           </div>
@@ -3105,6 +3237,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/chats/send":
                 return self.send_chat_reply()
+            if path == "/chats/send-stock":
+                return self.send_stock_reply()
             if path == "/phrases/save":
                 return self.save_phrase()
             if path == "/phrases/delete":
@@ -3156,6 +3290,29 @@ class Handler(BaseHTTPRequestHandler):
             return
         client.send_chat_message(order_id, message, uploads)
         self.redirect(f"/chats?order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
+
+    def send_stock_reply(self) -> None:
+        fields, _ = self.read_form()
+        order_id = int(fields.get("order_id", "0") or 0)
+        platform = fields.get("platform", "digiseller").strip() or "digiseller"
+        target_lang = fields.get("target_lang", "").strip() or "en"
+        email = fields.get("email", "").strip()
+        product = fields.get("product", "").strip()
+        stock_confirm = fields.get("stock_confirm", "").strip()
+        if not order_id:
+            raise RuntimeError("Order ID is missing")
+        if platform != "ggsel":
+            raise RuntimeError("Sending a stock item from chat is currently available for GGSEL chats only")
+        if stock_confirm != str(order_id):
+            raise RuntimeError("Stock send confirmation failed")
+        ggsel_send_stock_item_to_chat(order_id, product)
+        safe_mark_ggsel_chat_read(order_id)
+        params = {"platform": "ggsel", "order_id": str(order_id), "stock_sent": "1", "tl": target_lang}
+        if email:
+            params["email"] = email
+        if product:
+            params["product"] = product
+        self.redirect("/chats?" + urllib.parse.urlencode(params))
 
     def home(self) -> None:
         configured = client.configured()
@@ -3792,7 +3949,7 @@ class Handler(BaseHTTPRequestHandler):
             notice = ""
             if self.q("sent") == "1":
                 notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
-            return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang)}</div>"
+            return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang, email=str(selected_chat.get('email') or ''), product=str(selected_chat.get('product') or ''))}</div>"
         return "<div id='chat-panel' class='conversation-panel' data-kind='order'><div class='empty-state'>No chats found</div></div>"
 
     def guest_chat_panel_html(self, chat: dict[str, Any], messages: list[dict[str, Any]]) -> str:
@@ -3862,9 +4019,11 @@ class Handler(BaseHTTPRequestHandler):
         if not rows:
             rows.append("<div class='empty-state'>No GGSEL messages loaded</div>")
         notice = ""
-        if self.q("sent") == "1":
+        if self.q("stock_sent") == "1":
+            notice = "<div class='notice ok-bg'>&#24050;&#21457;&#36865;&#19968;&#26465;&#24211;&#23384;&#21830;&#21697;&#65292;&#24182;&#20174; GGSEL &#24211;&#23384;&#20013;&#31227;&#38500;&#12290;</div>"
+        elif self.q("sent") == "1":
             notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
-        return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-platform='ggsel' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang, platform='ggsel')}</div>"
+        return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-platform='ggsel' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang, platform='ggsel', email=buyer_email, product=product)}</div>"
 
     def api_chat_panel(self) -> None:
         if self.q("kind") == "guest":
@@ -3892,13 +4051,15 @@ class Handler(BaseHTTPRequestHandler):
             messages = ggsel_client.chat_messages(order_id)
             if messages:
                 safe_mark_ggsel_chat_read(order_id)
+            email = ggsel_order_buyer_email(order_id, email)
+            product = ggsel_order_product_name(order_id, product)
             selected_chat = {"id_i": order_id, "email": email, "product": product, "platform": "ggsel"}
-            return self.send_json({"ok": True, "platform": "ggsel", "order_id": order_id, "count": len(messages), "read": True, "html": self.ggsel_chat_panel_html(order_id, selected_chat, messages)})
+            return self.send_json({"ok": True, "platform": "ggsel", "order_id": order_id, "email": email, "product": product, "count": len(messages), "read": True, "html": self.ggsel_chat_panel_html(order_id, selected_chat, messages)})
         messages = client.all_chat_messages(order_id)
         if messages:
             safe_mark_chat_read(order_id)
         selected_chat = {"id_i": order_id, "email": email, "product": product, "platform": "digiseller"}
-        self.send_json({"ok": True, "platform": "digiseller", "order_id": order_id, "count": len(messages), "read": True, "html": self.chat_panel_html(order_id, selected_chat, messages)})
+        self.send_json({"ok": True, "platform": "digiseller", "order_id": order_id, "email": email, "product": product, "count": len(messages), "read": True, "html": self.chat_panel_html(order_id, selected_chat, messages)})
 
     def api_translate_batch(self) -> None:
         payload = self.read_json_body()
@@ -4220,6 +4381,10 @@ class Handler(BaseHTTPRequestHandler):
           function escapeHtml(value) {
             return String(value).replace(/[&<>"']/g, (char) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
           }
+          function shortText(value, maxLength = 70) {
+            const text = String(value || '');
+            return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
+          }
           function showPanelLoading(panel, link) {
             const name = link.querySelector('.conversation-name')?.textContent?.trim() || '';
             const preview = link.querySelector('.preview')?.textContent?.trim() || '';
@@ -4242,7 +4407,9 @@ class Handler(BaseHTTPRequestHandler):
                 </div>
               </div>`;
           }
+          let panelRequestSeq = 0;
           async function loadPanel(link, options = {}) {
+            const requestSeq = ++panelRequestSeq;
             const panel = document.getElementById('chat-panel');
             if (!panel) { location.href = link.href; return; }
             if (!options.silent) showPanelLoading(panel, link);
@@ -4251,6 +4418,18 @@ class Handler(BaseHTTPRequestHandler):
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
               const data = await res.json();
               if (!data.ok) throw new Error(data.error || 'Load failed');
+              if (requestSeq !== panelRequestSeq || !link.classList.contains('active')) return;
+              if (data.email) {
+                link.dataset.email = data.email;
+                const name = link.querySelector('.conversation-name');
+                if (name) name.textContent = String(data.email).split('@', 1)[0] || data.email;
+              }
+              if (data.product) {
+                link.dataset.product = data.product;
+                const preview = link.querySelector('.preview');
+                if (preview) preview.textContent = shortText(data.product);
+              }
+              link.dataset.search = [link.dataset.platform || 'digiseller', link.dataset.orderId || '', link.dataset.email || '', link.dataset.product || ''].join(' ').toLowerCase();
               panel.outerHTML = data.html;
               const newPanel = document.getElementById('chat-panel');
               if (newPanel) runPanelScripts(newPanel);

@@ -62,6 +62,7 @@ http://127.0.0.1:8765
 `/ggsel` reads `GGSEL_API_KEY` from `.env` and never stores it in code. Optional settings:
 
 - `GGSEL_SELLER_ID`: filter the catalog to one seller when needed.
+- `GGSEL_SELLER_COOKIE`: optional seller-office login cookie, required only for the chat button that sends and removes one GGSEL stock item.
 - `GGSEL_PARTNER_ID`: generate product links with `ai` when needed.
 - `GGSEL_API_BASE`: defaults to `https://seller.ggsel.com/api_sellers/api`.
 - `GGSEL_KEEP_ONLINE`: keep the GGSEL seller chat online with `setonlinesetting` and heartbeat APIs.
