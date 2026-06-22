@@ -11,6 +11,7 @@ Run:
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime as dt
 import hashlib
 import html
@@ -1679,31 +1680,42 @@ def layout(title: str, body: str) -> bytes:
       }
     });
     window.loadDigisellerTranslations = async function(root=document) {
-      const nodes = Array.from(root.querySelectorAll(".translated-message[data-pending='1']"));
+      const nodes = Array.from(root.querySelectorAll(".translated-message[data-pending='1']:not([data-loading='1'])")).reverse();
       if (!nodes.length) return;
-      const messages = nodes.map((node) => ({
-        id: node.id.replace(/^msg-/, ''),
-        text: (node.querySelector('.original-text') || {}).textContent || ''
-      })).filter((item) => item.text);
-      if (!messages.length) return;
-      try {
-        const res = await fetch('/api/translate-batch', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({messages})
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        (data.results || []).forEach((item) => {
-          const node = root.querySelector(`#msg-${CSS.escape(String(item.id))}`);
-          if (!node) return;
-          const translated = node.querySelector('.translated-text');
-          const label = node.querySelector('.translation-label');
-          if (translated) translated.textContent = item.translated || item.text || '';
-          if (label) label.textContent = `${item.label || item.source_lang || 'auto'} → 中文`;
-          node.dataset.pending = '0';
-        });
-      } catch (e) {}
+      const chunkSize = 8;
+      for (let start = 0; start < nodes.length; start += chunkSize) {
+        const chunk = nodes.slice(start, start + chunkSize);
+        chunk.forEach((node) => { node.dataset.loading = '1'; });
+        const messages = chunk.map((node) => ({
+          id: node.id.replace(/^msg-/, ''),
+          text: (node.querySelector('.original-text') || {}).textContent || ''
+        })).filter((item) => item.text);
+        if (!messages.length) {
+          chunk.forEach((node) => { delete node.dataset.loading; });
+          continue;
+        }
+        try {
+          const res = await fetch('/api/translate-batch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({messages})
+          });
+          if (!res.ok) throw new Error('translate failed');
+          const data = await res.json();
+          (data.results || []).forEach((item) => {
+            const node = root.querySelector(`#msg-${CSS.escape(String(item.id))}`);
+            if (!node) return;
+            const translated = node.querySelector('.translated-text');
+            const label = node.querySelector('.translation-label');
+            if (translated) translated.textContent = item.translated || item.text || '';
+            if (label) label.textContent = String(item.label || item.source_lang || 'auto') + ' \u2192 \u4e2d';
+            node.dataset.pending = '0';
+            delete node.dataset.loading;
+          });
+        } catch (e) {
+          chunk.forEach((node) => { delete node.dataset.loading; });
+        }
+      }
     };
     window.loadDigisellerTranslations(document);
     </script>
@@ -4113,7 +4125,7 @@ class Handler(BaseHTTPRequestHandler):
         messages = payload.get("messages")
         if not isinstance(messages, list):
             return self.send_json({"ok": False, "error": "messages must be a list"}, 400)
-        results = []
+        pending_items = []
         for item in messages[:100]:
             if not isinstance(item, dict):
                 continue
@@ -4121,16 +4133,24 @@ class Handler(BaseHTTPRequestHandler):
             text = clean_text(item.get("text"))
             if not text:
                 continue
-            translated, source_lang = google_translate(text, "zh-CN")
-            results.append(
-                {
-                    "id": item_id,
-                    "text": text,
-                    "translated": translated,
-                    "source_lang": source_lang,
-                    "label": lang_label(source_lang),
-                }
-            )
+            pending_items.append({"id": item_id, "text": text})
+
+        def translate_item(item: dict[str, str]) -> dict[str, str]:
+            translated, source_lang = google_translate(item["text"], "zh-CN")
+            return {
+                "id": item["id"],
+                "text": item["text"],
+                "translated": translated,
+                "source_lang": source_lang,
+                "label": lang_label(source_lang),
+            }
+
+        results: list[dict[str, str]] = []
+        if pending_items:
+            max_workers = min(8, len(pending_items))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for result in executor.map(translate_item, pending_items):
+                    results.append(result)
         self.send_json({"ok": True, "results": results})
 
     def api_save_common_phrase(self) -> None:
