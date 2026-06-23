@@ -1861,7 +1861,7 @@ CHAT_KEEPALIVE_BROWSER_STATUS: dict[str, Any] = {
     "last_open": "",
     "error": "",
 }
-FUNPAY_BOOST_INTERVAL_SECONDS = 3600
+FUNPAY_BOOST_INTERVAL_SECONDS = 12 * 3600
 FUNPAY_BOOST_HISTORY_FILE = APP_DIR / "funpay_boost_history.json"
 FUNPAY_BOOST_STATUS: dict[str, Any] = {
     "enabled": False,
@@ -2313,12 +2313,12 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
         btn.classList.toggle('running', Boolean(data.running));
         btn.textContent = data.running
           ? 'FunPay Boost running...'
-          : enabled ? 'Stop FunPay hourly Boost' : 'Start FunPay hourly Boost';
+          : enabled ? 'Stop FunPay 12-hour Boost' : 'Start FunPay 12-hour Boost';
         pill.classList.toggle('bad', Boolean(data.last_error));
         const parts = [];
         if (data.last_error) parts.push(`Error: ${data.last_error}`);
         else if (data.running) parts.push('Checking cooldown and boosting...');
-        else parts.push(enabled ? 'Hourly Boost enabled' : 'Hourly Boost disabled');
+        else parts.push(enabled ? '12-hour Boost enabled' : '12-hour Boost disabled');
         if (data.last_result && !data.running) {
           const result = data.last_result;
           const total = Number(result.total || 0);
@@ -2329,7 +2329,7 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
             ? `Last check: ${success} boosted, ${skipped} skipped, ${failed} failed`
             : 'Last check: no active categories');
         }
-        if (data.next_run) parts.push(`Next hourly check: ${data.next_run}`);
+        if (data.next_run) parts.push(`Next 12-hour check: ${data.next_run}`);
         if (data.failed_count) parts.push(`Failed records: ${data.failed_count}`);
         pill.textContent = parts.join(' · ');
       }
@@ -4565,7 +4565,7 @@ class Handler(BaseHTTPRequestHandler):
         <div class='card'>
           <h2>FunPay Boost 冷却记录</h2>
           <p class='muted'>这里集中记录每个 FunPay 商品分类的上次提升时间，以及从该时间推算出的冷却剩余时间。</p>
-          <p>自动 Boost：<b>{h(enabled)}</b> · 当前状态：<b>{h(running)}</b> · 上次检查：{h(status.get('last_run') or '-')} · 下次每小时检查：{h(status.get('next_run') or '-')}</p>
+          <p>自动 Boost：<b>{h(enabled)}</b> · 当前状态：<b>{h(running)}</b> · 上次检查：{h(status.get('last_run') or '-')} · 下次12小时检查：{h(status.get('next_run') or '-')}</p>
           <p>冷却中：<b>{h(status.get('cooling_count') or 0)}</b> · 已提升记录：<b>{h(status.get('boosted_count') or 0)}</b> · 错误记录：<b class='bad'>{h(status.get('failed_count') or 0)}</b></p>
           <p>错误：<span class='bad'>{h(status.get('last_error') or '-')}</span></p>
         </div>
