@@ -1064,7 +1064,8 @@ class GgselClient:
         self.api_base = os.getenv("GGSEL_API_BASE", "https://seller.ggsel.com/api_sellers/api").strip().rstrip("/")
         self.seller_cookie = os.getenv("GGSEL_SELLER_COOKIE", os.getenv("GGSEL_COOKIE", "")).strip()
         self.seller_office_base = os.getenv("GGSEL_SELLER_OFFICE_BASE", "https://seller.ggsel.com").strip().rstrip("/")
-        self.seller_office_api_base = os.getenv("GGSEL_SELLER_OFFICE_API_BASE", self.seller_office_base + "/api").strip().rstrip("/")
+        default_seller_office_api_base = self.seller_office_base if self.seller_office_base.endswith("/api") else self.seller_office_base + "/api"
+        self.seller_office_api_base = os.getenv("GGSEL_SELLER_OFFICE_API_BASE", default_seller_office_api_base).strip().rstrip("/")
         self.http = httpx.Client(timeout=35, headers={"Accept": "application/json", "User-Agent": "Digiseller Local Admin"})
         self._token: str | None = None
         self.valid_thru: str | None = None
@@ -1276,18 +1277,33 @@ class GgselClient:
             raise RuntimeError("GGSEL attachment replies currently support images only: " + ", ".join(unsupported))
         items: list[tuple[str, str]] = [(message, self.chat_image_data_url(uploads[0]))]
         items.extend(("", self.chat_image_data_url(item)) for item in uploads[1:])
-        conversation_id = str(order_id)
-        resolved_conversation = False
+        conversation_ids = [str(order_id)]
+        resolved_conversation_ids = False
         for text, image in items:
             payload = {"text": text, "image": image, "input_id": str(uuid.uuid4())}
-            try:
-                data = self.seller_office_send_conversation_payload(conversation_id, payload)
-            except RuntimeError as exc:
-                if "HTTP 404" not in str(exc) or resolved_conversation:
-                    raise
-                conversation_id = self.seller_office_conversation_id(order_id)
-                resolved_conversation = True
-                data = self.seller_office_send_conversation_payload(conversation_id, payload)
+            index = 0
+            data: Any = {}
+            last_404: RuntimeError | None = None
+            while index < len(conversation_ids):
+                conversation_id = conversation_ids[index]
+                try:
+                    data = self.seller_office_send_conversation_payload(conversation_id, payload)
+                    conversation_ids = [conversation_id]
+                    break
+                except RuntimeError as exc:
+                    if "HTTP 404" not in str(exc):
+                        raise
+                    last_404 = exc
+                    if not resolved_conversation_ids:
+                        for resolved_id in self.seller_office_conversation_ids(order_id):
+                            if resolved_id not in conversation_ids:
+                                conversation_ids.append(resolved_id)
+                        resolved_conversation_ids = True
+                    index += 1
+            else:
+                if last_404:
+                    raise last_404
+                raise RuntimeError(f"GGSEL seller office conversation was not found for order {order_id}")
             if isinstance(data, dict) and data.get("retval") not in (None, 0, "0"):
                 raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL seller office send failed: {data}")
 
@@ -1298,21 +1314,53 @@ class GgselClient:
             json_body=payload,
         )
 
-    def seller_office_conversation_id(self, order_id: int) -> str:
-        data = self.seller_office_get(
-            "/api_seller_office/v1/conversations",
-            {"page": 1, "limit": 10, "q": str(order_id)},
-        )
+    def seller_office_conversation_ids(self, order_id: int) -> list[str]:
+        candidates: list[str] = []
+        fallback_candidates: list[str] = []
+
+        def add(target: list[str], value: Any) -> None:
+            text = str(value or "").strip()
+            if text and text not in candidates and text not in fallback_candidates:
+                target.append(text)
+
+        for row in self.seller_office_conversation_rows({"page": 1, "limit": 100, "q": str(order_id)}):
+            row_id = self.seller_office_conversation_row_id(row)
+            if self.seller_office_conversation_matches_order(row, order_id):
+                add(candidates, row_id)
+            else:
+                add(fallback_candidates, row_id)
+        for page in range(1, 4):
+            for row in self.seller_office_conversation_rows({"page": page, "limit": 100}):
+                if self.seller_office_conversation_matches_order(row, order_id):
+                    add(candidates, self.seller_office_conversation_row_id(row))
+        candidates.extend(fallback_candidates)
+        if candidates:
+            return candidates
+        raise RuntimeError(f"GGSEL seller office conversation was not found for order {order_id}")
+
+    def seller_office_conversation_rows(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        data = self.seller_office_get("/api_seller_office/v1/conversations", params)
         rows = data.get("data") if isinstance(data, dict) else []
         if not isinstance(rows, list):
             raise RuntimeError(f"GGSEL seller office conversation search returned invalid data: {data}")
-        for row in rows:
-            if not isinstance(row, dict):
+        return [row for row in rows if isinstance(row, dict)]
+
+    def seller_office_conversation_row_id(self, row: dict[str, Any]) -> str:
+        return str(row.get("id") or "").strip()
+
+    def seller_office_conversation_matches_order(self, row: dict[str, Any], order_id: int) -> bool:
+        target = str(order_id)
+        for key in ("order_id", "invoice_id", "id_i", "purchase_id", "order_number"):
+            if str(row.get(key) or "") == target:
+                return True
+        for key in ("order", "invoice", "purchase"):
+            value = row.get(key)
+            if not isinstance(value, dict):
                 continue
-            row_id = row.get("id")
-            if row_id:
-                return str(row_id)
-        raise RuntimeError(f"GGSEL seller office conversation was not found for order {order_id}")
+            for nested_key in ("id", "order_id", "invoice_id", "id_i", "number"):
+                if str(value.get(nested_key) or "") == target:
+                    return True
+        return False
 
     def chat_image_data_url(self, item: UploadItem) -> str:
         content_type = self.image_upload_content_type(item)
