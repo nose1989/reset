@@ -27,6 +27,7 @@ DIGISELLER_CHAT_OPEN_BROWSER=1
 DIGISELLER_COMMON_PHRASE_PUBLIC_BASE_URL=
 GGSEL_API_KEY=PUT_YOUR_GGSEL_API_KEY_HERE
 GGSEL_API_BASE=https://seller.ggsel.com/api_sellers/api
+GGSEL_SELLER_OFFICE_API_BASE=https://seller.ggsel.com/api
 GGSEL_SELLER_ID=132809753
 GGSEL_PARTNER_ID=
 GGSEL_KEEP_ONLINE=1
@@ -66,6 +67,7 @@ http://127.0.0.1:8765
 - `GGSEL_SELLER_COOKIE`: optional seller-office login cookie, required for seller-office actions such as GGSEL stock sending/removal and GGSEL image attachments.
 - `GGSEL_PARTNER_ID`: generate product links with `ai` when needed.
 - `GGSEL_API_BASE`: defaults to `https://seller.ggsel.com/api_sellers/api`.
+- `GGSEL_SELLER_OFFICE_API_BASE`: defaults to `https://seller.ggsel.com/api`.
 - `GGSEL_KEEP_ONLINE`: keep the GGSEL seller chat online with `setonlinesetting` and heartbeat APIs.
 - `GGSEL_ONLINE_VALUE` / `GGSEL_ONLINE_VERIFY_TYPE`: override the GGSEL online setting value and verification corr type.
 
