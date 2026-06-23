@@ -4971,15 +4971,6 @@ class Handler(BaseHTTPRequestHandler):
         rows_limit = min(max(parse_int("rows", 50), 1), 50)
         page = max(parse_int("page", 1), 1)
         errors: list[str] = []
-        recent_digiseller_chat_ids: set[str] = set()
-        try:
-            recent_digiseller_chat_ids = {
-                str(chat.get("id_i"))
-                for chat in client.chats(page_size=100)
-                if chat.get("id_i") and is_recent_time(chat.get("last_date"), RECENT_CHAT_DAYS)
-            }
-        except Exception as exc:
-            errors.append(f"Digiseller chats: {exc}")
         recent_ggsel_chat_ids: set[str] = set()
         if ggsel_client.configured():
             try:
@@ -4997,7 +4988,6 @@ class Handler(BaseHTTPRequestHandler):
             errors.append(f"Digiseller: {exc}")
 
         digiseller_rows = [row for row in digiseller_data.get("rows", []) if isinstance(row, dict)][:rows_limit]
-        digiseller_rows = [row for row in digiseller_rows if str(row.get("invoice_id") or row.get("id") or "") in recent_digiseller_chat_ids]
         if digiseller_rows:
             mark_sales_orders_seen(digiseller_rows)
 
@@ -5105,7 +5095,7 @@ class Handler(BaseHTTPRequestHandler):
             <input id='sales-search' class='sales-search' placeholder='Search platform, order, buyer, product, referer...' autocomplete='off'>
             <button>Refresh</button>
           </form>
-          <p class='muted'>Default is {RECENT_ORDER_DAYS} days; rows are capped at 50 per request. Digiseller, GGSEL, and FunPay orders are merged by paid time, and only orders with chat activity in the last {RECENT_CHAT_DAYS} days are shown.</p>
+          <p class='muted'>Default is {RECENT_ORDER_DAYS} days; rows are capped at 50 per request. Digiseller paid orders are shown by paid time; GGSEL and FunPay orders are included when they have chat activity in the last {RECENT_CHAT_DAYS} days.</p>
           {errors_html}
         </div>
         <div class='sales-summary'>
