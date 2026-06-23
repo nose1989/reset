@@ -1826,7 +1826,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
 .phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:flex;align-items:center;justify-content:center;gap:10px;min-height:68px;margin-top:10px;border:1px dashed #93c5fd;border-radius:10px;background:#eff6ff;color:#0f3b66;font-weight:700;padding:10px;cursor:pointer}.phrase-upload input{background:white}.phrase-image-preview,.common-phrase-buttons .common-phrase-preview{border:0;background:transparent;padding:0;cursor:pointer}.phrase-image-preview img,.common-phrase-preview img{display:block;width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1}.common-phrase-card{display:inline-flex;align-items:center;gap:8px;max-width:360px;border:1px solid #b9d4ff;border-radius:10px;background:#eaf3ff;padding:6px;box-shadow:0 1px 1px #0001}.common-phrase-previews{display:flex;gap:6px;align-items:center;flex-shrink:0}.common-phrase-card .common-phrase-send{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;border:0;background:transparent;color:#0f3b66;padding:4px 6px;text-align:left}.common-phrase-text{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}.common-phrase-files-note{font-size:11px;color:#64748b}.common-phrase-file-chip{display:inline-flex;align-items:center;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;color:#475569;padding:4px 6px;font-size:12px}.common-phrase-preview.broken{display:none}.phrase-pending{margin-top:8px}
 .chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.chat-keepalive-btn.warn{background:#fef3c7;color:#92400e;border-color:#fde68a}
-.funpay-boost-controls{position:fixed;right:18px;bottom:18px;z-index:100;display:flex;flex-direction:column;align-items:flex-end;gap:6px}.funpay-boost-button{border:1px solid #bbf7d0;border-radius:999px;background:#16a34a;color:white;padding:10px 16px;font-weight:900;box-shadow:0 8px 18px #0002}.funpay-boost-button.off{background:#475569;border-color:#cbd5e1}.funpay-boost-button.running{background:#f59e0b;border-color:#fde68a}.funpay-boost-pill{max-width:340px;border:1px solid #d9e2ec;border-radius:999px;background:white;color:#334155;padding:6px 10px;font-size:12px;box-shadow:0 3px 10px #0001}.funpay-boost-pill.bad{color:#b91c1c;border-color:#fecaca;background:#fff7f7}.funpay-boost-link{border:1px solid #bfdbfe;border-radius:999px;background:white;color:#0b65c2;padding:5px 10px;font-size:12px;font-weight:800;box-shadow:0 3px 10px #0001}
+.funpay-boost-controls{position:fixed;left:18px;bottom:18px;z-index:100;display:flex;flex-direction:column;align-items:flex-start;gap:6px}.funpay-boost-button{border:1px solid #bbf7d0;border-radius:999px;background:#16a34a;color:white;padding:10px 16px;font-weight:900;box-shadow:0 8px 18px #0002}.funpay-boost-button.off{background:#475569;border-color:#cbd5e1}.funpay-boost-button.running{background:#f59e0b;border-color:#fde68a}.funpay-boost-pill{max-width:340px;border:1px solid #d9e2ec;border-radius:999px;background:white;color:#334155;padding:6px 10px;font-size:12px;box-shadow:0 3px 10px #0001}.funpay-boost-pill.bad{color:#b91c1c;border-color:#fecaca;background:#fff7f7}.funpay-boost-link{border:1px solid #bfdbfe;border-radius:999px;background:white;color:#0b65c2;padding:5px 10px;font-size:12px;font-weight:800;box-shadow:0 3px 10px #0001}.funpay-boost-clear-errors{border-color:#fecaca;color:#b91c1c}
 
 .messages-layout{height:calc(100vh - 116px)}
 .conversation-list-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 14px 12px;box-shadow:0 1px 0 #eef2f7}
@@ -2198,12 +2198,13 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
     <div class="funpay-boost-controls">
       <div id="funpay-boost-pill" class="funpay-boost-pill">FunPay Boost checking...</div>
       <button id="funpay-boost-button" class="funpay-boost-button off" type="button">Start FunPay Boost</button>
-      <a class="funpay-boost-link" href="/funpay-boost">查看冷却记录</a>
+      <button id="funpay-boost-clear-errors" class="funpay-boost-link funpay-boost-clear-errors" type="button">清除错误记录</button>
     </div>
     <script>
     (() => {
       const btn = document.getElementById('funpay-boost-button');
       const pill = document.getElementById('funpay-boost-pill');
+      const clearErrorsBtn = document.getElementById('funpay-boost-clear-errors');
       if (!btn || !pill) return;
       let enabled = false;
       function render(data) {
@@ -2219,6 +2220,7 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
         else if (data.running) parts.push('Checking cooldown and boosting...');
         else parts.push(enabled ? 'Hourly Boost enabled' : 'Hourly Boost disabled');
         if (data.next_run) parts.push(`Next hourly check: ${data.next_run}`);
+        if (data.failed_count) parts.push(`Failed records: ${data.failed_count}`);
         pill.textContent = parts.join(' · ');
       }
       async function loadStatus() {
@@ -2248,7 +2250,22 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
           btn.disabled = false;
         }
       }
+      async function clearErrors() {
+        if (!confirm('只清除失败记录，保留已提升和冷却记录。继续？')) return;
+        clearErrorsBtn.disabled = true;
+        try {
+          const res = await fetch('/api/funpay-boost-clear-errors', {method: 'POST'});
+          if (!res.ok) throw new Error(await res.text());
+          window.location.reload();
+        } catch (e) {
+          pill.textContent = String(e.message || e);
+          pill.classList.add('bad');
+        } finally {
+          clearErrorsBtn.disabled = false;
+        }
+      }
       btn.addEventListener('click', toggle);
+      if (clearErrorsBtn) clearErrorsBtn.addEventListener('click', clearErrors);
       setInterval(loadStatus, 15000);
       loadStatus();
     })();
@@ -3382,21 +3399,41 @@ def funpay_boost_history_rows() -> list[dict[str, Any]]:
     now = time.time()
     with FUNPAY_BOOST_LOCK:
         rows = []
-        for node_id, item in sorted(FUNPAY_BOOST_HISTORY.items()):
+        for node_id, item in FUNPAY_BOOST_HISTORY.items():
             row = item.copy()
             row["node_id"] = node_id
             cooldown_until = float(row.get("cooldown_until_ts") or 0)
             row["remaining_seconds"] = max(0, int(cooldown_until - now)) if cooldown_until else None
             row["cooling"] = bool(cooldown_until and cooldown_until > now)
             rows.append(row)
+        rows.sort(key=lambda row: (row.get("status") == "failed", not row.get("cooling"), int(row.get("node_id") or 0)))
         return rows
 
 
 def funpay_boost_snapshot() -> dict[str, Any]:
     with FUNPAY_BOOST_LOCK:
         data = FUNPAY_BOOST_STATUS.copy()
-        data["history_count"] = len(FUNPAY_BOOST_HISTORY)
+        now = time.time()
+        history_items = list(FUNPAY_BOOST_HISTORY.values())
+        data["history_count"] = len(history_items)
+        data["failed_count"] = sum(1 for item in history_items if item.get("status") == "failed")
+        data["cooling_count"] = sum(1 for item in history_items if float(item.get("cooldown_until_ts") or 0) > now)
+        data["boosted_count"] = sum(1 for item in history_items if item.get("last_boost_ts"))
         return data
+
+
+def clear_funpay_boost_failed_history() -> int:
+    with FUNPAY_BOOST_LOCK:
+        failed_node_ids = [
+            node_id
+            for node_id, item in FUNPAY_BOOST_HISTORY.items()
+            if item.get("status") == "failed"
+        ]
+        for node_id in failed_node_ids:
+            FUNPAY_BOOST_HISTORY.pop(node_id, None)
+        if failed_node_ids:
+            save_funpay_boost_history_locked()
+        return len(failed_node_ids)
 
 
 def update_funpay_boost_status(**values: Any) -> None:
@@ -4191,6 +4228,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_save_common_phrase()
             if path == "/api/funpay-boost-toggle":
                 return self.api_funpay_boost_toggle()
+            if path == "/api/funpay-boost-clear-errors":
+                return self.api_funpay_boost_clear_errors()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
         except Exception as exc:
             self.send_html("Error", f"<div class='card bad'>Error</div><pre class='card code'>{h(exc)}</pre>", 500)
@@ -4338,7 +4377,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             rows_html = "".join(row_html)
         else:
-            rows_html = "<tr><td colspan='7' class='muted'>还没有 FunPay Boost 记录。开启右下角按钮后，第一次检查会写入所有商品分类的状态。</td></tr>"
+            rows_html = "<tr><td colspan='7' class='muted'>还没有 FunPay Boost 记录。开启左下角按钮后，第一次检查会写入所有商品分类的状态。</td></tr>"
         enabled = "开启" if status.get("enabled") else "关闭"
         running = "运行中" if status.get("running") else "空闲"
         body = f"""
@@ -4346,6 +4385,7 @@ class Handler(BaseHTTPRequestHandler):
           <h2>FunPay Boost 冷却记录</h2>
           <p class='muted'>这里集中记录每个 FunPay 商品分类的上次提升时间，以及从该时间推算出的冷却剩余时间。</p>
           <p>自动 Boost：<b>{h(enabled)}</b> · 当前状态：<b>{h(running)}</b> · 上次检查：{h(status.get('last_run') or '-')} · 下次每小时检查：{h(status.get('next_run') or '-')}</p>
+          <p>冷却中：<b>{h(status.get('cooling_count') or 0)}</b> · 已提升记录：<b>{h(status.get('boosted_count') or 0)}</b> · 错误记录：<b class='bad'>{h(status.get('failed_count') or 0)}</b></p>
           <p>错误：<span class='bad'>{h(status.get('last_error') or '-')}</span></p>
         </div>
         <div class='card'>
@@ -5988,6 +6028,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_funpay_boost_history(self) -> None:
         self.send_json({"status": funpay_boost_snapshot(), "rows": funpay_boost_history_rows()})
+
+    def api_funpay_boost_clear_errors(self) -> None:
+        cleared = clear_funpay_boost_failed_history()
+        self.send_json({"cleared": cleared, "status": funpay_boost_snapshot(), "rows": funpay_boost_history_rows()})
 
     def api_funpay_boost_toggle(self) -> None:
         data = self.read_json_body()
