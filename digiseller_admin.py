@@ -1452,10 +1452,19 @@ class FunPayClient:
 
     def offer_category_game_id(self, node_id: int) -> int:
         page = self.get(f"/en/lots/{node_id}/trade").text
-        match = re.search(r'\bdata-game=["\'](\d+)["\']', page, re.I)
-        if not match:
-            raise RuntimeError(f"Could not determine FunPay game ID for category {node_id}")
-        return int(match.group(1))
+        for pattern in [
+            r'\bdata-game=["\'](\d+)["\']',
+            r'\bdata-game-id=["\'](\d+)["\']',
+            r'\bdata-game_id=["\'](\d+)["\']',
+            r'\bname=["\']game_id["\'][^>]*\bvalue=["\'](\d+)["\']',
+            r'\bvalue=["\'](\d+)["\'][^>]*\bname=["\']game_id["\']',
+            r'["\']game_id["\']\s*:\s*["\']?(\d+)',
+            r'["\']gameId["\']\s*:\s*["\']?(\d+)',
+        ]:
+            match = re.search(pattern, page, re.I)
+            if match:
+                return int(match.group(1))
+        raise RuntimeError(f"Could not determine FunPay game ID for category {node_id}")
 
     def raise_offer_category(self, game_id: int, node_id: int, node_ids: list[int] | None = None) -> dict[str, Any]:
         fields: list[tuple[str, str]] = [("game_id", str(game_id)), ("node_id", str(node_id))]
@@ -1530,17 +1539,9 @@ class FunPayClient:
         node_ids = self.active_offer_node_ids()
         results: list[dict[str, Any]] = []
         raised_together: set[int] = set()
-        checked_at = time.time()
         for index, node_id in enumerate(node_ids):
             if node_id in raised_together:
                 results.append({"node_id": node_id, "status": "success", "message": "Boosted with another category"})
-                continue
-            cooldown_until = funpay_boost_cooldown_until(node_id)
-            if cooldown_until > checked_at:
-                available_at = dt.datetime.utcfromtimestamp(cooldown_until).strftime("%Y-%m-%d %H:%M:%S UTC")
-                message = f"Waiting for cooldown until {available_at}"
-                results.append({"node_id": node_id, "status": "skipped", "message": message})
-                record_funpay_boost_attempt(node_id, "cooling", message, cooldown_until)
                 continue
             result, co_raised = self.raise_node_offers(node_id)
             results.append(result)
@@ -1548,6 +1549,12 @@ class FunPayClient:
             if result.get("status") == "success":
                 remember_funpay_boost_cooldown(boosted_node_ids, time.time() + FUNPAY_BOOST_INTERVAL_SECONDS)
                 raised_together.update(item for item in boosted_node_ids if item != node_id)
+            else:
+                record_funpay_boost_attempt(
+                    node_id,
+                    str(result.get("status") or "failed"),
+                    str(result.get("message") or "-"),
+                )
             if index < len(node_ids) - 1:
                 time.sleep(0.7)
         return {
@@ -3404,6 +3411,10 @@ def record_funpay_boost_attempt(node_id: int, status: str, message: str, cooldow
             item["cooldown_until"] = funpay_boost_time_label(cooldown_until)
             if cooldown_until > checked_at:
                 FUNPAY_BOOST_COOLDOWNS[node_id] = cooldown_until
+        elif status not in {"boosted", "cooling"}:
+            FUNPAY_BOOST_COOLDOWNS.pop(node_id, None)
+            item.pop("cooldown_until_ts", None)
+            item.pop("cooldown_until", None)
         FUNPAY_BOOST_HISTORY[node_id] = item
         save_funpay_boost_history_locked()
 
