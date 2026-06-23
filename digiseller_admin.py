@@ -1064,6 +1064,7 @@ class GgselClient:
         self.api_base = os.getenv("GGSEL_API_BASE", "https://seller.ggsel.com/api_sellers/api").strip().rstrip("/")
         self.seller_cookie = os.getenv("GGSEL_SELLER_COOKIE", os.getenv("GGSEL_COOKIE", "")).strip()
         self.seller_office_base = os.getenv("GGSEL_SELLER_OFFICE_BASE", "https://seller.ggsel.com").strip().rstrip("/")
+        self.seller_office_api_base = os.getenv("GGSEL_SELLER_OFFICE_API_BASE", self.seller_office_base + "/api").strip().rstrip("/")
         self.http = httpx.Client(timeout=35, headers={"Accept": "application/json", "User-Agent": "Digiseller Local Admin"})
         self._token: str | None = None
         self.valid_thru: str | None = None
@@ -1462,7 +1463,7 @@ class GgselClient:
         }
         r = self.http.request(
             method,
-            self.seller_office_base + path,
+            self.seller_office_api_base + path,
             params=params or {},
             json=json_body,
             headers=headers,
