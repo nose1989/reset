@@ -1838,7 +1838,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 """
 
 
-def layout(title: str, body: str) -> bytes:
+def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> bytes:
     online = refresh_public_online_status()
     online_error = str(online.get("last_error") or "")
     online_last_ok = str(online.get("last_ok") or "")
@@ -2339,7 +2339,7 @@ def layout(title: str, body: str) -> bytes:
     window.loadDigisellerTranslations(document);
     </script>
     """
-    html_doc = f"<!doctype html><html><head><meta charset='utf-8'><title>{h(title)}</title><link rel='icon' type='image/png' href='/favicon.ico'><link rel='apple-touch-icon' href='/assets/shinchan-logo.png'>{STYLE}</head><body>{nav}{alert_ui}{funpay_boost_ui}{translation_ui}<div class='wrap'>{body}</div></body></html>"
+    html_doc = f"<!doctype html><html><head><meta charset='utf-8'><title>{h(title)}</title><link rel='icon' type='image/png' href='/favicon.ico'><link rel='apple-touch-icon' href='/assets/shinchan-logo.png'>{STYLE}</head><body>{nav}{alert_ui}{funpay_boost_ui if include_funpay_boost else ''}{translation_ui}<div class='wrap'>{body}</div></body></html>"
     return html_doc.encode("utf-8")
 
 
@@ -3771,8 +3771,8 @@ def run_watch(interval: int = 15) -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def send_html(self, title: str, body: str, status: int = 200) -> None:
-        data = layout(title, body)
+    def send_html(self, title: str, body: str, status: int = 200, *, include_funpay_boost: bool = False) -> None:
+        data = layout(title, body, include_funpay_boost=include_funpay_boost)
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
@@ -4377,7 +4377,7 @@ class Handler(BaseHTTPRequestHandler):
         }})();
         </script>
         """
-        self.send_html("FunPay Boost", body)
+        self.send_html("FunPay Boost", body, include_funpay_boost=True)
 
     def ggsel_product_rows(self, data: Any) -> list[dict[str, Any]]:
         if isinstance(data, list):
