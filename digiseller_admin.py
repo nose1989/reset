@@ -1350,11 +1350,13 @@ class FunPayClient:
 
     def post_form(self, path: str, data: Any, referer: str) -> dict[str, Any]:
         self.ensure_configured()
+        encoded_data = urllib.parse.urlencode(data, doseq=True) if not isinstance(data, (bytes, bytearray, str)) else data
         r = self.http.post(
             FUNPAY_CHAT_BASE + path,
-            data=data,
+            content=encoded_data,
             headers={
                 "Accept": "*/*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                 "X-Requested-With": "XMLHttpRequest",
                 "Referer": FUNPAY_CHAT_BASE + referer if referer.startswith("/") else referer,
             },
