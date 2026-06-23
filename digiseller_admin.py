@@ -90,7 +90,9 @@ def load_env(path: Path = APP_DIR / ".env") -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        key = key.strip()
+        if key and not os.environ.get(key, "").strip():
+            os.environ[key] = value.strip().strip('"').strip("'")
 
 
 def clean_text(value: Any) -> str:
@@ -1176,7 +1178,7 @@ class GgselClient:
                 return
             unsupported = ", ".join(item.filename for item in file_uploads)
             raise RuntimeError(
-                "GGSEL API does not support file uploads. Add GGSEL_SELLER_COOKIE to send image attachments, "
+                f"GGSEL_SELLER_COOKIE is not loaded from {APP_DIR / '.env'}. Restart the app after adding it, "
                 f"or attach small text files that can be sent as message text: {unsupported}"
             )
         payload: dict[str, Any] = {"message": message}
@@ -1268,7 +1270,7 @@ class GgselClient:
     def send_seller_office_chat_message(self, order_id: int, message: str, uploads: list[UploadItem]) -> None:
         if not self.seller_cookie:
             raise RuntimeError("GGSEL attachment replies need GGSEL_SELLER_COOKIE in .env")
-        unsupported = [item.filename for item in uploads if not (item.content_type or "").startswith("image/")]
+        unsupported = [item.filename for item in uploads if not self.is_image_upload(item)]
         if unsupported:
             raise RuntimeError("GGSEL attachment replies currently support images only: " + ", ".join(unsupported))
         items: list[tuple[str, str]] = [(message, self.chat_image_data_url(uploads[0]))]
@@ -1312,8 +1314,21 @@ class GgselClient:
         raise RuntimeError(f"GGSEL seller office conversation was not found for order {order_id}")
 
     def chat_image_data_url(self, item: UploadItem) -> str:
-        content_type = item.content_type or mimetypes.guess_type(item.filename)[0] or "image/png"
+        content_type = self.image_upload_content_type(item)
         return f"data:{content_type};base64,{base64.b64encode(item.data).decode('ascii')}"
+
+    def is_image_upload(self, item: UploadItem) -> bool:
+        content_type = (item.content_type or "").split(";", 1)[0].lower()
+        return content_type.startswith("image/") or looks_like_image_name(item.filename)
+
+    def image_upload_content_type(self, item: UploadItem) -> str:
+        content_type = (item.content_type or "").split(";", 1)[0].lower()
+        if content_type.startswith("image/"):
+            return content_type
+        guessed_type = mimetypes.guess_type(item.filename)[0]
+        if guessed_type and guessed_type.startswith("image/"):
+            return guessed_type
+        return "image/png"
 
     def session_get(self, path: str) -> Any:
         session_id = urllib.parse.quote(self.token, safe="")
