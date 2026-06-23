@@ -11,6 +11,7 @@ Run:
 
 from __future__ import annotations
 
+import base64
 import concurrent.futures
 import datetime as dt
 import hashlib
@@ -24,6 +25,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import uuid
 import webbrowser
 from dataclasses import dataclass
 from email import policy
@@ -1148,65 +1150,62 @@ class GgselClient:
         return messages
 
     def send_chat_message(self, order_id: int, message: str, uploads: list[UploadItem]) -> None:
-        files = self.upload_chat_files(uploads)
-        payload: dict[str, str | list[dict[str, str]]] = {"message": message}
-        if files:
-            payload["files"] = files
-        data = self.post("/debates/v2", json_body=payload, params={"id_i": order_id})
+        if uploads:
+            self.send_seller_office_chat_message(order_id, message, uploads)
+            return
+        data = self.post("/debates/v2", json_body={"message": message}, params={"id_i": order_id})
         if isinstance(data, dict) and data.get("retval") not in (None, 0, "0"):
             raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL send failed: {data}")
 
-    def upload_chat_files(self, uploads: list[UploadItem]) -> list[dict[str, str]]:
-        if not uploads:
-            return []
-        files = [
-            ("files[]", (item.filename, item.data, item.content_type or "application/octet-stream"))
-            for item in uploads
-        ]
-        params = {"token": self.token, "lang": "en-US"}
-        r = self.http.post(
-            self.api_base + "/debates/v2/upload-preview",
-            params=params,
-            files=files,
+    def send_seller_office_chat_message(self, order_id: int, message: str, uploads: list[UploadItem]) -> None:
+        if not self.seller_cookie:
+            raise RuntimeError("GGSEL attachment replies need GGSEL_SELLER_COOKIE in .env")
+        unsupported = [item.filename for item in uploads if not (item.content_type or "").startswith("image/")]
+        if unsupported:
+            raise RuntimeError("GGSEL attachment replies currently support images only: " + ", ".join(unsupported))
+        items: list[tuple[str, str]] = [(message, self.chat_image_data_url(uploads[0]))]
+        items.extend(("", self.chat_image_data_url(item)) for item in uploads[1:])
+        conversation_id = str(order_id)
+        resolved_conversation = False
+        for text, image in items:
+            payload = {"text": text, "image": image, "input_id": str(uuid.uuid4())}
+            try:
+                data = self.seller_office_send_conversation_payload(conversation_id, payload)
+            except RuntimeError as exc:
+                if "HTTP 404" not in str(exc) or resolved_conversation:
+                    raise
+                conversation_id = self.seller_office_conversation_id(order_id)
+                resolved_conversation = True
+                data = self.seller_office_send_conversation_payload(conversation_id, payload)
+            if isinstance(data, dict) and data.get("retval") not in (None, 0, "0"):
+                raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL seller office send failed: {data}")
+
+    def seller_office_send_conversation_payload(self, conversation_id: str, payload: dict[str, str]) -> Any:
+        return self.seller_office_request(
+            "POST",
+            f"/api_seller_office/v1/conversations/{urllib.parse.quote(conversation_id, safe='')}/messages",
+            json_body=payload,
         )
-        if r.status_code == 401:
-            self._token = None
-            params["token"] = self.token
-            r = self.http.post(
-                self.api_base + "/debates/v2/upload-preview",
-                params=params,
-                files=files,
-            )
-        if r.status_code >= 400:
-            raise RuntimeError(f"GGSEL file upload HTTP {r.status_code}: {short(r.text, 400)}")
-        content_type = r.headers.get("content-type", "")
-        if "json" not in content_type.lower():
-            raise RuntimeError(f"GGSEL file upload returned non-JSON: {short(r.text, 400)}")
-        data = r.json()
-        if not isinstance(data, dict):
-            raise RuntimeError(f"GGSEL file upload returned invalid data: {short(r.text, 400)}")
-        if data.get("retval") not in (None, 0, "0"):
-            raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL file upload failed: {data}")
-        uploaded: list[dict[str, str]] = []
-        items = data.get("files")
-        if not isinstance(items, list):
-            raise RuntimeError(f"GGSEL file upload returned invalid files data: {short(r.text, 400)}")
-        for item in items:
-            if not isinstance(item, dict):
-                raise RuntimeError(f"GGSEL file upload returned invalid file item: {short(r.text, 400)}")
-            if int(item.get("error_num") or 0) != 0:
-                raise RuntimeError(item.get("error") or item.get("message") or "GGSEL file upload failed")
-            newid = item.get("newid") or item.get("id") or item.get("file_id") or item.get("fileId") or ""
-            uploaded.append(
-                {
-                    "newid": str(newid),
-                    "name": str(item.get("name") or item.get("filename") or ""),
-                    "type": str(item.get("type") or ""),
-                }
-            )
-        if len(uploaded) != len(uploads):
-            raise RuntimeError("GGSEL file upload did not return every file")
-        return uploaded
+
+    def seller_office_conversation_id(self, order_id: int) -> str:
+        data = self.seller_office_get(
+            "/api_seller_office/v1/conversations",
+            {"page": 1, "limit": 10, "q": str(order_id)},
+        )
+        rows = data.get("data") if isinstance(data, dict) else []
+        if not isinstance(rows, list):
+            raise RuntimeError(f"GGSEL seller office conversation search returned invalid data: {data}")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_id = row.get("id")
+            if row_id:
+                return str(row_id)
+        raise RuntimeError(f"GGSEL seller office conversation was not found for order {order_id}")
+
+    def chat_image_data_url(self, item: UploadItem) -> str:
+        content_type = item.content_type or mimetypes.guess_type(item.filename)[0] or "image/png"
+        return f"data:{content_type};base64,{base64.b64encode(item.data).decode('ascii')}"
 
     def session_get(self, path: str) -> Any:
         session_id = urllib.parse.quote(self.token, safe="")
@@ -4801,9 +4800,19 @@ class Handler(BaseHTTPRequestHandler):
             try {{
               const res = await fetch(root.action, {{method: 'POST', body: new FormData(root), redirect: 'follow'}});
               if (!res.ok) {{
-                const html = await res.text().catch(() => '');
-                const doc = new DOMParser().parseFromString(html, 'text/html');
-                const detail = (doc.body.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 240);
+                const contentType = res.headers.get('content-type') || '';
+                let detail = '';
+                if (contentType.includes('application/json')) {{
+                  const data = await res.json().catch(() => ({{}}));
+                  detail = data.error || '';
+                }} else {{
+                  const html = await res.text().catch(() => '');
+                  const doc = new DOMParser().parseFromString(html, 'text/html');
+                  detail = (doc.querySelector('pre.card, pre.code')?.textContent || doc.body.textContent || '')
+                    .trim()
+                    .replace(/\\s+/g, ' ')
+                    .slice(0, 240);
+                }}
                 throw new Error(detail || `HTTP ${{res.status}}`);
               }}
               location.href = res.url || location.href;
@@ -4908,6 +4917,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_funpay_boost_clear_errors()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
         except Exception as exc:
+            if path == "/chats/send":
+                return self.send_json({"ok": False, "error": str(exc)}, 500)
             self.send_html("Error", f"<div class='card bad'>Error</div><pre class='card code'>{h(exc)}</pre>", 500)
 
     def read_json_body(self) -> dict[str, Any]:
