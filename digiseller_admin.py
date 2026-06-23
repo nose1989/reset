@@ -1401,7 +1401,10 @@ class FunPayClient:
         return data if isinstance(data, dict) else {}
 
     def tag_attrs(self, tag: str) -> dict[str, str]:
-        return {name: html.unescape(value) for name, value in re.findall(r'([A-Za-z0-9_:-]+)="([^"]*)"', tag)}
+        attrs: dict[str, str] = {}
+        for match in re.finditer(r"""([A-Za-z0-9_:-]+)\s*=\s*(["'])(.*?)\2""", tag):
+            attrs[match.group(1).lower()] = html.unescape(match.group(3))
+        return attrs
 
     def first_text(self, html_text: str, class_name: str) -> str:
         match = re.search(
@@ -1450,6 +1453,29 @@ class FunPayClient:
             raise RuntimeError("No active FunPay offer categories found")
         return node_ids
 
+    def offer_category_game_ids_from_page(self, page: str) -> dict[int, int]:
+        game_titles = list(
+            re.finditer(
+                r'<[^>]*class=["\'][^"\']*\bgame-title\b[^"\']*["\'][^>]*>',
+                page,
+                re.I,
+            )
+        )
+        game_ids: dict[int, int] = {}
+        for index, game_title in enumerate(game_titles):
+            attrs = self.tag_attrs(game_title.group(0))
+            try:
+                game_id = int(attrs.get("data-id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not game_id:
+                continue
+            end = game_titles[index + 1].start() if index + 1 < len(game_titles) else len(page)
+            block = page[game_title.end() : end]
+            for match in re.finditer(r'(?:https?:\/\/(?:www\.)?funpay\.com)?\/(?:en\/)?lots\/(\d+)\/?', block, re.I):
+                game_ids[int(match.group(1))] = game_id
+        return game_ids
+
     def offer_category_game_id(self, node_id: int) -> int:
         page = self.get(f"/en/lots/{node_id}/trade").text
         for pattern in [
@@ -1464,6 +1490,12 @@ class FunPayClient:
             match = re.search(pattern, page, re.I)
             if match:
                 return int(match.group(1))
+        game_ids = self.offer_category_game_ids_from_page(page)
+        if node_id in game_ids:
+            return game_ids[node_id]
+        game_ids = self.offer_category_game_ids_from_page(self.account_home_page())
+        if node_id in game_ids:
+            return game_ids[node_id]
         raise RuntimeError(f"Could not determine FunPay game ID for category {node_id}")
 
     def raise_offer_category(self, game_id: int, node_id: int, node_ids: list[int] | None = None) -> dict[str, Any]:
@@ -1478,8 +1510,17 @@ class FunPayClient:
             return []
         node_ids: list[int] = []
         seen: set[int] = set()
-        for match in re.finditer(r'value=["\'](\d+)["\']', modal):
-            node_id = int(match.group(1))
+        for match in re.finditer(r'<input\b[^>]*>', modal, re.I):
+            tag = match.group(0)
+            if not re.search(r'\bchecked(?:\s|=|>|/)', tag, re.I):
+                continue
+            attrs = self.tag_attrs(tag)
+            try:
+                node_id = int(attrs.get("value") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not node_id:
+                continue
             if node_id not in seen:
                 seen.add(node_id)
                 node_ids.append(node_id)
@@ -1521,8 +1562,10 @@ class FunPayClient:
             game_id = self.offer_category_game_id(node_id)
             data = self.raise_offer_category(game_id, node_id)
             modal_node_ids = self.raise_modal_node_ids(data)
-            if not modal_node_ids:
+            if not modal_node_ids and not (isinstance(data.get("modal"), str) and data.get("modal", "").strip()):
                 return self.classify_raise_response(node_id, data), []
+            if not modal_node_ids:
+                modal_node_ids = [node_id]
             confirmed = self.raise_offer_category(game_id, node_id, modal_node_ids)
             if self.raise_modal_node_ids(confirmed):
                 return {"node_id": node_id, "status": "failed", "message": "FunPay asked to choose categories again"}, []
