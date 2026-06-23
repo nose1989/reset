@@ -1148,11 +1148,65 @@ class GgselClient:
         return messages
 
     def send_chat_message(self, order_id: int, message: str, uploads: list[UploadItem]) -> None:
-        if uploads:
-            raise RuntimeError("GGSEL replies do not support attachments from this admin yet")
-        data = self.post("/debates/v2", json_body={"message": message}, params={"id_i": order_id})
+        files = self.upload_chat_files(uploads)
+        payload: dict[str, str | list[dict[str, str]]] = {"message": message}
+        if files:
+            payload["files"] = files
+        data = self.post("/debates/v2", json_body=payload, params={"id_i": order_id})
         if isinstance(data, dict) and data.get("retval") not in (None, 0, "0"):
             raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL send failed: {data}")
+
+    def upload_chat_files(self, uploads: list[UploadItem]) -> list[dict[str, str]]:
+        if not uploads:
+            return []
+        files = [
+            ("files[]", (item.filename, item.data, item.content_type or "application/octet-stream"))
+            for item in uploads
+        ]
+        params = {"token": self.token, "lang": "en-US"}
+        r = self.http.post(
+            self.api_base + "/debates/v2/upload-preview",
+            params=params,
+            files=files,
+        )
+        if r.status_code == 401:
+            self._token = None
+            params["token"] = self.token
+            r = self.http.post(
+                self.api_base + "/debates/v2/upload-preview",
+                params=params,
+                files=files,
+            )
+        if r.status_code >= 400:
+            raise RuntimeError(f"GGSEL file upload HTTP {r.status_code}: {short(r.text, 400)}")
+        content_type = r.headers.get("content-type", "")
+        if "json" not in content_type.lower():
+            raise RuntimeError(f"GGSEL file upload returned non-JSON: {short(r.text, 400)}")
+        data = r.json()
+        if not isinstance(data, dict):
+            raise RuntimeError(f"GGSEL file upload returned invalid data: {short(r.text, 400)}")
+        if data.get("retval") not in (None, 0, "0"):
+            raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL file upload failed: {data}")
+        uploaded: list[dict[str, str]] = []
+        items = data.get("files")
+        if not isinstance(items, list):
+            raise RuntimeError(f"GGSEL file upload returned invalid files data: {short(r.text, 400)}")
+        for item in items:
+            if not isinstance(item, dict):
+                raise RuntimeError(f"GGSEL file upload returned invalid file item: {short(r.text, 400)}")
+            if int(item.get("error_num") or 0) != 0:
+                raise RuntimeError(item.get("error") or item.get("message") or "GGSEL file upload failed")
+            newid = item.get("newid") or item.get("id") or item.get("file_id") or item.get("fileId") or ""
+            uploaded.append(
+                {
+                    "newid": str(newid),
+                    "name": str(item.get("name") or item.get("filename") or ""),
+                    "type": str(item.get("type") or ""),
+                }
+            )
+        if len(uploaded) != len(uploads):
+            raise RuntimeError("GGSEL file upload did not return every file")
+        return uploaded
 
     def session_get(self, path: str) -> Any:
         session_id = urllib.parse.quote(self.token, safe="")
@@ -4746,12 +4800,19 @@ class Handler(BaseHTTPRequestHandler):
             }}
             try {{
               const res = await fetch(root.action, {{method: 'POST', body: new FormData(root), redirect: 'follow'}});
-              if (!res.ok) throw new Error(`HTTP ${{res.status}}`);
+              if (!res.ok) {{
+                const html = await res.text().catch(() => '');
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                const detail = (doc.body.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 240);
+                throw new Error(detail || `HTTP ${{res.status}}`);
+              }}
               location.href = res.url || location.href;
             }} catch (error) {{
               pending.classList.add('send-failed');
               const meta = pending.querySelector('.muted');
               if (meta) meta.textContent = '\u53d1\u9001\u5931\u8d25';
+              const bubble = pending.querySelector('.chat-bubble');
+              if (bubble) bubble.textContent = `\u53d1\u9001\u5931\u8d25\uff1a${{error.message || error}}`;
               button.disabled = false;
               button.textContent = originalText;
             }}
