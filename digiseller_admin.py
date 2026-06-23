@@ -49,9 +49,8 @@ COMMON_PHRASES_FILE = APP_DIR / "common_phrases.json"
 COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
-DIGISELLER_STOCK_CACHE_FILE = APP_DIR / "digiseller_stock_cache.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.17-plati-replenish-draft"
+APP_VERSION = "v8.18-no-chat-replenish"
 
 
 @dataclass
@@ -896,20 +895,6 @@ class DigisellerClient:
             raise RuntimeError(data.get("retdesc") or data.get("desc") or f"Stock upload failed: {data}")
         return data if isinstance(data, dict) else {"raw": data}
 
-    def delete_content(self, product_id: int, content_id: int) -> None:
-        params = {"ProductId": product_id, "ContentId": content_id, "token": self.token}
-        r = self.http.get(API_BASE + "/product/content/delete", params=params)
-        if r.status_code == 401:
-            self._token = None
-            params["token"] = self.token
-            r = self.http.get(API_BASE + "/product/content/delete", params=params)
-        r.raise_for_status()
-        if not r.content:
-            return
-        data = r.json()
-        if isinstance(data, dict) and int(data.get("retval") or 0) != 0:
-            raise RuntimeError(data.get("retdesc") or data.get("desc") or f"Stock delete failed: {data}")
-
     def unique_code(self, unique_code: str) -> dict[str, Any]:
         safe_code = urllib.parse.quote(unique_code, safe="")
         data = self.get(f"/purchases/unique-code/{safe_code}")
@@ -944,8 +929,6 @@ class GgselClient:
         self.seller_id = os.getenv("GGSEL_SELLER_ID", "").strip()
         self.api_key = os.getenv("GGSEL_API_KEY", "").strip()
         self.api_base = os.getenv("GGSEL_API_BASE", "https://seller.ggsel.com/api_sellers/api").strip().rstrip("/")
-        self.seller_cookie = os.getenv("GGSEL_SELLER_COOKIE", os.getenv("GGSEL_COOKIE", "")).strip()
-        self.seller_office_base = os.getenv("GGSEL_SELLER_OFFICE_BASE", "https://seller.ggsel.com").strip().rstrip("/")
         self.http = httpx.Client(timeout=35, headers={"Accept": "application/json", "User-Agent": "Digiseller Local Admin"})
         self._token: str | None = None
         self.valid_thru: str | None = None
@@ -1170,138 +1153,6 @@ class GgselClient:
             return ""
         return f"https://ggsel.net/en/catalog/product/{urllib.parse.quote(str(product_id))}"
 
-    def seller_office_configured(self) -> bool:
-        return bool(self.seller_cookie)
-
-    def seller_office_request(
-        self,
-        method: str,
-        path: str,
-        params: dict[str, Any] | None = None,
-        json_body: dict[str, Any] | None = None,
-    ) -> Any:
-        if not self.seller_cookie:
-            raise RuntimeError("GGSEL_SELLER_COOKIE is missing. Put the seller login cookie in .env to send stock items.")
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "Digiseller Local Admin",
-            "Cookie": self.seller_cookie,
-            "Origin": self.seller_office_base,
-            "Referer": f"{self.seller_office_base}/en/offers",
-        }
-        r = self.http.request(
-            method,
-            self.seller_office_base + path,
-            params=params or {},
-            json=json_body,
-            headers=headers,
-            follow_redirects=True,
-        )
-        if r.status_code in (401, 403):
-            raise RuntimeError("GGSEL seller cookie is missing or expired")
-        if r.status_code >= 400:
-            raise RuntimeError(f"GGSEL seller office HTTP {r.status_code}: {short(r.text, 400)}")
-        if not r.content:
-            return {}
-        content_type = r.headers.get("content-type", "")
-        if "json" not in content_type.lower():
-            raise RuntimeError(f"GGSEL seller office returned non-JSON from {path}: {short(r.text, 400)}")
-        return r.json()
-
-    def seller_office_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        return self.seller_office_request("GET", path, params=params)
-
-    def seller_office_delete(self, path: str) -> None:
-        self.seller_office_request("DELETE", path)
-
-    def seller_office_fetch_text(self, url_or_path: str) -> str:
-        if not self.seller_cookie:
-            raise RuntimeError("GGSEL_SELLER_COOKIE is missing. Put the seller login cookie in .env to send stock items.")
-        target = url_or_path.strip()
-        if not target:
-            return ""
-        if target.startswith("//"):
-            target = "https:" + target
-        elif target.startswith("/"):
-            target = self.seller_office_base + target
-        elif not re.match(r"https?://", target, flags=re.I):
-            target = self.seller_office_base + "/" + target.lstrip("/")
-        headers = {
-            "Accept": "text/plain, application/octet-stream, application/json;q=0.9, */*;q=0.8",
-            "User-Agent": "Digiseller Local Admin",
-            "Referer": f"{self.seller_office_base}/en/offers",
-        }
-        if urllib.parse.urlparse(target).netloc == urllib.parse.urlparse(self.seller_office_base).netloc:
-            headers["Cookie"] = self.seller_cookie
-        r = self.http.get(target, headers=headers, follow_redirects=True)
-        content_length = r.headers.get("content-length")
-        if content_length:
-            try:
-                if int(content_length) > 1_000_000:
-                    raise RuntimeError("Stock file is too large to send as text")
-            except ValueError:
-                pass
-        if r.status_code in (401, 403):
-            raise RuntimeError("GGSEL seller cookie is missing or expired")
-        if r.status_code >= 400:
-            raise RuntimeError(f"GGSEL seller office file HTTP {r.status_code}: {short(r.text, 400)}")
-        content = r.content
-        if len(content) > 1_000_000:
-            raise RuntimeError("Stock file is too large to send as text")
-        if not content:
-            return ""
-        content_type = r.headers.get("content-type", "").lower()
-        if "json" in content_type:
-            try:
-                data = r.json()
-            except ValueError:
-                data = None
-            if isinstance(data, dict):
-                for key in ("content", "text", "value", "data"):
-                    value = data.get(key)
-                    if isinstance(value, str) and clean_text(value):
-                        return clean_text(value)
-        if b"\x00" in content[:2048]:
-            raise RuntimeError("Stock file is not a text file")
-        for encoding in ("utf-8-sig", "utf-8", "cp1251", "latin-1"):
-            try:
-                return clean_text(content.decode(encoding))
-            except UnicodeDecodeError:
-                continue
-        return clean_text(content.decode("utf-8", errors="replace"))
-
-    def seller_office_offer_by_ggsel_id(self, ggsel_product_id: Any) -> dict[str, Any]:
-        data = self.seller_office_get(f"/api/v1/offers/ggsel/{urllib.parse.quote(str(ggsel_product_id), safe='')}")
-        offer = data.get("data") if isinstance(data, dict) else None
-        return offer if isinstance(offer, dict) else {}
-
-    def seller_office_search_offer(self, query: str) -> dict[str, Any]:
-        search = clean_text(query)
-        if not search:
-            return {}
-        data = self.seller_office_get("/api/v1/offers", {"search": search, "page": 1, "limit": 20})
-        rows = data.get("data") if isinstance(data, dict) else []
-        if not isinstance(rows, list):
-            return {}
-        normalized_search = search.casefold()
-        best = {}
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            title = clean_text(row.get("title"))
-            normalized_title = title.casefold()
-            if normalized_title == normalized_search:
-                return row
-            if not best and (normalized_search in normalized_title or normalized_title in normalized_search):
-                best = row
-        return best if isinstance(best, dict) else {}
-
-    def seller_office_offer_products(self, offer_id: int, page: int = 1, limit: int = 20) -> dict[str, Any]:
-        data = self.seller_office_get(f"/api/v1/offers/{offer_id}/products", {"page": page, "limit": limit})
-        return data if isinstance(data, dict) else {}
-
-    def seller_office_delete_product(self, offer_id: int, product_id: int) -> None:
-        self.seller_office_delete(f"/api_seller_office/v1/offers/{offer_id}/products/{product_id}")
 
 
 class FunPayClient:
@@ -2601,86 +2452,6 @@ def parse_stock_lines(raw: str, variant_id: int = 0) -> list[dict[str, Any]]:
     return items
 
 
-def digiseller_stock_user_key() -> str:
-    return str(client.seller_id)
-
-
-def load_digiseller_stock_cache() -> dict[str, Any]:
-    if not DIGISELLER_STOCK_CACHE_FILE.exists():
-        return {}
-    try:
-        data = json.loads(DIGISELLER_STOCK_CACHE_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def save_digiseller_stock_cache(data: dict[str, Any]) -> None:
-    tmp = DIGISELLER_STOCK_CACHE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(DIGISELLER_STOCK_CACHE_FILE)
-
-
-def record_digiseller_stock_upload(product_id: int, items: list[dict[str, Any]], response: dict[str, Any]) -> None:
-    uploaded = response.get("content")
-    if not isinstance(uploaded, list):
-        return
-    data = load_digiseller_stock_cache()
-    user_key = digiseller_stock_user_key()
-    products = data.setdefault(user_key, {})
-    if not isinstance(products, dict):
-        products = {}
-        data[user_key] = products
-    product_key = str(product_id)
-    entries = products.setdefault(product_key, [])
-    if not isinstance(entries, list):
-        entries = []
-        products[product_key] = entries
-    for item, saved in zip(items, uploaded):
-        if not isinstance(saved, dict):
-            continue
-        content_id = int(saved.get("content_id") or 0)
-        value = clean_text(item.get("value"))
-        if not content_id or not value:
-            continue
-        entries.append(
-            {
-                "content_id": content_id,
-                "value": value,
-                "serial": clean_text(item.get("serial")),
-                "variant_id": int(item.get("id_v") or 0),
-                "created_at": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-            }
-        )
-    save_digiseller_stock_cache(data)
-
-
-def first_cached_digiseller_stock(product_id: int) -> dict[str, Any]:
-    data = load_digiseller_stock_cache()
-    products = data.get(digiseller_stock_user_key())
-    if not isinstance(products, dict):
-        return {}
-    entries = products.get(str(product_id))
-    if not isinstance(entries, list):
-        return {}
-    for entry in entries:
-        if isinstance(entry, dict) and int(entry.get("content_id") or 0) and clean_text(entry.get("value")):
-            return entry
-    return {}
-
-
-def remove_cached_digiseller_stock(product_id: int, content_id: int) -> None:
-    data = load_digiseller_stock_cache()
-    products = data.get(digiseller_stock_user_key())
-    if not isinstance(products, dict):
-        return
-    entries = products.get(str(product_id))
-    if not isinstance(entries, list):
-        return
-    products[str(product_id)] = [entry for entry in entries if not isinstance(entry, dict) or int(entry.get("content_id") or 0) != content_id]
-    save_digiseller_stock_cache(data)
-
-
 def unread_summary() -> dict[str, Any]:
     try:
         buyer = [
@@ -3251,19 +3022,6 @@ def ggsel_order_product_id(order_id: int, fallback: Any = "") -> str:
     return fallback_text or str(order_id)
 
 
-def ggsel_seller_office_offer_for_order(order_id: int, fallback_product: Any = "") -> dict[str, Any]:
-    product_id = ggsel_order_product_id(order_id, fallback_product)
-    if looks_like_ggsel_product_id(product_id):
-        try:
-            offer = ggsel_client.seller_office_offer_by_ggsel_id(product_id)
-        except Exception:
-            offer = {}
-        if offer:
-            return offer
-    product_name = ggsel_order_product_name(order_id, fallback_product)
-    return ggsel_client.seller_office_search_offer(product_name)
-
-
 def digiseller_order_product_name(order_id: int, fallback: Any = "") -> str:
     info = cached_purchase_info(order_id)
     for key in ("product", "product_name", "goods_name", "name_goods", "name"):
@@ -3280,205 +3038,6 @@ def digiseller_order_product_name(order_id: int, fallback: Any = "") -> str:
     if fallback_text and fallback_text != "Direct order lookup":
         return fallback_text
     return ""
-
-
-def digiseller_order_product_id(order_id: int) -> int:
-    info = cached_purchase_info(order_id)
-    containers: list[dict[str, Any]] = []
-    for value in (info, info.get("content"), info.get("product")):
-        if isinstance(value, dict):
-            containers.append(value)
-    for container in containers:
-        for key in ("id_goods", "item_id", "product_id", "id_good", "good_id", "id"):
-            try:
-                product_id = int(container.get(key) or 0)
-            except (TypeError, ValueError):
-                product_id = 0
-            if product_id:
-                return product_id
-        product = container.get("product")
-        if isinstance(product, dict):
-            for key in ("id", "product_id", "id_goods", "item_id"):
-                try:
-                    product_id = int(product.get(key) or 0)
-                except (TypeError, ValueError):
-                    product_id = 0
-                if product_id:
-                    return product_id
-    return 0
-
-
-STOCK_FILE_URL_KEYS = ("download_url", "file_url", "url", "href", "link", "file", "path")
-STOCK_TEXT_FILE_EXTENSIONS = (".txt", ".csv", ".log", ".md", ".json", ".yaml", ".yml")
-
-
-def looks_like_stock_file_url(url: str) -> bool:
-    parsed = urllib.parse.urlparse(url)
-    path = urllib.parse.unquote(parsed.path or url).lower()
-    if path.endswith(STOCK_TEXT_FILE_EXTENSIONS):
-        return True
-    return any(part in path for part in ("/download", "/downloads", "/files/", "/uploads/", "/attachments/"))
-
-
-def stock_file_url_from_value(value: Any, *, require_file_hint: bool = True) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    href = re.search(r'''href=["']([^"']+)["']''', raw, flags=re.I)
-    if href:
-        candidate = html.unescape(href.group(1)).strip()
-        if candidate and (not require_file_hint or looks_like_stock_file_url(candidate)):
-            return candidate
-    plain = clean_text(raw)
-    is_url = re.match(r"https?://", plain, flags=re.I) or plain.startswith("//")
-    is_relative = plain.startswith(("/api/", "/api_", "/uploads/", "/storage/", "/files/", "/download"))
-    if (is_url or is_relative) and (not require_file_hint or looks_like_stock_file_url(plain)):
-        return plain
-    return ""
-
-
-def stock_file_url_from_item(item: dict[str, Any]) -> str:
-    for key in STOCK_FILE_URL_KEYS:
-        value = item.get(key)
-        require_file_hint = key not in {"download_url", "file_url", "file"}
-        if isinstance(value, str):
-            candidate = stock_file_url_from_value(value, require_file_hint=require_file_hint)
-            if candidate:
-                return candidate
-        if isinstance(value, dict):
-            candidate = stock_file_url_from_item(value)
-            if candidate:
-                return candidate
-    attachments = item.get("attachments") or item.get("files")
-    if isinstance(attachments, list):
-        for attachment in attachments:
-            if isinstance(attachment, dict):
-                candidate = stock_file_url_from_item(attachment)
-                if candidate:
-                    return candidate
-            elif isinstance(attachment, str):
-                candidate = stock_file_url_from_value(attachment)
-                if candidate:
-                    return candidate
-    return stock_file_url_from_value(item.get("value"))
-
-
-def stock_item_message_text(offer_id: int, item: dict[str, Any]) -> str:
-    file_url = stock_file_url_from_item(item)
-    if file_url:
-        file_text = ggsel_client.seller_office_fetch_text(file_url)
-        if file_text:
-            return file_text
-    return clean_text(item.get("value"))
-
-
-def seller_office_stock_for_offer(offer: dict[str, Any]) -> dict[str, Any]:
-    offer_id = int(offer.get("id") or 0)
-    if not offer_id:
-        raise RuntimeError("Could not match this order to a seller-office offer")
-    products_data = ggsel_client.seller_office_offer_products(offer_id, page=1, limit=20)
-    products = products_data.get("data") if isinstance(products_data, dict) else []
-    if not isinstance(products, list) or not products:
-        raise RuntimeError("No stock items are available for this offer")
-    stock_item: dict[str, Any] | None = None
-    stock_message = ""
-    for item in products:
-        if not isinstance(item, dict):
-            continue
-        message = stock_item_message_text(offer_id, item)
-        if message:
-            stock_item = item
-            stock_message = message
-            break
-    if not stock_item:
-        raise RuntimeError("No usable stock item value is available for this offer")
-    stock_item_id = int(stock_item.get("id") or 0)
-    if not stock_item_id:
-        raise RuntimeError("Stock item ID is missing")
-    return {"offer_id": offer_id, "stock_item_id": stock_item_id, "message": stock_message, "product": clean_text(offer.get("title"))}
-
-
-def funpay_offer_search_text(product_name: str) -> str:
-    product = clean_text(product_name)
-    parts = [part.strip() for part in product.split(",") if part.strip()]
-    if len(parts) >= 3:
-        product = ", ".join(parts[2:])
-    product = re.sub(r",\s*(?:Free|[\d.]+\s*[A-Z$€₽]+),\s*\d+\s+pcs?\.?$", "", product, flags=re.I)
-    product = re.sub(r",\s*\d+\s+pcs?\.?$", "", product, flags=re.I)
-    return clean_text(product)
-
-
-def stock_item_draft_for_chat(order_id: int, platform: str, fallback_product: Any = "") -> dict[str, Any]:
-    normalized_platform = platform if platform in ("ggsel", "funpay") else "digiseller"
-    if normalized_platform == "ggsel":
-        offer = ggsel_seller_office_offer_for_order(order_id, fallback_product)
-    elif normalized_platform == "funpay":
-        product_name = funpay_client.chat_product(order_id) or clean_text(fallback_product)
-        offer = ggsel_client.seller_office_search_offer(product_name)
-        if not offer:
-            offer = ggsel_client.seller_office_search_offer(funpay_offer_search_text(product_name))
-    else:
-        product_id = digiseller_order_product_id(order_id)
-        if not product_id:
-            raise RuntimeError("Could not find the Digiseller product ID for this order")
-        item = first_cached_digiseller_stock(product_id)
-        if not item:
-            raise RuntimeError("No cached Digiseller stock is available for this product. Upload stock through the Stock page first.")
-        stock_item_id = int(item.get("content_id") or 0)
-        message = clean_text(item.get("value"))
-        if not stock_item_id or not message:
-            raise RuntimeError("Cached Digiseller stock item is missing content")
-        return {
-            "offer_id": product_id,
-            "stock_item_id": stock_item_id,
-            "message": message,
-            "product": digiseller_order_product_name(order_id, fallback_product) or f"Product {product_id}",
-            "platform": normalized_platform,
-        }
-    stock = seller_office_stock_for_offer(offer)
-    message = stock["message"]
-    offer_id = int(stock["offer_id"])
-    stock_item_id = int(stock["stock_item_id"])
-    return {
-        "offer_id": offer_id,
-        "stock_item_id": stock_item_id,
-        "message": message,
-        "product": stock["product"],
-        "platform": normalized_platform,
-    }
-
-
-def delete_stock_item_after_reply(platform: str, offer_id: int, stock_item_id: int) -> None:
-    if not offer_id or not stock_item_id:
-        return
-    try:
-        if platform == "digiseller":
-            client.delete_content(offer_id, stock_item_id)
-            remove_cached_digiseller_stock(offer_id, stock_item_id)
-        else:
-            ggsel_client.seller_office_delete_product(offer_id, stock_item_id)
-    except Exception as exc:
-        raise RuntimeError(f"Reply was sent, but removing it from stock failed: {exc}") from exc
-
-
-def send_stock_item_to_chat(order_id: int, platform: str, fallback_product: Any = "") -> dict[str, Any]:
-    stock = stock_item_draft_for_chat(order_id, platform, fallback_product)
-    message = stock["message"]
-    offer_id = int(stock["offer_id"])
-    stock_item_id = int(stock["stock_item_id"])
-    normalized_platform = str(stock["platform"])
-    if normalized_platform == "ggsel":
-        ggsel_client.send_chat_message(order_id, message, [])
-    elif normalized_platform == "funpay":
-        funpay_client.send_chat_message(order_id, message, [])
-    else:
-        client.send_chat_message(order_id, message, [])
-    delete_stock_item_after_reply(normalized_platform, offer_id, stock_item_id)
-    return {"offer_id": offer_id, "stock_item_id": stock_item_id, "product": stock["product"], "platform": normalized_platform}
-
-
-def ggsel_send_stock_item_to_chat(order_id: int, fallback_product: Any = "") -> dict[str, Any]:
-    return send_stock_item_to_chat(order_id, "ggsel", fallback_product)
 
 
 def ggsel_order_buyer_email_from_info(info: dict[str, Any]) -> str:
@@ -4168,7 +3727,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def reply_editor(self, order_id: int, target_lang: str, platform: str = "digiseller", email: str = "", product: str = "") -> str:
         editor_id = f"reply-{platform}-{order_id}"
-        stock_button = f"<button id='{editor_id}-stock-button' type='button' data-stock-url='/api/stock-draft'>&#34917;&#36135;</button>"
         phrase_forms = []
         for phrase in load_common_phrases():
             text = str(phrase.get("text") or "")
@@ -4216,8 +3774,6 @@ class Handler(BaseHTTPRequestHandler):
           <input type="hidden" name="target_lang" value="{h(target_lang)}">
           <input type="hidden" name="email" value="{h(email)}">
           <input type="hidden" name="product" value="{h(product)}">
-          <input id="{editor_id}-stock-offer-id" type="hidden" name="stock_offer_id" value="">
-          <input id="{editor_id}-stock-item-id" type="hidden" name="stock_item_id" value="">
           <textarea id="{editor_id}-message" name="message" placeholder="&#22312;&#36825;&#37324;&#22238;&#22797;&#20250;&#21592;&#20449;&#24687;&#65292;&#21487;&#22635;&#20889;&#36134;&#21495;&#12289;&#23494;&#30721;&#12289;&#38142;&#25509;&#12289;&#20351;&#29992;&#35828;&#26126;&#31561;&#12290;"></textarea>
           <div class="reply-actions">
             <div id="{editor_id}-dropzone" class="reply-dropzone">
@@ -4225,7 +3781,6 @@ class Handler(BaseHTTPRequestHandler):
               <span class="reply-dropzone-text">&#25302;&#25341;&#22270;&#29255;/&#38468;&#20214;&#21040;&#36825;&#37324;&#65292;&#25110;&#28857;&#20987;&#36873;&#25321;&#25991;&#20214;</span>
             </div>
             <button type="submit">&#21457;&#36865;&#22238;&#22797;</button>
-            {stock_button}
             <button id="{editor_id}-phrase-toggle" type="button" aria-expanded="false" aria-controls="{editor_id}-phrases">&#24120;&#29992;&#35821;</button>
             <span class="reply-hint">&#20013;&#25991;&#20250;&#33258;&#21160;&#32763;&#35793;&#20026; {h(lang_label(target_lang))} &#20877;&#21457;&#36865;&#12290;&#25903;&#25345;&#22270;&#29255;&#12289;&#38468;&#20214;&#12289;&#25991;&#26723;/&#25991;&#29486;&#65292;&#20063;&#21487;&#30452;&#25509; Ctrl+V &#31896;&#36148;&#21098;&#36148;&#26495;&#22270;&#29255;&#12290;</span>
           </div>
@@ -4241,9 +3796,6 @@ class Handler(BaseHTTPRequestHandler):
           const selected = document.getElementById('{editor_id}-selected');
           const phrases = document.getElementById('{editor_id}-phrases');
           const phraseToggle = document.getElementById('{editor_id}-phrase-toggle');
-          const stockButton = document.getElementById('{editor_id}-stock-button');
-          const stockOfferId = document.getElementById('{editor_id}-stock-offer-id');
-          const stockItemId = document.getElementById('{editor_id}-stock-item-id');
           let previewUrls = [];
           let selectedFiles = Array.from(input.files || []);
           const previewModal = document.createElement('div');
@@ -4371,32 +3923,6 @@ class Handler(BaseHTTPRequestHandler):
               textarea.focus();
             }});
           }});
-          if (stockButton) {{
-            stockButton.addEventListener('click', async () => {{
-              const originalText = stockButton.textContent;
-              stockButton.disabled = true;
-              stockButton.textContent = '读取中...';
-              try {{
-                const res = await fetch(stockButton.dataset.stockUrl || '/api/stock-draft', {{
-                  method: 'POST',
-                  body: new FormData(root),
-                  cache: 'no-store',
-                }});
-                const data = await res.json().catch(() => ({{}}));
-                if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${{res.status}}`);
-                textarea.value = data.message || '';
-                stockOfferId.value = data.offer_id || '';
-                stockItemId.value = data.stock_item_id || '';
-                textarea.focus();
-                stockButton.textContent = '库存已填，发送后删除';
-              }} catch (error) {{
-                alert(`补货读取失败：${{error.message || error}}`);
-                stockButton.textContent = originalText;
-              }} finally {{
-                stockButton.disabled = false;
-              }}
-            }});
-          }}
           input.addEventListener('change', () => {{
             addFiles(input.files);
           }});
@@ -4534,10 +4060,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/chats/send":
                 return self.send_chat_reply()
-            if path == "/chats/send-stock":
-                return self.send_stock_reply()
-            if path == "/api/stock-draft":
-                return self.api_stock_draft()
             if path == "/phrases/save":
                 return self.save_phrase()
             if path == "/phrases/delete":
@@ -4568,19 +4090,6 @@ class Handler(BaseHTTPRequestHandler):
         data = json.loads(raw.decode("utf-8"))
         return data if isinstance(data, dict) else {}
 
-    def api_stock_draft(self) -> None:
-        fields, _ = self.read_form()
-        order_id = int(fields.get("order_id", "0") or 0)
-        platform = fields.get("platform", "digiseller").strip() or "digiseller"
-        product = fields.get("product", "").strip()
-        if not order_id:
-            return self.send_json({"ok": False, "error": "Order ID is missing"}, 400)
-        try:
-            stock = stock_item_draft_for_chat(order_id, platform, product)
-        except Exception as exc:
-            return self.send_json({"ok": False, "error": str(exc)}, 500)
-        return self.send_json({"ok": True, **stock})
-
     def send_chat_reply(self) -> None:
         fields, uploads = self.read_form()
         order_id = int(fields.get("order_id", "0") or 0)
@@ -4588,8 +4097,6 @@ class Handler(BaseHTTPRequestHandler):
         phrase_id = fields.get("phrase_id", "").strip()
         target_lang = fields.get("target_lang", "").strip() or "en"
         platform = fields.get("platform", "digiseller").strip() or "digiseller"
-        stock_offer_id = int(fields.get("stock_offer_id", "0") or 0)
-        stock_item_id = int(fields.get("stock_item_id", "0") or 0)
         if not order_id:
             raise RuntimeError("Order ID is missing")
         if phrase_id:
@@ -4604,23 +4111,14 @@ class Handler(BaseHTTPRequestHandler):
             message, _ = google_translate(message, target_lang, "zh-CN")
         if platform == "ggsel":
             ggsel_client.send_chat_message(order_id, message, uploads)
-            delete_stock_item_after_reply(platform, stock_offer_id, stock_item_id)
-            sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
-            self.redirect(f"/chats?platform=ggsel&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
+            self.redirect(f"/chats?platform=ggsel&order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
             return
         if platform == "funpay":
             funpay_client.send_chat_message(order_id, message, uploads)
-            delete_stock_item_after_reply(platform, stock_offer_id, stock_item_id)
-            sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
-            self.redirect(f"/chats?platform=funpay&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
+            self.redirect(f"/chats?platform=funpay&order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
             return
         client.send_chat_message(order_id, message, uploads)
-        delete_stock_item_after_reply("digiseller", stock_offer_id, stock_item_id)
-        sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
-        self.redirect(f"/chats?order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
-
-    def send_stock_reply(self) -> None:
-        raise RuntimeError("Stock replenishment now fills the reply box first. Refresh the chat, click Replenish, then click Send Reply.")
+        self.redirect(f"/chats?order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
 
     def home(self) -> None:
         configured = client.configured()
@@ -5383,9 +4881,7 @@ class Handler(BaseHTTPRequestHandler):
             if not rows:
                 rows.append("<div class='empty-state'>No order messages yet. Send a reply below to start the order chat.</div>")
             notice = ""
-            if self.q("stock_sent") == "1":
-                notice = "<div class='notice ok-bg'>&#24050;&#34917;&#36135;&#65292;&#24182;&#20174;&#24211;&#23384;&#20013;&#31227;&#38500;&#19968;&#26465;&#21830;&#21697;&#12290;</div>"
-            elif self.q("sent") == "1":
+            if self.q("sent") == "1":
                 notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
             return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang, email=str(selected_chat.get('email') or ''), product=str(selected_chat.get('product') or ''))}</div>"
         return "<div id='chat-panel' class='conversation-panel' data-kind='order'><div class='empty-state'>No chats found</div></div>"
@@ -5457,9 +4953,7 @@ class Handler(BaseHTTPRequestHandler):
         if not rows:
             rows.append("<div class='empty-state'>No GGSEL messages loaded</div>")
         notice = ""
-        if self.q("stock_sent") == "1":
-            notice = "<div class='notice ok-bg'>&#24050;&#34917;&#36135;&#65292;&#24182;&#20174;&#24211;&#23384;&#20013;&#31227;&#38500;&#19968;&#26465;&#21830;&#21697;&#12290;</div>"
-        elif self.q("sent") == "1":
+        if self.q("sent") == "1":
             notice = "<div class='notice ok-bg'>&#22238;&#22797;&#24050;&#21457;&#36865;&#65292;&#27491;&#22312;&#26174;&#31034;&#26368;&#26032;&#23545;&#35805;&#12290;</div>"
         return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-platform='ggsel' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang, platform='ggsel', email=buyer_email, product=product)}</div>"
 
@@ -6232,7 +5726,6 @@ class Handler(BaseHTTPRequestHandler):
         if len(items) > 1000:
             raise RuntimeError("Upload at most 1000 stock items at once")
         response = client.add_text_stock(product_id, items)
-        record_digiseller_stock_upload(product_id, items, response)
         rows = [
             ["Product ID", h(product_id)],
             ["Uploaded lines", h(len(items))],
