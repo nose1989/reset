@@ -54,6 +54,25 @@ SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 DIGISELLER_STOCK_CACHE_FILE = APP_DIR / "digiseller_stock_cache.json"
 API_BASE = "https://api.digiseller.com/api"
 APP_VERSION = "v8.17-plati-replenish-draft"
+GGSEL_INLINE_ATTACHMENT_MAX_BYTES = 128 * 1024
+GGSEL_TEXT_ATTACHMENT_TYPES = {
+    "application/json",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+}
+GGSEL_TEXT_ATTACHMENT_SUFFIXES = {
+    ".csv",
+    ".ini",
+    ".json",
+    ".log",
+    ".md",
+    ".text",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
 
 
 @dataclass
@@ -1150,18 +1169,58 @@ class GgselClient:
         return messages
 
     def send_chat_message(self, order_id: int, message: str, uploads: list[UploadItem]) -> None:
+        message, file_uploads = self.prepare_chat_uploads(message, uploads)
+        if file_uploads:
+            if self.seller_cookie:
+                self.send_seller_office_chat_message(order_id, message, file_uploads)
+                return
+            unsupported = ", ".join(item.filename for item in file_uploads)
+            raise RuntimeError(
+                "GGSEL API does not support file uploads. Add GGSEL_SELLER_COOKIE to send image attachments, "
+                f"or attach small text files that can be sent as message text: {unsupported}"
+            )
         payload: dict[str, Any] = {"message": message}
-        if uploads:
-            try:
-                payload["files"] = self.upload_chat_files(uploads)
-            except Exception as exc:
-                if self.seller_cookie:
-                    self.send_seller_office_chat_message(order_id, message, uploads)
-                    return
-                raise RuntimeError(f"GGSEL file upload failed: {exc}") from exc
         data = self.post("/debates/v2", json_body=payload, params={"id_i": order_id})
         if isinstance(data, dict) and data.get("retval") not in (None, 0, "0"):
             raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL send failed: {data}")
+
+    def prepare_chat_uploads(self, message: str, uploads: list[UploadItem]) -> tuple[str, list[UploadItem]]:
+        if not uploads:
+            return message, []
+        text_parts: list[str] = []
+        file_uploads: list[UploadItem] = []
+        for item in uploads:
+            text = self.text_upload_body(item)
+            if text is None:
+                file_uploads.append(item)
+            else:
+                text_parts.append(f"{item.filename}:\n{text}")
+        if not text_parts:
+            return message, file_uploads
+        body = "\n\n".join(text_parts)
+        if message:
+            return f"{message.rstrip()}\n\n{body}", file_uploads
+        return body, file_uploads
+
+    def text_upload_body(self, item: UploadItem) -> str | None:
+        content_type = (item.content_type or "").split(";", 1)[0].lower()
+        guessed_type = (mimetypes.guess_type(item.filename)[0] or "").lower()
+        suffix = Path(item.filename).suffix.lower()
+        text_like = (
+            content_type.startswith("text/")
+            or guessed_type.startswith("text/")
+            or content_type in GGSEL_TEXT_ATTACHMENT_TYPES
+            or guessed_type in GGSEL_TEXT_ATTACHMENT_TYPES
+            or suffix in GGSEL_TEXT_ATTACHMENT_SUFFIXES
+        )
+        if not text_like:
+            return None
+        if len(item.data) > GGSEL_INLINE_ATTACHMENT_MAX_BYTES:
+            raise RuntimeError(
+                f"GGSEL text attachment is too large to send as chat text: {item.filename} "
+                f"(max {GGSEL_INLINE_ATTACHMENT_MAX_BYTES // 1024} KB)"
+            )
+        return item.data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n").strip()
 
     def upload_chat_files(self, uploads: list[UploadItem]) -> list[dict[str, str]]:
         if not uploads:

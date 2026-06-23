@@ -63,7 +63,7 @@ http://127.0.0.1:8765
 `/ggsel` reads `GGSEL_API_KEY` from `.env` and never stores it in code. Optional settings:
 
 - `GGSEL_SELLER_ID`: filter the catalog to one seller when needed.
-- `GGSEL_SELLER_COOKIE`: optional seller-office login cookie, required for seller-office actions such as GGSEL stock sending/removal and chat image fallback.
+- `GGSEL_SELLER_COOKIE`: optional seller-office login cookie, required for seller-office actions such as GGSEL stock sending/removal and GGSEL image attachments.
 - `GGSEL_PARTNER_ID`: generate product links with `ai` when needed.
 - `GGSEL_API_BASE`: defaults to `https://seller.ggsel.com/api_sellers/api`.
 - `GGSEL_KEEP_ONLINE`: keep the GGSEL seller chat online with `setonlinesetting` and heartbeat APIs.
@@ -99,5 +99,5 @@ python3 digiseller_admin.py watch --interval 15
 
 - `/chats` includes a reply editor under the selected buyer conversation.
 - Text replies are sent through Digiseller `/debates/v2/`.
-- Multiple images, attachments, and reference files are preuploaded through `/debates/v2/upload-preview` and sent with the reply.
+- Multiple images, attachments, and reference files are preuploaded through `/debates/v2/upload-preview` and sent with the reply on Digiseller/Plati. GGSEL's public seller API sends text replies only; small text attachments are appended to the message body, while GGSEL image attachments use `GGSEL_SELLER_COOKIE`.
 - Buyer messages are translated to Chinese when possible; Chinese replies are translated to the buyer's recent language while protecting account strings, emails, URLs, and access codes.
