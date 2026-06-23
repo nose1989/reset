@@ -1439,9 +1439,12 @@ class FunPayClient:
             return int(match.group(1))
         raise RuntimeError("Could not determine FunPay account user ID")
 
+    def account_profile_page(self, user_id: int | None = None) -> str:
+        return self.get(f"/en/users/{user_id or self.account_user_id()}/").text
+
     def active_offer_node_ids(self) -> list[int]:
         user_id = self.account_user_id()
-        page = self.get(f"/en/users/{user_id}/").text
+        page = self.account_profile_page(user_id)
         node_ids: list[int] = []
         seen: set[int] = set()
         for match in re.finditer(r'(?:https?:\/\/(?:www\.)?funpay\.com)?\/(?:en\/)?lots\/(\d+)\/?', page, re.I):
@@ -1493,6 +1496,9 @@ class FunPayClient:
         game_ids = self.offer_category_game_ids_from_page(page)
         if node_id in game_ids:
             return game_ids[node_id]
+        game_ids = self.offer_category_game_ids_from_page(self.account_profile_page())
+        if node_id in game_ids:
+            return game_ids[node_id]
         game_ids = self.offer_category_game_ids_from_page(self.account_home_page())
         if node_id in game_ids:
             return game_ids[node_id]
@@ -1512,9 +1518,15 @@ class FunPayClient:
         seen: set[int] = set()
         for match in re.finditer(r'<input\b[^>]*>', modal, re.I):
             tag = match.group(0)
-            if not re.search(r'\bchecked(?:\s|=|>|/)', tag, re.I):
+            if re.search(r'\bdisabled(?:\s|=|>|/)', tag, re.I):
                 continue
             attrs = self.tag_attrs(tag)
+            input_type = attrs.get("type", "").lower()
+            input_name = attrs.get("name", "")
+            if input_type and input_type != "checkbox":
+                continue
+            if input_name and input_name != "node_ids[]":
+                continue
             try:
                 node_id = int(attrs.get("value") or 0)
             except (TypeError, ValueError):
