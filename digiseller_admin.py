@@ -1831,8 +1831,7 @@ class FunPayClient:
         rows.sort(key=lambda item: sort_time(item.get("date_pay")), reverse=True)
         return rows
 
-    def chat_messages(self, node_id: int) -> list[dict[str, Any]]:
-        page = self.chat_page(node_id)
+    def chat_messages_from_page(self, node_id: int, page: str) -> list[dict[str, Any]]:
         app_data = self.app_data(page)
         my_user_id = int(app_data.get("userId") or 0)
         messages: list[dict[str, Any]] = []
@@ -1875,6 +1874,9 @@ class FunPayClient:
                 }
             )
         return messages
+
+    def chat_messages(self, node_id: int) -> list[dict[str, Any]]:
+        return self.chat_messages_from_page(node_id, self.chat_page(node_id))
 
     def send_chat_payload(self, node_id: int, page: str, content: str, image_id: str = "") -> None:
         csrf_token = self.csrf_token_from_page(page) or self.csrf_token_from_page(self.account_home_page())
@@ -5750,7 +5752,13 @@ class Handler(BaseHTTPRequestHandler):
             if not node_id:
                 continue
             try:
-                chat["product"] = funpay_client.chat_product(node_id) or chat.get("message") or "FunPay chat"
+                page = funpay_client.chat_page(node_id)
+                chat["product"] = funpay_client.chat_product_from_page(page) or chat.get("message") or "FunPay chat"
+                messages = funpay_client.chat_messages_from_page(node_id, page)
+                latest_message = max(messages, key=lambda item: sort_time(item.get("date_written")), default={})
+                latest_date = str(latest_message.get("date_written") or "")
+                if sort_time(latest_date):
+                    chat["last_sort_date"] = latest_date
             except Exception:
                 chat["product"] = chat.get("message") or "FunPay chat"
         selected_kind = self.q("kind", "order")
@@ -5773,7 +5781,7 @@ class Handler(BaseHTTPRequestHandler):
             for funpay_index, chat in enumerate(funpay_chats):
                 node_id = int(chat.get("node_id") or 0)
                 if node_id:
-                    order_candidates.append((sort_time(chat.get("last_date")) or (time.time() - funpay_index), "funpay", node_id))
+                    order_candidates.append((sort_time(chat.get("last_sort_date") or chat.get("last_date")) or (time.time() - funpay_index), "funpay", node_id))
             if order_candidates:
                 _, selected_platform, selected_order = max(order_candidates, key=lambda item: item[0])
                 selected_kind = "order"
@@ -5874,16 +5882,18 @@ class Handler(BaseHTTPRequestHandler):
             active = " active" if selected_kind == "order" and selected_platform == "funpay" and node_id == selected_order else ""
             preview = str(chat.get("message") or "FunPay chat")
             when = str(chat.get("last_date") or "")
+            sort_when = str(chat.get("last_sort_date") or when)
+            short_when = sort_when[11:16] if len(sort_when) >= 16 and "-" in sort_when[:10] else when
             badge = f"<div class='badge'>{unread}</div>" if unread else ""
             href = "/chats?" + urllib.parse.urlencode({"platform": "funpay", "order_id": str(node_id), "email": name, "product": product})
             search_text = " ".join(["funpay", str(node_id), name, product, preview]).lower()
             order_items.append((
-                sort_time(when) or (time.time() - funpay_index),
+                sort_time(sort_when) or (time.time() - funpay_index),
                 f"<a class='conversation-item{active}' data-kind='order' data-platform='funpay' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{node_id}' data-email='{h(name)}' data-product='{h(product)}' href='{h(href)}'>"
                 f"{product_avatar_html(product, 'FP')}"
                 f"<div><div class='conversation-name'>{h(short(product, 70))}</div>"
                 f"<div class='preview'>{h(short(name + ': ' + preview, 70))}</div></div>"
-                f"<div class='conversation-time'>{h(when)}{badge}</div></a>"
+                f"<div class='conversation-time' title='{h(sort_when)}'>{h(short_when)}{badge}</div></a>"
             ))
         items.extend(html for _, html in sorted(order_items, key=lambda item: item[0], reverse=True))
 
