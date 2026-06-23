@@ -2222,6 +2222,16 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
         if (data.last_error) parts.push(`Error: ${data.last_error}`);
         else if (data.running) parts.push('Checking cooldown and boosting...');
         else parts.push(enabled ? 'Hourly Boost enabled' : 'Hourly Boost disabled');
+        if (data.last_result && !data.running) {
+          const result = data.last_result;
+          const total = Number(result.total || 0);
+          const success = Number(result.success || 0);
+          const skipped = Number(result.skipped || 0);
+          const failed = Number(result.failed || 0);
+          parts.push(total > 0
+            ? `Last check: ${success} boosted, ${skipped} skipped, ${failed} failed`
+            : 'Last check: no active categories');
+        }
         if (data.next_run) parts.push(`Next hourly check: ${data.next_run}`);
         if (data.failed_count) parts.push(`Failed records: ${data.failed_count}`);
         pill.textContent = parts.join(' · ');
@@ -3478,7 +3488,16 @@ def run_funpay_boost_once() -> dict[str, Any]:
     try:
         result = funpay_client.boost_all_active_offers()
     except Exception as exc:
-        update_funpay_boost_status(running=False, last_error=str(exc), last_result=None)
+        result = {
+            "status": "failed",
+            "total": 0,
+            "success": 0,
+            "skipped": 0,
+            "failed": 1,
+            "message": str(exc),
+            "results": [],
+        }
+        update_funpay_boost_status(running=False, last_error=str(exc), last_result=result)
         raise
     update_funpay_boost_status(running=False, last_error="", last_result=result)
     return result
@@ -4398,6 +4417,47 @@ class Handler(BaseHTTPRequestHandler):
             rows_html = "".join(row_html)
         else:
             rows_html = "<tr><td colspan='7' class='muted'>还没有 FunPay Boost 记录。开启左下角按钮后，第一次检查会写入所有商品分类的状态。</td></tr>"
+        last_result = status.get("last_result") if isinstance(status.get("last_result"), dict) else None
+        last_result_rows_html = ""
+        if status.get("running"):
+            last_result_summary = "本次检测正在运行：正在检查冷却并尝试提升。"
+            last_result_class = "muted"
+        elif status.get("last_error"):
+            last_result_summary = f"本次检测失败：{h(status.get('last_error'))}"
+            last_result_class = "bad"
+        elif last_result:
+            total = int(last_result.get("total") or 0)
+            success = int(last_result.get("success") or 0)
+            skipped = int(last_result.get("skipped") or 0)
+            failed = int(last_result.get("failed") or 0)
+            if total:
+                last_result_summary = f"本次检测完成：共检查 {total} 个分类，成功提升 {success} 个，冷却/跳过 {skipped} 个，失败 {failed} 个。"
+            else:
+                last_result_summary = "本次检测完成：没有找到可提升的 FunPay 商品分类。"
+            last_result_class = "bad" if failed else "ok"
+            result_items = last_result.get("results")
+            if isinstance(result_items, list) and result_items:
+                result_rows = []
+                for item in result_items:
+                    if not isinstance(item, dict):
+                        continue
+                    node_value = item.get("node_id") or "-"
+                    item_status = str(item.get("status") or "-")
+                    item_class = "ok" if item_status == "success" else "bad" if item_status == "failed" else "muted"
+                    result_rows.append(
+                        "<tr>"
+                        f"<td>{h(node_value)}</td>"
+                        f"<td class='{item_class}'>{h(item_status)}</td>"
+                        f"<td>{h(item.get('message') or '-')}</td>"
+                        "</tr>"
+                    )
+                last_result_rows_html = "".join(result_rows)
+        else:
+            last_result_summary = "还没有执行检测。点击左下角 Start 后会立刻检测一次。"
+            last_result_class = "muted"
+        if not last_result_rows_html:
+            last_result_rows_html = "<tr><td colspan='3' class='muted'>本次没有单个分类结果。</td></tr>"
+
         enabled = "开启" if status.get("enabled") else "关闭"
         running = "运行中" if status.get("running") else "空闲"
         body = f"""
@@ -4407,6 +4467,14 @@ class Handler(BaseHTTPRequestHandler):
           <p>自动 Boost：<b>{h(enabled)}</b> · 当前状态：<b>{h(running)}</b> · 上次检查：{h(status.get('last_run') or '-')} · 下次每小时检查：{h(status.get('next_run') or '-')}</p>
           <p>冷却中：<b>{h(status.get('cooling_count') or 0)}</b> · 已提升记录：<b>{h(status.get('boosted_count') or 0)}</b> · 错误记录：<b class='bad'>{h(status.get('failed_count') or 0)}</b></p>
           <p>错误：<span class='bad'>{h(status.get('last_error') or '-')}</span></p>
+        </div>
+        <div class='card'>
+          <h3>本次检测结果</h3>
+          <p class='{last_result_class}'>{last_result_summary}</p>
+          <table>
+            <thead><tr><th>商品分类</th><th>状态</th><th>结果</th></tr></thead>
+            <tbody>{last_result_rows_html}</tbody>
+          </table>
         </div>
         <div class='card'>
           <table>
