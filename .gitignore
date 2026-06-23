@@ -2,3 +2,4 @@
 .env
 __pycache__/
 translation_cache.json
+funpay_boost_history.json
