@@ -3,3 +3,4 @@
 __pycache__/
 translation_cache.json
 funpay_boost_history.json
+digiseller_stock_cache.json
