@@ -1459,7 +1459,7 @@ class FunPayClient:
     def account_profile_page(self, user_id: int | None = None) -> str:
         return self.get(f"/en/users/{user_id or self.account_user_id()}/").text
 
-    def active_offer_categories(self) -> list[dict[str, int]]:
+    def active_offer_categories(self) -> list[dict[str, Any]]:
         user_id = self.account_user_id()
         page = self.account_profile_page(user_id)
         node_ids: list[int] = []
@@ -1472,10 +1472,41 @@ class FunPayClient:
         if not node_ids:
             raise RuntimeError("No active FunPay offer categories found")
         game_ids = self.offer_category_game_ids_from_page(page)
-        return [{"node_id": node_id, "game_id": int(game_ids.get(node_id) or 0)} for node_id in node_ids]
+        titles = self.offer_category_titles_from_page(page)
+        return [
+            {
+                "node_id": node_id,
+                "game_id": int(game_ids.get(node_id) or 0),
+                "product_name": titles.get(node_id) or f"Category {node_id}",
+            }
+            for node_id in node_ids
+        ]
 
     def active_offer_node_ids(self) -> list[int]:
         return [item["node_id"] for item in self.active_offer_categories()]
+
+    def active_offer_titles(self) -> dict[int, str]:
+        return self.offer_category_titles_from_page(self.account_profile_page())
+
+    def offer_category_titles_from_page(self, page: str) -> dict[int, str]:
+        titles: dict[int, str] = {}
+        pattern = re.compile(
+            r'<a\b([^>]*)href=["\'](?:https?:\/\/(?:www\.)?funpay\.com)?\/(?:en\/)?lots\/(\d+)\/?["\']([^>]*)>(.*?)</a>',
+            re.S | re.I,
+        )
+        for match in pattern.finditer(page):
+            node_id = int(match.group(2))
+            attrs = self.tag_attrs("<a " + match.group(1) + " " + match.group(3) + ">")
+            title = clean_text(attrs.get("title") or match.group(4))
+            if not title or title == str(node_id):
+                block = page[max(0, match.start() - 800) : min(len(page), match.end() + 800)]
+                for class_name in ("tc-title", "lot-title", "offer-title", "media-heading", "category-title"):
+                    title = self.first_text(block, class_name)
+                    if title:
+                        break
+            if title:
+                titles[node_id] = title
+        return titles
 
     def offer_category_game_ids_from_page(self, page: str) -> dict[int, int]:
         game_titles = list(
@@ -1623,11 +1654,13 @@ class FunPayClient:
         categories = self.active_offer_categories()
         game_groups: dict[int, list[int]] = {}
         unknown_game_node_ids: list[int] = []
+        product_names: dict[int, str] = {}
         for category in categories:
             node_id = int(category.get("node_id") or 0)
             game_id = int(category.get("game_id") or 0)
             if not node_id:
                 continue
+            product_names[node_id] = str(category.get("product_name") or "")
             if game_id:
                 game_groups.setdefault(game_id, []).append(node_id)
             else:
@@ -1640,18 +1673,35 @@ class FunPayClient:
         raised_together: set[int] = set()
         for index, (node_id, selected_node_ids, game_id) in enumerate(runs):
             if node_id in raised_together:
-                results.append({"node_id": node_id, "status": "success", "message": "Boosted with another category"})
+                results.append(
+                    {
+                        "node_id": node_id,
+                        "product_name": product_names.get(node_id) or "",
+                        "status": "success",
+                        "message": "Boosted with another category",
+                    }
+                )
                 continue
             result, co_raised = self.raise_node_offers(node_id, selected_node_ids, game_id)
+            result = {**result, "product_name": product_names.get(node_id) or ""}
             results.append(result)
             boosted_node_ids = [node_id, *[item for item in co_raised if item != node_id]]
             if result.get("status") == "success":
-                remember_funpay_boost_cooldown(boosted_node_ids, time.time() + FUNPAY_BOOST_INTERVAL_SECONDS)
+                remember_funpay_boost_cooldown(
+                    boosted_node_ids,
+                    time.time() + FUNPAY_BOOST_INTERVAL_SECONDS,
+                    product_names,
+                )
                 raised_together.update(item for item in boosted_node_ids if item != node_id)
                 for boosted_node_id in boosted_node_ids:
                     if boosted_node_id != node_id:
                         results.append(
-                            {"node_id": boosted_node_id, "status": "success", "message": "Boosted with another category"}
+                            {
+                                "node_id": boosted_node_id,
+                                "product_name": product_names.get(boosted_node_id) or "",
+                                "status": "success",
+                                "message": "Boosted with another category",
+                            }
                         )
             else:
                 for failed_node_id in boosted_node_ids:
@@ -1659,6 +1709,7 @@ class FunPayClient:
                         failed_node_id,
                         str(result.get("status") or "failed"),
                         str(result.get("message") or "-"),
+                        product_name=product_names.get(failed_node_id) or "",
                     )
             if index < len(runs) - 1:
                 time.sleep(0.7)
@@ -3644,7 +3695,13 @@ def save_funpay_boost_history_locked() -> None:
     FUNPAY_BOOST_HISTORY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def record_funpay_boost_attempt(node_id: int, status: str, message: str, cooldown_until: float | None = None) -> None:
+def record_funpay_boost_attempt(
+    node_id: int,
+    status: str,
+    message: str,
+    cooldown_until: float | None = None,
+    product_name: str = "",
+) -> None:
     checked_at = time.time()
     with FUNPAY_BOOST_LOCK:
         item = FUNPAY_BOOST_HISTORY.get(node_id, {"node_id": node_id})
@@ -3657,6 +3714,8 @@ def record_funpay_boost_attempt(node_id: int, status: str, message: str, cooldow
                 "last_checked_at": funpay_boost_time_label(checked_at),
             }
         )
+        if product_name:
+            item["product_name"] = product_name
         if cooldown_until is not None:
             item["cooldown_until_ts"] = cooldown_until
             item["cooldown_until"] = funpay_boost_time_label(cooldown_until)
@@ -3721,7 +3780,11 @@ def funpay_boost_cooldown_until(node_id: int) -> float:
         return float(FUNPAY_BOOST_COOLDOWNS.get(node_id) or 0)
 
 
-def remember_funpay_boost_cooldown(node_ids: list[int], available_at: float) -> None:
+def remember_funpay_boost_cooldown(
+    node_ids: list[int],
+    available_at: float,
+    product_names: dict[int, str] | None = None,
+) -> None:
     boosted_at = time.time()
     with FUNPAY_BOOST_LOCK:
         for node_id in node_ids:
@@ -3740,6 +3803,9 @@ def remember_funpay_boost_cooldown(node_ids: list[int], available_at: float) -> 
                     "cooldown_until": funpay_boost_time_label(available_at),
                 }
             )
+            product_name = (product_names or {}).get(node_id) or ""
+            if product_name:
+                item["product_name"] = product_name
             FUNPAY_BOOST_HISTORY[node_id] = item
         save_funpay_boost_history_locked()
 
@@ -4678,10 +4744,17 @@ class Handler(BaseHTTPRequestHandler):
     def funpay_boost_page(self) -> None:
         status = funpay_boost_snapshot()
         rows = funpay_boost_history_rows()
+        product_names: dict[int, str] = {}
+        if funpay_client.configured():
+            try:
+                product_names = funpay_client.active_offer_titles()
+            except Exception:
+                product_names = {}
         if rows:
             row_html = []
             for row in rows:
                 node_id = int(row.get("node_id") or 0)
+                product_name = str(row.get("product_name") or product_names.get(node_id) or "-")
                 status_text = str(row.get("status") or "-")
                 status_class = "ok" if status_text == "boosted" else "bad" if status_text == "failed" else "muted"
                 remaining = funpay_boost_duration_label(row.get("remaining_seconds"))
@@ -4689,6 +4762,7 @@ class Handler(BaseHTTPRequestHandler):
                 row_html.append(
                     "<tr>"
                     f"<td><a href='https://funpay.com/en/lots/{node_id}/trade' target='_blank' rel='noopener'>#{node_id}</a></td>"
+                    f"<td>{h(short(product_name, 90))}</td>"
                     f"<td class='{status_class}'>{h(status_text)}</td>"
                     f"<td>{h(row.get('last_boost_at') or '-')}</td>"
                     f"<td class='cooldown-remaining' data-cooldown-until='{h(cooldown_until_ts)}'>{h(remaining)}</td>"
@@ -4699,7 +4773,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             rows_html = "".join(row_html)
         else:
-            rows_html = "<tr><td colspan='7' class='muted'>还没有 FunPay Boost 记录。开启左下角按钮后，第一次检查会写入所有商品分类的状态。</td></tr>"
+            rows_html = "<tr><td colspan='8' class='muted'>还没有 FunPay Boost 记录。开启左下角按钮后，第一次检查会写入所有商品分类的状态。</td></tr>"
         last_result = status.get("last_result") if isinstance(status.get("last_result"), dict) else None
         last_result_rows_html = ""
         if status.get("running"):
@@ -4725,11 +4799,16 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(item, dict):
                         continue
                     node_value = item.get("node_id") or "-"
+                    try:
+                        product_name = str(item.get("product_name") or product_names.get(int(item.get("node_id") or 0)) or "-")
+                    except (TypeError, ValueError):
+                        product_name = str(item.get("product_name") or "-")
                     item_status = str(item.get("status") or "-")
                     item_class = "ok" if item_status == "success" else "bad" if item_status == "failed" else "muted"
                     result_rows.append(
                         "<tr>"
                         f"<td>{h(node_value)}</td>"
+                        f"<td>{h(short(product_name, 90))}</td>"
                         f"<td class='{item_class}'>{h(item_status)}</td>"
                         f"<td>{h(item.get('message') or '-')}</td>"
                         "</tr>"
@@ -4739,7 +4818,7 @@ class Handler(BaseHTTPRequestHandler):
             last_result_summary = "还没有执行检测。点击左下角 Start 后会立刻检测一次。"
             last_result_class = "muted"
         if not last_result_rows_html:
-            last_result_rows_html = "<tr><td colspan='3' class='muted'>本次没有单个分类结果。</td></tr>"
+            last_result_rows_html = "<tr><td colspan='4' class='muted'>本次没有单个分类结果。</td></tr>"
 
         enabled = "开启" if status.get("enabled") else "关闭"
         running = "运行中" if status.get("running") else "空闲"
@@ -4755,13 +4834,13 @@ class Handler(BaseHTTPRequestHandler):
           <h3>本次检测结果</h3>
           <p class='{last_result_class}'>{last_result_summary}</p>
           <table>
-            <thead><tr><th>商品分类</th><th>状态</th><th>结果</th></tr></thead>
+            <thead><tr><th>商品分类</th><th>商品名称</th><th>状态</th><th>结果</th></tr></thead>
             <tbody>{last_result_rows_html}</tbody>
           </table>
         </div>
         <div class='card'>
           <table>
-            <thead><tr><th>商品分类</th><th>状态</th><th>上次提升时间</th><th>剩余冷却</th><th>下次可提升时间</th><th>上次检测</th><th>结果</th></tr></thead>
+            <thead><tr><th>商品分类</th><th>商品名称</th><th>状态</th><th>上次提升时间</th><th>剩余冷却</th><th>下次可提升时间</th><th>上次检测</th><th>结果</th></tr></thead>
             <tbody>{rows_html}</tbody>
           </table>
         </div>
