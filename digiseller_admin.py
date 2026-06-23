@@ -90,7 +90,9 @@ def load_env(path: Path = APP_DIR / ".env") -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        key = key.strip()
+        if key and not os.environ.get(key, "").strip():
+            os.environ[key] = value.strip().strip('"').strip("'")
 
 
 def clean_text(value: Any) -> str:
@@ -1176,7 +1178,7 @@ class GgselClient:
                 return
             unsupported = ", ".join(item.filename for item in file_uploads)
             raise RuntimeError(
-                "GGSEL API does not support file uploads. Add GGSEL_SELLER_COOKIE to send image attachments, "
+                f"GGSEL_SELLER_COOKIE is not loaded from {APP_DIR / '.env'}. Restart the app after adding it, "
                 f"or attach small text files that can be sent as message text: {unsupported}"
             )
         payload: dict[str, Any] = {"message": message}
