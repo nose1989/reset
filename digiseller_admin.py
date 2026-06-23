@@ -1444,7 +1444,7 @@ class FunPayClient:
     def account_profile_page(self, user_id: int | None = None) -> str:
         return self.get(f"/en/users/{user_id or self.account_user_id()}/").text
 
-    def active_offer_node_ids(self) -> list[int]:
+    def active_offer_categories(self) -> list[dict[str, int]]:
         user_id = self.account_user_id()
         page = self.account_profile_page(user_id)
         node_ids: list[int] = []
@@ -1456,7 +1456,11 @@ class FunPayClient:
                 node_ids.append(node_id)
         if not node_ids:
             raise RuntimeError("No active FunPay offer categories found")
-        return node_ids
+        game_ids = self.offer_category_game_ids_from_page(page)
+        return [{"node_id": node_id, "game_id": int(game_ids.get(node_id) or 0)} for node_id in node_ids]
+
+    def active_offer_node_ids(self) -> list[int]:
+        return [item["node_id"] for item in self.active_offer_categories()]
 
     def offer_category_game_ids_from_page(self, page: str) -> dict[int, int]:
         game_titles = list(
@@ -1571,10 +1575,18 @@ class FunPayClient:
     def quiet_boost_failure(self, message: str) -> bool:
         return bool(re.search(r"Could not determine FunPay game ID|No active FunPay offer categories|404|403|not found|forbidden", message, re.I))
 
-    def raise_node_offers(self, node_id: int) -> tuple[dict[str, Any], list[int]]:
+    def raise_node_offers(
+        self,
+        node_id: int,
+        node_ids: list[int] | None = None,
+        game_id: int | None = None,
+    ) -> tuple[dict[str, Any], list[int]]:
         try:
-            game_id = self.offer_category_game_id(node_id)
-            data = self.raise_offer_category(game_id, node_id)
+            selected_node_ids = node_ids or []
+            game_id = game_id or self.offer_category_game_id(node_id)
+            data = self.raise_offer_category(game_id, node_id, selected_node_ids)
+            if selected_node_ids:
+                return self.classify_raise_response(node_id, data), selected_node_ids
             modal_node_ids = self.raise_modal_node_ids(data)
             if not modal_node_ids and not (isinstance(data.get("modal"), str) and data.get("modal", "").strip()):
                 return self.classify_raise_response(node_id, data), []
@@ -1593,26 +1605,47 @@ class FunPayClient:
             return {"node_id": node_id, "status": status, "message": message}, []
 
     def boost_all_active_offers(self) -> dict[str, Any]:
-        node_ids = self.active_offer_node_ids()
+        categories = self.active_offer_categories()
+        game_groups: dict[int, list[int]] = {}
+        unknown_game_node_ids: list[int] = []
+        for category in categories:
+            node_id = int(category.get("node_id") or 0)
+            game_id = int(category.get("game_id") or 0)
+            if not node_id:
+                continue
+            if game_id:
+                game_groups.setdefault(game_id, []).append(node_id)
+            else:
+                unknown_game_node_ids.append(node_id)
+        runs: list[tuple[int, list[int], int | None]] = [
+            (node_ids[0], node_ids, game_id) for game_id, node_ids in game_groups.items() if node_ids
+        ]
+        runs.extend((node_id, [], None) for node_id in unknown_game_node_ids)
         results: list[dict[str, Any]] = []
         raised_together: set[int] = set()
-        for index, node_id in enumerate(node_ids):
+        for index, (node_id, selected_node_ids, game_id) in enumerate(runs):
             if node_id in raised_together:
                 results.append({"node_id": node_id, "status": "success", "message": "Boosted with another category"})
                 continue
-            result, co_raised = self.raise_node_offers(node_id)
+            result, co_raised = self.raise_node_offers(node_id, selected_node_ids, game_id)
             results.append(result)
             boosted_node_ids = [node_id, *[item for item in co_raised if item != node_id]]
             if result.get("status") == "success":
                 remember_funpay_boost_cooldown(boosted_node_ids, time.time() + FUNPAY_BOOST_INTERVAL_SECONDS)
                 raised_together.update(item for item in boosted_node_ids if item != node_id)
+                for boosted_node_id in boosted_node_ids:
+                    if boosted_node_id != node_id:
+                        results.append(
+                            {"node_id": boosted_node_id, "status": "success", "message": "Boosted with another category"}
+                        )
             else:
-                record_funpay_boost_attempt(
-                    node_id,
-                    str(result.get("status") or "failed"),
-                    str(result.get("message") or "-"),
-                )
-            if index < len(node_ids) - 1:
+                for failed_node_id in boosted_node_ids:
+                    record_funpay_boost_attempt(
+                        failed_node_id,
+                        str(result.get("status") or "failed"),
+                        str(result.get("message") or "-"),
+                    )
+            if index < len(runs) - 1:
                 time.sleep(0.7)
         return {
             "status": "completed",
@@ -1828,7 +1861,7 @@ CHAT_KEEPALIVE_BROWSER_STATUS: dict[str, Any] = {
     "last_open": "",
     "error": "",
 }
-FUNPAY_BOOST_INTERVAL_SECONDS = 3600
+FUNPAY_BOOST_INTERVAL_SECONDS = 12 * 3600
 FUNPAY_BOOST_HISTORY_FILE = APP_DIR / "funpay_boost_history.json"
 FUNPAY_BOOST_STATUS: dict[str, Any] = {
     "enabled": False,
@@ -2280,12 +2313,12 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
         btn.classList.toggle('running', Boolean(data.running));
         btn.textContent = data.running
           ? 'FunPay Boost running...'
-          : enabled ? 'Stop FunPay hourly Boost' : 'Start FunPay hourly Boost';
+          : enabled ? 'Stop FunPay 12-hour Boost' : 'Start FunPay 12-hour Boost';
         pill.classList.toggle('bad', Boolean(data.last_error));
         const parts = [];
         if (data.last_error) parts.push(`Error: ${data.last_error}`);
         else if (data.running) parts.push('Checking cooldown and boosting...');
-        else parts.push(enabled ? 'Hourly Boost enabled' : 'Hourly Boost disabled');
+        else parts.push(enabled ? '12-hour Boost enabled' : '12-hour Boost disabled');
         if (data.last_result && !data.running) {
           const result = data.last_result;
           const total = Number(result.total || 0);
@@ -2296,7 +2329,7 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
             ? `Last check: ${success} boosted, ${skipped} skipped, ${failed} failed`
             : 'Last check: no active categories');
         }
-        if (data.next_run) parts.push(`Next hourly check: ${data.next_run}`);
+        if (data.next_run) parts.push(`Next 12-hour check: ${data.next_run}`);
         if (data.failed_count) parts.push(`Failed records: ${data.failed_count}`);
         pill.textContent = parts.join(' · ');
       }
@@ -4532,7 +4565,7 @@ class Handler(BaseHTTPRequestHandler):
         <div class='card'>
           <h2>FunPay Boost 冷却记录</h2>
           <p class='muted'>这里集中记录每个 FunPay 商品分类的上次提升时间，以及从该时间推算出的冷却剩余时间。</p>
-          <p>自动 Boost：<b>{h(enabled)}</b> · 当前状态：<b>{h(running)}</b> · 上次检查：{h(status.get('last_run') or '-')} · 下次每小时检查：{h(status.get('next_run') or '-')}</p>
+          <p>自动 Boost：<b>{h(enabled)}</b> · 当前状态：<b>{h(running)}</b> · 上次检查：{h(status.get('last_run') or '-')} · 下次12小时检查：{h(status.get('next_run') or '-')}</p>
           <p>冷却中：<b>{h(status.get('cooling_count') or 0)}</b> · 已提升记录：<b>{h(status.get('boosted_count') or 0)}</b> · 错误记录：<b class='bad'>{h(status.get('failed_count') or 0)}</b></p>
           <p>错误：<span class='bad'>{h(status.get('last_error') or '-')}</span></p>
         </div>
