@@ -1310,11 +1310,19 @@ class FunPayClient:
         if not self.golden_key:
             raise RuntimeError("FUNPAY_GOLDEN_KEY is missing. Put it in .env")
 
+    def auth_expired(self, response: httpx.Response) -> bool:
+        text = response.text[:4000]
+        return (
+            "account/login" in str(response.url)
+            or "Log In / FunPay" in text
+            or bool(re.search(r'name=["\']login["\']', text, re.I) and re.search(r'name=["\']password["\']', text, re.I))
+        )
+
     def get(self, path: str, params: dict[str, Any] | None = None) -> httpx.Response:
         self.ensure_configured()
         url = path if path.startswith("http") else FUNPAY_CHAT_BASE + path
         r = self.http.get(url, params=params or {})
-        if "account/login" in str(r.url) or "Log In / FunPay" in r.text[:2000]:
+        if self.auth_expired(r):
             raise RuntimeError("FunPay golden_key is missing or expired")
         if r.status_code >= 400:
             raise RuntimeError(f"FunPay HTTP {r.status_code}: {short(r.text, 400)}")
@@ -1331,7 +1339,7 @@ class FunPayClient:
                 "Referer": FUNPAY_CHAT_BASE + referer if referer.startswith("/") else referer,
             },
         )
-        if "account/login" in str(r.url) or "Log In / FunPay" in r.text[:2000]:
+        if self.auth_expired(r):
             raise RuntimeError("FunPay golden_key is missing or expired")
         if r.status_code >= 400:
             raise RuntimeError(f"FunPay HTTP {r.status_code}: {short(r.text, 400)}")
@@ -1339,6 +1347,27 @@ class FunPayClient:
         if "json" not in content_type.lower():
             raise RuntimeError(f"FunPay returned non-JSON from {path}: {short(r.text, 400)}")
         return r.json()
+
+    def post_form(self, path: str, data: Any, referer: str) -> dict[str, Any]:
+        self.ensure_configured()
+        r = self.http.post(
+            FUNPAY_CHAT_BASE + path,
+            data=data,
+            headers={
+                "Accept": "*/*",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": FUNPAY_CHAT_BASE + referer if referer.startswith("/") else referer,
+            },
+        )
+        if self.auth_expired(r):
+            raise RuntimeError("FunPay golden_key is missing or expired")
+        if r.status_code >= 400:
+            raise RuntimeError(f"FunPay HTTP {r.status_code}: {short(r.text, 400)}")
+        try:
+            parsed = r.json()
+        except ValueError:
+            raise RuntimeError(f"FunPay returned non-JSON from {path}: {short(r.text, 400)}")
+        return parsed if isinstance(parsed, dict) else {}
 
     def upload_chat_files(self, uploads: list[UploadItem], referer: str) -> list[str]:
         file_ids: list[str] = []
@@ -1392,6 +1421,136 @@ class FunPayClient:
 
     def chat_product(self, node_id: int) -> str:
         return self.chat_product_from_page(self.chat_page(node_id))
+
+    def account_home_page(self) -> str:
+        return self.get("/en/").text
+
+    def account_user_id(self) -> int:
+        page = self.account_home_page()
+        app_data = self.app_data(page)
+        user_id = int(app_data.get("userId") or 0)
+        if user_id:
+            return user_id
+        match = re.search(r'(?:https?:\/\/(?:www\.)?funpay\.com)?\/(?:en\/)?users\/(\d+)\/?', page, re.I)
+        if match:
+            return int(match.group(1))
+        raise RuntimeError("Could not determine FunPay account user ID")
+
+    def active_offer_node_ids(self) -> list[int]:
+        user_id = self.account_user_id()
+        page = self.get(f"/en/users/{user_id}/").text
+        node_ids: list[int] = []
+        seen: set[int] = set()
+        for match in re.finditer(r'(?:https?:\/\/(?:www\.)?funpay\.com)?\/(?:en\/)?lots\/(\d+)\/?', page, re.I):
+            node_id = int(match.group(1))
+            if node_id not in seen:
+                seen.add(node_id)
+                node_ids.append(node_id)
+        if not node_ids:
+            raise RuntimeError("No active FunPay offer categories found")
+        return node_ids
+
+    def offer_category_game_id(self, node_id: int) -> int:
+        page = self.get(f"/en/lots/{node_id}/trade").text
+        match = re.search(r'\bdata-game=["\'](\d+)["\']', page, re.I)
+        if not match:
+            raise RuntimeError(f"Could not determine FunPay game ID for category {node_id}")
+        return int(match.group(1))
+
+    def raise_offer_category(self, game_id: int, node_id: int, node_ids: list[int] | None = None) -> dict[str, Any]:
+        fields: list[tuple[str, str]] = [("game_id", str(game_id)), ("node_id", str(node_id))]
+        for selected_node_id in node_ids or []:
+            fields.append(("node_ids[]", str(selected_node_id)))
+        return self.post_form("/lots/raise", fields, f"/en/lots/{node_id}/trade")
+
+    def raise_modal_node_ids(self, data: dict[str, Any]) -> list[int]:
+        modal = data.get("modal")
+        if not isinstance(modal, str):
+            return []
+        node_ids: list[int] = []
+        seen: set[int] = set()
+        for match in re.finditer(r'value=["\'](\d+)["\']', modal):
+            node_id = int(match.group(1))
+            if node_id not in seen:
+                seen.add(node_id)
+                node_ids.append(node_id)
+        return node_ids
+
+    def raise_response_message(self, data: dict[str, Any]) -> str:
+        candidates = [
+            data.get("message"),
+            data.get("msg"),
+            data.get("error_description"),
+            data.get("error_message"),
+            data.get("error") if isinstance(data.get("error"), (str, dict)) else None,
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                message = ", ".join(str(value) for value in candidate.values() if value)
+            else:
+                message = str(candidate or "")
+            message = message.strip()
+            if message:
+                return message
+        return ""
+
+    def classify_raise_response(self, node_id: int, data: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(data.get("modal"), str) and data.get("modal", "").strip():
+            return {"node_id": node_id, "status": "failed", "message": "FunPay asked to choose categories"}
+        message = self.raise_response_message(data)
+        failed = data.get("success") is False or data.get("status") == "error" or bool(data.get("error"))
+        if not failed:
+            return {"node_id": node_id, "status": "success", "message": message or "Offers boosted"}
+        cooldown = not message or bool(re.search(r"уже|ранее|час|минут|секунд|подня|повтор|огранич|cooldown|later|wait|raised", message, re.I))
+        return {"node_id": node_id, "status": "skipped" if cooldown else "failed", "message": message or "Already boosted or time-limited"}
+
+    def raise_node_offers(self, node_id: int) -> tuple[dict[str, Any], list[int]]:
+        try:
+            game_id = self.offer_category_game_id(node_id)
+            data = self.raise_offer_category(game_id, node_id)
+            modal_node_ids = self.raise_modal_node_ids(data)
+            if not modal_node_ids:
+                return self.classify_raise_response(node_id, data), []
+            confirmed = self.raise_offer_category(game_id, node_id, modal_node_ids)
+            if self.raise_modal_node_ids(confirmed):
+                return {"node_id": node_id, "status": "failed", "message": "FunPay asked to choose categories again"}, []
+            result = self.classify_raise_response(node_id, confirmed)
+            if result.get("status") == "skipped":
+                result = {**result, "status": "success", "message": "Offers boosted"}
+            return result, modal_node_ids
+        except Exception as exc:
+            return {"node_id": node_id, "status": "failed", "message": str(exc)}, []
+
+    def boost_all_active_offers(self) -> dict[str, Any]:
+        node_ids = self.active_offer_node_ids()
+        results: list[dict[str, Any]] = []
+        raised_together: set[int] = set()
+        checked_at = time.time()
+        for index, node_id in enumerate(node_ids):
+            if node_id in raised_together:
+                results.append({"node_id": node_id, "status": "success", "message": "Boosted with another category"})
+                continue
+            cooldown_until = funpay_boost_cooldown_until(node_id)
+            if cooldown_until > checked_at:
+                available_at = dt.datetime.utcfromtimestamp(cooldown_until).strftime("%Y-%m-%d %H:%M:%S UTC")
+                results.append({"node_id": node_id, "status": "skipped", "message": f"Waiting for cooldown until {available_at}"})
+                continue
+            result, co_raised = self.raise_node_offers(node_id)
+            results.append(result)
+            boosted_node_ids = [node_id, *[item for item in co_raised if item != node_id]]
+            if result.get("status") == "success":
+                remember_funpay_boost_cooldown(boosted_node_ids, time.time() + FUNPAY_BOOST_INTERVAL_SECONDS)
+                raised_together.update(item for item in boosted_node_ids if item != node_id)
+            if index < len(node_ids) - 1:
+                time.sleep(0.7)
+        return {
+            "status": "completed",
+            "total": len(results),
+            "success": sum(1 for item in results if item.get("status") == "success"),
+            "skipped": sum(1 for item in results if item.get("status") == "skipped"),
+            "failed": sum(1 for item in results if item.get("status") == "failed"),
+            "results": results,
+        }
 
     def chats(self, limit: int = 50) -> list[dict[str, Any]]:
         page = self.chat_page()
@@ -1598,6 +1757,18 @@ CHAT_KEEPALIVE_BROWSER_STATUS: dict[str, Any] = {
     "last_open": "",
     "error": "",
 }
+FUNPAY_BOOST_INTERVAL_SECONDS = 3600
+FUNPAY_BOOST_STATUS: dict[str, Any] = {
+    "enabled": False,
+    "running": False,
+    "last_run": "",
+    "next_run": "",
+    "last_error": "",
+    "last_result": None,
+}
+FUNPAY_BOOST_COOLDOWNS: dict[int, float] = {}
+FUNPAY_BOOST_LOCK = threading.Lock()
+FUNPAY_BOOST_THREAD: threading.Thread | None = None
 
 
 def start_auto_reload() -> None:
@@ -1632,6 +1803,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
 .phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:flex;align-items:center;justify-content:center;gap:10px;min-height:68px;margin-top:10px;border:1px dashed #93c5fd;border-radius:10px;background:#eff6ff;color:#0f3b66;font-weight:700;padding:10px;cursor:pointer}.phrase-upload input{background:white}.phrase-image-preview,.common-phrase-buttons .common-phrase-preview{border:0;background:transparent;padding:0;cursor:pointer}.phrase-image-preview img,.common-phrase-preview img{display:block;width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1}.common-phrase-card{display:inline-flex;align-items:center;gap:8px;max-width:360px;border:1px solid #b9d4ff;border-radius:10px;background:#eaf3ff;padding:6px;box-shadow:0 1px 1px #0001}.common-phrase-previews{display:flex;gap:6px;align-items:center;flex-shrink:0}.common-phrase-card .common-phrase-send{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;border:0;background:transparent;color:#0f3b66;padding:4px 6px;text-align:left}.common-phrase-text{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}.common-phrase-files-note{font-size:11px;color:#64748b}.common-phrase-file-chip{display:inline-flex;align-items:center;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;color:#475569;padding:4px 6px;font-size:12px}.common-phrase-preview.broken{display:none}.phrase-pending{margin-top:8px}
 .chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.chat-keepalive-btn.warn{background:#fef3c7;color:#92400e;border-color:#fde68a}
+.funpay-boost-controls{position:fixed;right:18px;bottom:18px;z-index:100;display:flex;flex-direction:column;align-items:flex-end;gap:6px}.funpay-boost-button{border:1px solid #bbf7d0;border-radius:999px;background:#16a34a;color:white;padding:10px 16px;font-weight:900;box-shadow:0 8px 18px #0002}.funpay-boost-button.off{background:#475569;border-color:#cbd5e1}.funpay-boost-button.running{background:#f59e0b;border-color:#fde68a}.funpay-boost-pill{max-width:340px;border:1px solid #d9e2ec;border-radius:999px;background:white;color:#334155;padding:6px 10px;font-size:12px;box-shadow:0 3px 10px #0001}.funpay-boost-pill.bad{color:#b91c1c;border-color:#fecaca;background:#fff7f7}
 
 .messages-layout{height:calc(100vh - 116px)}
 .conversation-list-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 14px 12px;box-shadow:0 1px 0 #eef2f7}
@@ -1998,6 +2170,74 @@ def layout(title: str, body: str) -> bytes:
     })();
     </script>
     """
+    funpay_boost_ui = """
+    <div class="funpay-boost-controls">
+      <div id="funpay-boost-pill" class="funpay-boost-pill">FunPay Boost checking...</div>
+      <button id="funpay-boost-button" class="funpay-boost-button off" type="button">Start FunPay Boost</button>
+    </div>
+    <script>
+    (() => {
+      const btn = document.getElementById('funpay-boost-button');
+      const pill = document.getElementById('funpay-boost-pill');
+      if (!btn || !pill) return;
+      let enabled = false;
+      function describeResult(result) {
+        if (!result) return '';
+        const success = Number(result.success || 0);
+        const skipped = Number(result.skipped || 0);
+        const failed = Number(result.failed || 0);
+        return `Boosted ${success}, waiting ${skipped}, failed ${failed}`;
+      }
+      function render(data) {
+        enabled = Boolean(data.enabled);
+        btn.classList.toggle('off', !enabled);
+        btn.classList.toggle('running', Boolean(data.running));
+        btn.textContent = data.running
+          ? 'FunPay Boost running...'
+          : enabled ? 'Stop FunPay hourly Boost' : 'Start FunPay hourly Boost';
+        pill.classList.toggle('bad', Boolean(data.last_error));
+        const parts = [];
+        if (data.last_error) parts.push(`Error: ${data.last_error}`);
+        else if (data.running) parts.push('Checking cooldown and boosting...');
+        else parts.push(enabled ? 'Hourly Boost enabled' : 'Hourly Boost disabled');
+        const summary = describeResult(data.last_result);
+        if (summary) parts.push(summary);
+        if (data.next_run) parts.push(`Next check: ${data.next_run}`);
+        pill.textContent = parts.join(' · ');
+      }
+      async function loadStatus() {
+        try {
+          const res = await fetch('/api/funpay-boost-status', {cache: 'no-store'});
+          if (!res.ok) throw new Error('status failed');
+          render(await res.json());
+        } catch (e) {
+          pill.textContent = 'FunPay Boost status unavailable';
+          pill.classList.add('bad');
+        }
+      }
+      async function toggle() {
+        btn.disabled = true;
+        try {
+          const res = await fetch('/api/funpay-boost-toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: !enabled})
+          });
+          if (!res.ok) throw new Error(await res.text());
+          render(await res.json());
+        } catch (e) {
+          pill.textContent = String(e.message || e);
+          pill.classList.add('bad');
+        } finally {
+          btn.disabled = false;
+        }
+      }
+      btn.addEventListener('click', toggle);
+      setInterval(loadStatus, 15000);
+      loadStatus();
+    })();
+    </script>
+    """
     translation_ui = """
     <script>
     document.addEventListener('click', (event) => {
@@ -2083,7 +2323,7 @@ def layout(title: str, body: str) -> bytes:
     window.loadDigisellerTranslations(document);
     </script>
     """
-    html_doc = f"<!doctype html><html><head><meta charset='utf-8'><title>{h(title)}</title><link rel='icon' type='image/png' href='/favicon.ico'><link rel='apple-touch-icon' href='/assets/shinchan-logo.png'>{STYLE}</head><body>{nav}{alert_ui}{translation_ui}<div class='wrap'>{body}</div></body></html>"
+    html_doc = f"<!doctype html><html><head><meta charset='utf-8'><title>{h(title)}</title><link rel='icon' type='image/png' href='/favicon.ico'><link rel='apple-touch-icon' href='/assets/shinchan-logo.png'>{STYLE}</head><body>{nav}{alert_ui}{funpay_boost_ui}{translation_ui}<div class='wrap'>{body}</div></body></html>"
     return html_doc.encode("utf-8")
 
 
@@ -3077,6 +3317,74 @@ def update_online_keepalive_status(**values: Any) -> None:
     ONLINE_KEEPALIVE_STATUS.update(values)
 
 
+def funpay_boost_snapshot() -> dict[str, Any]:
+    with FUNPAY_BOOST_LOCK:
+        data = FUNPAY_BOOST_STATUS.copy()
+        data["cooldowns"] = {
+            str(node_id): dt.datetime.utcfromtimestamp(until).strftime("%Y-%m-%d %H:%M:%S UTC")
+            for node_id, until in FUNPAY_BOOST_COOLDOWNS.items()
+            if until > time.time()
+        }
+        return data
+
+
+def update_funpay_boost_status(**values: Any) -> None:
+    with FUNPAY_BOOST_LOCK:
+        FUNPAY_BOOST_STATUS.update(values)
+
+
+def funpay_boost_cooldown_until(node_id: int) -> float:
+    with FUNPAY_BOOST_LOCK:
+        return float(FUNPAY_BOOST_COOLDOWNS.get(node_id) or 0)
+
+
+def remember_funpay_boost_cooldown(node_ids: list[int], available_at: float) -> None:
+    with FUNPAY_BOOST_LOCK:
+        for node_id in node_ids:
+            FUNPAY_BOOST_COOLDOWNS[node_id] = available_at
+
+
+def run_funpay_boost_once() -> dict[str, Any]:
+    started_at = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    update_funpay_boost_status(running=True, last_run=started_at, last_error="")
+    try:
+        result = funpay_client.boost_all_active_offers()
+    except Exception as exc:
+        update_funpay_boost_status(running=False, last_error=str(exc), last_result=None)
+        raise
+    update_funpay_boost_status(running=False, last_error="", last_result=result)
+    return result
+
+
+def funpay_boost_loop() -> None:
+    while funpay_boost_snapshot().get("enabled"):
+        try:
+            run_funpay_boost_once()
+        except Exception:
+            pass
+        next_run = dt.datetime.utcnow() + dt.timedelta(seconds=FUNPAY_BOOST_INTERVAL_SECONDS)
+        update_funpay_boost_status(next_run=next_run.strftime("%Y-%m-%d %H:%M:%S UTC"))
+        deadline = time.time() + FUNPAY_BOOST_INTERVAL_SECONDS
+        while time.time() < deadline:
+            if not funpay_boost_snapshot().get("enabled"):
+                update_funpay_boost_status(next_run="")
+                return
+            time.sleep(min(5, max(0.1, deadline - time.time())))
+
+
+def start_funpay_boost_scheduler() -> dict[str, Any]:
+    global FUNPAY_BOOST_THREAD
+    funpay_client.ensure_configured()
+    with FUNPAY_BOOST_LOCK:
+        FUNPAY_BOOST_STATUS["enabled"] = True
+        FUNPAY_BOOST_STATUS["last_error"] = ""
+        already_alive = FUNPAY_BOOST_THREAD is not None and FUNPAY_BOOST_THREAD.is_alive()
+        if not already_alive:
+            FUNPAY_BOOST_THREAD = threading.Thread(target=funpay_boost_loop, daemon=True)
+            FUNPAY_BOOST_THREAD.start()
+    return funpay_boost_snapshot()
+
+
 def refresh_public_online_status(force: bool = False) -> dict[str, Any]:
     now = time.time()
     last_checked_ts = float(ONLINE_KEEPALIVE_STATUS.get("public_checked_ts") or 0)
@@ -3752,6 +4060,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_sales_order_count()
             if path == "/api/online-keepalive":
                 return self.api_online_keepalive()
+            if path == "/api/funpay-boost-status":
+                return self.api_funpay_boost_status()
             if path == "/api/ggsel-products":
                 return self.api_ggsel_products()
             if path == "/api/version":
@@ -3787,6 +4097,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_translate_batch()
             if path == "/api/common-phrases":
                 return self.api_save_common_phrase()
+            if path == "/api/funpay-boost-toggle":
+                return self.api_funpay_boost_toggle()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
         except Exception as exc:
             self.send_html("Error", f"<div class='card bad'>Error</div><pre class='card code'>{h(exc)}</pre>", 500)
@@ -5513,6 +5825,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_online_keepalive(self) -> None:
         self.send_json(refresh_public_online_status(force=True))
+
+    def api_funpay_boost_status(self) -> None:
+        self.send_json(funpay_boost_snapshot())
+
+    def api_funpay_boost_toggle(self) -> None:
+        data = self.read_json_body()
+        enabled = bool(data.get("enabled"))
+        if enabled:
+            try:
+                status = start_funpay_boost_scheduler()
+            except Exception as exc:
+                update_funpay_boost_status(enabled=False, running=False, next_run="", last_error=str(exc))
+                return self.send_json(funpay_boost_snapshot(), 400)
+        else:
+            update_funpay_boost_status(enabled=False, next_run="")
+            status = funpay_boost_snapshot()
+        self.send_json(status)
 
     def api_chat_debug(self) -> None:
         order_id = int(self.q("order_id", "0") or 0)
