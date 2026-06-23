@@ -140,7 +140,10 @@ def sort_time(value: Any) -> float:
         for fmt in ("%H:%M:%S", "%H:%M"):
             try:
                 parsed = dt.datetime.strptime(text, fmt)
-                return now.replace(hour=parsed.hour, minute=parsed.minute, second=parsed.second, microsecond=0).timestamp()
+                candidate = now.replace(hour=parsed.hour, minute=parsed.minute, second=parsed.second, microsecond=0)
+                if candidate.timestamp() > time.time() + 300:
+                    candidate = candidate - dt.timedelta(days=1)
+                return candidate.timestamp()
             except ValueError:
                 pass
     date_match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})", text)
