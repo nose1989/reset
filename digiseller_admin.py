@@ -1150,12 +1150,61 @@ class GgselClient:
         return messages
 
     def send_chat_message(self, order_id: int, message: str, uploads: list[UploadItem]) -> None:
+        payload: dict[str, Any] = {"message": message}
         if uploads:
-            self.send_seller_office_chat_message(order_id, message, uploads)
-            return
-        data = self.post("/debates/v2", json_body={"message": message}, params={"id_i": order_id})
+            try:
+                payload["files"] = self.upload_chat_files(uploads)
+            except Exception as exc:
+                if self.seller_cookie:
+                    self.send_seller_office_chat_message(order_id, message, uploads)
+                    return
+                raise RuntimeError(f"GGSEL file upload failed: {exc}") from exc
+        data = self.post("/debates/v2", json_body=payload, params={"id_i": order_id})
         if isinstance(data, dict) and data.get("retval") not in (None, 0, "0"):
             raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL send failed: {data}")
+
+    def upload_chat_files(self, uploads: list[UploadItem]) -> list[dict[str, str]]:
+        if not uploads:
+            return []
+        files = [
+            ("files[]", (item.filename, item.data, item.content_type or "application/octet-stream"))
+            for item in uploads
+        ]
+        params = {"token": self.token, "lang": "en-US"}
+        r = self.http.post(API_BASE + "/debates/v2/upload-preview", params=params, files=files)
+        if r.status_code == 401:
+            self._token = None
+            params["token"] = self.token
+            r = self.http.post(API_BASE + "/debates/v2/upload-preview", params=params, files=files)
+        if r.status_code >= 400:
+            raise RuntimeError(f"GGSEL file upload HTTP {r.status_code}: {short(r.text, 400)}")
+        content_type = r.headers.get("content-type", "")
+        if "json" not in content_type.lower():
+            raise RuntimeError(f"GGSEL file upload returned non-JSON: {short(r.text, 400)}")
+        data = r.json()
+        if not isinstance(data, dict):
+            raise RuntimeError(f"GGSEL file upload returned invalid data: {short(r.text, 400)}")
+        if data.get("retval") not in (None, 0, "0"):
+            raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL file upload failed: {data}")
+        uploaded: list[dict[str, str]] = []
+        items = data.get("files")
+        if not isinstance(items, list):
+            raise RuntimeError(f"GGSEL file upload returned invalid files data: {short(r.text, 400)}")
+        for item in items:
+            if not isinstance(item, dict):
+                raise RuntimeError(f"GGSEL file upload returned invalid file item: {short(r.text, 400)}")
+            if int(item.get("error_num") or 0) != 0:
+                raise RuntimeError(item.get("error") or item.get("message") or "GGSEL file upload failed")
+            uploaded.append(
+                {
+                    "newid": str(item.get("newid") or ""),
+                    "name": str(item.get("name") or ""),
+                    "type": str(item.get("type") or ""),
+                }
+            )
+        if len(uploaded) != len(uploads):
+            raise RuntimeError("GGSEL file upload did not return every file")
+        return uploaded
 
     def send_seller_office_chat_message(self, order_id: int, message: str, uploads: list[UploadItem]) -> None:
         if not self.seller_cookie:
