@@ -1560,8 +1560,6 @@ class FunPayClient:
             order_id = self.paid_order_id_from_message(message.get("message"))
             if order_id and order_dates.get(order_id):
                 return order_dates[order_id]
-            if order_id and sort_time(message.get("date_written")):
-                return str(message.get("date_written") or "")
         return ""
 
     def message_sort_date(self, message_date: Any, order_date: Any) -> str:
@@ -5937,8 +5935,8 @@ class Handler(BaseHTTPRequestHandler):
                 latest_message = messages[-1] if messages else {}
                 latest_date = str(latest_message.get("date_written") or "")
                 order_date = funpay_client.latest_order_date_for_messages(messages, funpay_order_dates)
-                sort_date = funpay_client.message_sort_date(latest_date, order_date)
-                if sort_time(sort_date):
+                sort_date = funpay_client.message_sort_date(latest_date, order_date) if order_date else ""
+                if sort_date and sort_time(sort_date):
                     chat["last_sort_date"] = sort_date
             except Exception:
                 chat["product"] = chat.get("message") or "FunPay chat"
@@ -5962,7 +5960,7 @@ class Handler(BaseHTTPRequestHandler):
             for funpay_index, chat in enumerate(funpay_chats):
                 node_id = int(chat.get("node_id") or 0)
                 if node_id:
-                    order_candidates.append((sort_time(chat.get("last_sort_date") or chat.get("last_date")) or (time.time() - funpay_index), "funpay", node_id))
+                    order_candidates.append((sort_time(chat.get("last_sort_date")) or (-1000000.0 - funpay_index), "funpay", node_id))
             if order_candidates:
                 _, selected_platform, selected_order = max(order_candidates, key=lambda item: item[0])
                 selected_kind = "order"
@@ -6069,7 +6067,7 @@ class Handler(BaseHTTPRequestHandler):
             href = "/chats?" + urllib.parse.urlencode({"platform": "funpay", "order_id": str(node_id), "email": name, "product": product})
             search_text = " ".join(["funpay", str(node_id), name, product, preview]).lower()
             order_items.append((
-                sort_time(sort_when) or (time.time() - funpay_index),
+                sort_time(chat.get("last_sort_date")) or (-1000000.0 - funpay_index),
                 f"<a class='conversation-item{active}' data-kind='order' data-platform='funpay' data-has-unread='{1 if raw_unread else 0}' data-search='{h(search_text)}' data-order-id='{node_id}' data-email='{h(name)}' data-product='{h(product)}' href='{h(href)}'>"
                 f"{product_avatar_html(product, 'FP')}"
                 f"<div><div class='conversation-name'>{h(short(product, 70))}</div>"
