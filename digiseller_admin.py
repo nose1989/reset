@@ -343,7 +343,7 @@ PRODUCT_BRANDS = [
 ]
 CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 FUNPAY_CHAT_BASE = "https://funpay.com"
-RECENT_ORDER_DAYS = 3
+RECENT_ORDER_DAYS = 2
 RECENT_CHAT_DAYS = 2
 
 
@@ -4967,20 +4967,10 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return default
 
-        days = min(max(parse_int("days", RECENT_ORDER_DAYS), 1), RECENT_ORDER_DAYS)
+        days = RECENT_ORDER_DAYS
         rows_limit = min(max(parse_int("rows", 50), 1), 50)
         page = max(parse_int("page", 1), 1)
         errors: list[str] = []
-        recent_ggsel_chat_ids: set[str] = set()
-        if ggsel_client.configured():
-            try:
-                recent_ggsel_chat_ids = {
-                    str(chat.get("id_i"))
-                    for chat in (ggsel_client.chats(page_size=50).get("items") or [])
-                    if isinstance(chat, dict) and chat.get("id_i") and is_recent_time(chat.get("last_message"), RECENT_CHAT_DAYS)
-                }
-            except Exception as exc:
-                errors.append(f"GGSEL chats: {exc}")
         digiseller_data: dict[str, Any] = {"rows": [], "total_rows": 0, "pages": 1}
         try:
             digiseller_data = client.sales(days, rows_limit, page)
@@ -5001,8 +4991,6 @@ class Handler(BaseHTTPRequestHandler):
                     if not is_recent_time(sale.get("date"), days):
                         continue
                     invoice_id = sale.get("invoice_id")
-                    if str(invoice_id or "") not in recent_ggsel_chat_ids:
-                        continue
                     product = sale.get("product") if isinstance(sale.get("product"), dict) else {}
                     product_id = product.get("id") or sale.get("product_id") or sale.get("id_goods")
                     ggsel_rows.append(
@@ -5089,13 +5077,12 @@ class Handler(BaseHTTPRequestHandler):
         <div class='card'>
           <h2>Orders</h2>
           <form class='sales-toolbar'>
-            <label>Days <input name='days' value='{days}' size='4'></label>
             <label>Rows <input name='rows' value='{rows_limit}' size='4'></label>
             <label>Page <input name='page' value='{page}' size='4'></label>
             <input id='sales-search' class='sales-search' placeholder='Search platform, order, buyer, product, referer...' autocomplete='off'>
             <button>Refresh</button>
           </form>
-          <p class='muted'>Default is {RECENT_ORDER_DAYS} days; rows are capped at 50 per request. Digiseller paid orders are shown by paid time; GGSEL and FunPay orders are included when they have chat activity in the last {RECENT_CHAT_DAYS} days.</p>
+          <p class='muted'>Showing paid orders from the last {RECENT_ORDER_DAYS} days; rows are capped at 50 per request and merged by paid time.</p>
           {errors_html}
         </div>
         <div class='sales-summary'>
