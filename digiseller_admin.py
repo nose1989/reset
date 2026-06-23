@@ -1533,7 +1533,9 @@ class FunPayClient:
             cooldown_until = funpay_boost_cooldown_until(node_id)
             if cooldown_until > checked_at:
                 available_at = dt.datetime.utcfromtimestamp(cooldown_until).strftime("%Y-%m-%d %H:%M:%S UTC")
-                results.append({"node_id": node_id, "status": "skipped", "message": f"Waiting for cooldown until {available_at}"})
+                message = f"Waiting for cooldown until {available_at}"
+                results.append({"node_id": node_id, "status": "skipped", "message": message})
+                record_funpay_boost_attempt(node_id, "cooling", message, cooldown_until)
                 continue
             result, co_raised = self.raise_node_offers(node_id)
             results.append(result)
@@ -1541,6 +1543,8 @@ class FunPayClient:
             if result.get("status") == "success":
                 remember_funpay_boost_cooldown(boosted_node_ids, time.time() + FUNPAY_BOOST_INTERVAL_SECONDS)
                 raised_together.update(item for item in boosted_node_ids if item != node_id)
+            else:
+                record_funpay_boost_attempt(node_id, str(result.get("status") or "failed"), str(result.get("message") or ""))
             if index < len(node_ids) - 1:
                 time.sleep(0.7)
         return {
@@ -1758,6 +1762,7 @@ CHAT_KEEPALIVE_BROWSER_STATUS: dict[str, Any] = {
     "error": "",
 }
 FUNPAY_BOOST_INTERVAL_SECONDS = 3600
+FUNPAY_BOOST_HISTORY_FILE = APP_DIR / "funpay_boost_history.json"
 FUNPAY_BOOST_STATUS: dict[str, Any] = {
     "enabled": False,
     "running": False,
@@ -1767,8 +1772,26 @@ FUNPAY_BOOST_STATUS: dict[str, Any] = {
     "last_result": None,
 }
 FUNPAY_BOOST_COOLDOWNS: dict[int, float] = {}
+FUNPAY_BOOST_HISTORY: dict[int, dict[str, Any]] = {}
 FUNPAY_BOOST_LOCK = threading.Lock()
 FUNPAY_BOOST_THREAD: threading.Thread | None = None
+
+if FUNPAY_BOOST_HISTORY_FILE.exists():
+    try:
+        raw_funpay_boost_history = json.loads(FUNPAY_BOOST_HISTORY_FILE.read_text(encoding="utf-8"))
+        if isinstance(raw_funpay_boost_history, dict):
+            for raw_node_id, raw_item in raw_funpay_boost_history.items():
+                if not isinstance(raw_item, dict):
+                    continue
+                node_id = int(raw_node_id)
+                item = raw_item.copy()
+                FUNPAY_BOOST_HISTORY[node_id] = item
+                cooldown_until = float(item.get("cooldown_until_ts") or 0)
+                if cooldown_until > time.time():
+                    FUNPAY_BOOST_COOLDOWNS[node_id] = cooldown_until
+    except Exception:
+        FUNPAY_BOOST_HISTORY = {}
+        FUNPAY_BOOST_COOLDOWNS = {}
 
 
 def start_auto_reload() -> None:
@@ -1803,7 +1826,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .original-inline{white-space:pre-wrap;color:#64748b;font-size:12px;margin-top:6px;border-top:1px dashed #cbd5e1;padding-top:6px}
 .phrase-files{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.phrase-file{display:flex;align-items:center;gap:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;padding:6px 8px}.phrase-file img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}.phrase-file-name{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.phrase-upload{display:flex;align-items:center;justify-content:center;gap:10px;min-height:68px;margin-top:10px;border:1px dashed #93c5fd;border-radius:10px;background:#eff6ff;color:#0f3b66;font-weight:700;padding:10px;cursor:pointer}.phrase-upload input{background:white}.phrase-image-preview,.common-phrase-buttons .common-phrase-preview{border:0;background:transparent;padding:0;cursor:pointer}.phrase-image-preview img,.common-phrase-preview img{display:block;width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid #cbd5e1}.common-phrase-card{display:inline-flex;align-items:center;gap:8px;max-width:360px;border:1px solid #b9d4ff;border-radius:10px;background:#eaf3ff;padding:6px;box-shadow:0 1px 1px #0001}.common-phrase-previews{display:flex;gap:6px;align-items:center;flex-shrink:0}.common-phrase-card .common-phrase-send{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;border:0;background:transparent;color:#0f3b66;padding:4px 6px;text-align:left}.common-phrase-text{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}.common-phrase-files-note{font-size:11px;color:#64748b}.common-phrase-file-chip{display:inline-flex;align-items:center;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;color:#475569;padding:4px 6px;font-size:12px}.common-phrase-preview.broken{display:none}.phrase-pending{margin-top:8px}
 .chat-keepalive-btn{border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#0f3b66;padding:4px 10px;font-size:12px;font-weight:800;white-space:nowrap}.chat-keepalive-btn.ok{background:#dcfce7;color:#166534;border-color:#bbf7d0}.chat-keepalive-btn.warn{background:#fef3c7;color:#92400e;border-color:#fde68a}
-.funpay-boost-controls{position:fixed;right:18px;bottom:18px;z-index:100;display:flex;flex-direction:column;align-items:flex-end;gap:6px}.funpay-boost-button{border:1px solid #bbf7d0;border-radius:999px;background:#16a34a;color:white;padding:10px 16px;font-weight:900;box-shadow:0 8px 18px #0002}.funpay-boost-button.off{background:#475569;border-color:#cbd5e1}.funpay-boost-button.running{background:#f59e0b;border-color:#fde68a}.funpay-boost-pill{max-width:340px;border:1px solid #d9e2ec;border-radius:999px;background:white;color:#334155;padding:6px 10px;font-size:12px;box-shadow:0 3px 10px #0001}.funpay-boost-pill.bad{color:#b91c1c;border-color:#fecaca;background:#fff7f7}
+.funpay-boost-controls{position:fixed;right:18px;bottom:18px;z-index:100;display:flex;flex-direction:column;align-items:flex-end;gap:6px}.funpay-boost-button{border:1px solid #bbf7d0;border-radius:999px;background:#16a34a;color:white;padding:10px 16px;font-weight:900;box-shadow:0 8px 18px #0002}.funpay-boost-button.off{background:#475569;border-color:#cbd5e1}.funpay-boost-button.running{background:#f59e0b;border-color:#fde68a}.funpay-boost-pill{max-width:340px;border:1px solid #d9e2ec;border-radius:999px;background:white;color:#334155;padding:6px 10px;font-size:12px;box-shadow:0 3px 10px #0001}.funpay-boost-pill.bad{color:#b91c1c;border-color:#fecaca;background:#fff7f7}.funpay-boost-link{border:1px solid #bfdbfe;border-radius:999px;background:white;color:#0b65c2;padding:5px 10px;font-size:12px;font-weight:800;box-shadow:0 3px 10px #0001}
 
 .messages-layout{height:calc(100vh - 116px)}
 .conversation-list-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 14px 12px;box-shadow:0 1px 0 #eef2f7}
@@ -1866,6 +1889,7 @@ def layout(title: str, body: str) -> bytes:
         <a href="/product">Product</a>
         <a href="/stock">Stock</a>
         <a href="/ggsel">GGSEL</a>
+        <a href="/funpay-boost">FunPay Boost</a>
       </div>
       <form id="unique-code-form" class="unique-lookup" action="/unique-code" method="get">
         <input id="unique-code-input" name="code" maxlength="16" autocomplete="off" spellcheck="false" placeholder="Enter 16-digit verification code">
@@ -2174,6 +2198,7 @@ def layout(title: str, body: str) -> bytes:
     <div class="funpay-boost-controls">
       <div id="funpay-boost-pill" class="funpay-boost-pill">FunPay Boost checking...</div>
       <button id="funpay-boost-button" class="funpay-boost-button off" type="button">Start FunPay Boost</button>
+      <a class="funpay-boost-link" href="/funpay-boost">查看冷却记录</a>
     </div>
     <script>
     (() => {
@@ -2181,13 +2206,6 @@ def layout(title: str, body: str) -> bytes:
       const pill = document.getElementById('funpay-boost-pill');
       if (!btn || !pill) return;
       let enabled = false;
-      function describeResult(result) {
-        if (!result) return '';
-        const success = Number(result.success || 0);
-        const skipped = Number(result.skipped || 0);
-        const failed = Number(result.failed || 0);
-        return `Boosted ${success}, waiting ${skipped}, failed ${failed}`;
-      }
       function render(data) {
         enabled = Boolean(data.enabled);
         btn.classList.toggle('off', !enabled);
@@ -2200,9 +2218,7 @@ def layout(title: str, body: str) -> bytes:
         if (data.last_error) parts.push(`Error: ${data.last_error}`);
         else if (data.running) parts.push('Checking cooldown and boosting...');
         else parts.push(enabled ? 'Hourly Boost enabled' : 'Hourly Boost disabled');
-        const summary = describeResult(data.last_result);
-        if (summary) parts.push(summary);
-        if (data.next_run) parts.push(`Next check: ${data.next_run}`);
+        if (data.next_run) parts.push(`Next hourly check: ${data.next_run}`);
         pill.textContent = parts.join(' · ');
       }
       async function loadStatus() {
@@ -3317,14 +3333,69 @@ def update_online_keepalive_status(**values: Any) -> None:
     ONLINE_KEEPALIVE_STATUS.update(values)
 
 
+def funpay_boost_time_label(ts: float) -> str:
+    return dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S UTC") if ts else ""
+
+
+def funpay_boost_duration_label(seconds: int | None) -> str:
+    if seconds is None:
+        return "未知"
+    if seconds <= 0:
+        return "已冷却"
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}小时 {minutes}分钟"
+    if minutes:
+        return f"{minutes}分钟 {secs}秒"
+    return f"{secs}秒"
+
+
+def save_funpay_boost_history_locked() -> None:
+    data = {str(node_id): item for node_id, item in sorted(FUNPAY_BOOST_HISTORY.items())}
+    FUNPAY_BOOST_HISTORY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def record_funpay_boost_attempt(node_id: int, status: str, message: str, cooldown_until: float | None = None) -> None:
+    checked_at = time.time()
+    with FUNPAY_BOOST_LOCK:
+        item = FUNPAY_BOOST_HISTORY.get(node_id, {"node_id": node_id})
+        item.update(
+            {
+                "node_id": node_id,
+                "status": status,
+                "message": message,
+                "last_checked_ts": checked_at,
+                "last_checked_at": funpay_boost_time_label(checked_at),
+            }
+        )
+        if cooldown_until is not None:
+            item["cooldown_until_ts"] = cooldown_until
+            item["cooldown_until"] = funpay_boost_time_label(cooldown_until)
+            if cooldown_until > checked_at:
+                FUNPAY_BOOST_COOLDOWNS[node_id] = cooldown_until
+        FUNPAY_BOOST_HISTORY[node_id] = item
+        save_funpay_boost_history_locked()
+
+
+def funpay_boost_history_rows() -> list[dict[str, Any]]:
+    now = time.time()
+    with FUNPAY_BOOST_LOCK:
+        rows = []
+        for node_id, item in sorted(FUNPAY_BOOST_HISTORY.items()):
+            row = item.copy()
+            row["node_id"] = node_id
+            cooldown_until = float(row.get("cooldown_until_ts") or 0)
+            row["remaining_seconds"] = max(0, int(cooldown_until - now)) if cooldown_until else None
+            row["cooling"] = bool(cooldown_until and cooldown_until > now)
+            rows.append(row)
+        return rows
+
+
 def funpay_boost_snapshot() -> dict[str, Any]:
     with FUNPAY_BOOST_LOCK:
         data = FUNPAY_BOOST_STATUS.copy()
-        data["cooldowns"] = {
-            str(node_id): dt.datetime.utcfromtimestamp(until).strftime("%Y-%m-%d %H:%M:%S UTC")
-            for node_id, until in FUNPAY_BOOST_COOLDOWNS.items()
-            if until > time.time()
-        }
+        data["history_count"] = len(FUNPAY_BOOST_HISTORY)
         return data
 
 
@@ -3339,9 +3410,26 @@ def funpay_boost_cooldown_until(node_id: int) -> float:
 
 
 def remember_funpay_boost_cooldown(node_ids: list[int], available_at: float) -> None:
+    boosted_at = time.time()
     with FUNPAY_BOOST_LOCK:
         for node_id in node_ids:
             FUNPAY_BOOST_COOLDOWNS[node_id] = available_at
+            item = FUNPAY_BOOST_HISTORY.get(node_id, {"node_id": node_id})
+            item.update(
+                {
+                    "node_id": node_id,
+                    "status": "boosted",
+                    "message": "Offers boosted",
+                    "last_checked_ts": boosted_at,
+                    "last_checked_at": funpay_boost_time_label(boosted_at),
+                    "last_boost_ts": boosted_at,
+                    "last_boost_at": funpay_boost_time_label(boosted_at),
+                    "cooldown_until_ts": available_at,
+                    "cooldown_until": funpay_boost_time_label(available_at),
+                }
+            )
+            FUNPAY_BOOST_HISTORY[node_id] = item
+        save_funpay_boost_history_locked()
 
 
 def run_funpay_boost_once() -> dict[str, Any]:
@@ -4048,6 +4136,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.stock()
             if path == "/ggsel":
                 return self.ggsel()
+            if path == "/funpay-boost":
+                return self.funpay_boost_page()
             if path == "/unique-code":
                 return self.unique_code_page()
             if path == "/download-images":
@@ -4062,6 +4152,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_online_keepalive()
             if path == "/api/funpay-boost-status":
                 return self.api_funpay_boost_status()
+            if path == "/api/funpay-boost-history":
+                return self.api_funpay_boost_history()
             if path == "/api/ggsel-products":
                 return self.api_ggsel_products()
             if path == "/api/version":
@@ -4221,6 +4313,71 @@ class Handler(BaseHTTPRequestHandler):
         <div class='grid'>{login_info}{online_info}<div class='stat'><b>Quick links</b><br><a href='/sales'>Recent sales</a><br><a href='/unread'>Unread messages</a><br><a href='/chats'>Buyer chats</a><br><a href='/ggsel'>GGSEL catalog</a></div></div>
         """
         self.send_html("Dashboard", body)
+
+    def funpay_boost_page(self) -> None:
+        status = funpay_boost_snapshot()
+        rows = funpay_boost_history_rows()
+        if rows:
+            row_html = []
+            for row in rows:
+                node_id = int(row.get("node_id") or 0)
+                status_text = str(row.get("status") or "-")
+                status_class = "ok" if status_text == "boosted" else "bad" if status_text == "failed" else "muted"
+                remaining = funpay_boost_duration_label(row.get("remaining_seconds"))
+                cooldown_until_ts = float(row.get("cooldown_until_ts") or 0)
+                row_html.append(
+                    "<tr>"
+                    f"<td><a href='https://funpay.com/en/lots/{node_id}/trade' target='_blank' rel='noopener'>#{node_id}</a></td>"
+                    f"<td class='{status_class}'>{h(status_text)}</td>"
+                    f"<td>{h(row.get('last_boost_at') or '-')}</td>"
+                    f"<td class='cooldown-remaining' data-cooldown-until='{h(cooldown_until_ts)}'>{h(remaining)}</td>"
+                    f"<td>{h(row.get('cooldown_until') or '-')}</td>"
+                    f"<td>{h(row.get('last_checked_at') or '-')}</td>"
+                    f"<td>{h(row.get('message') or '-')}</td>"
+                    "</tr>"
+                )
+            rows_html = "".join(row_html)
+        else:
+            rows_html = "<tr><td colspan='7' class='muted'>还没有 FunPay Boost 记录。开启右下角按钮后，第一次检查会写入所有商品分类的状态。</td></tr>"
+        enabled = "开启" if status.get("enabled") else "关闭"
+        running = "运行中" if status.get("running") else "空闲"
+        body = f"""
+        <div class='card'>
+          <h2>FunPay Boost 冷却记录</h2>
+          <p class='muted'>这里集中记录每个 FunPay 商品分类的上次提升时间，以及从该时间推算出的冷却剩余时间。</p>
+          <p>自动 Boost：<b>{h(enabled)}</b> · 当前状态：<b>{h(running)}</b> · 上次检查：{h(status.get('last_run') or '-')} · 下次每小时检查：{h(status.get('next_run') or '-')}</p>
+          <p>错误：<span class='bad'>{h(status.get('last_error') or '-')}</span></p>
+        </div>
+        <div class='card'>
+          <table>
+            <thead><tr><th>商品分类</th><th>状态</th><th>上次提升时间</th><th>剩余冷却</th><th>下次可提升时间</th><th>上次检测</th><th>结果</th></tr></thead>
+            <tbody>{rows_html}</tbody>
+          </table>
+        </div>
+        <script>
+        (() => {{
+          function formatRemaining(seconds) {{
+            if (!Number.isFinite(seconds)) return '未知';
+            if (seconds <= 0) return '已冷却';
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            if (hours > 0) return `${{hours}}小时 ${{minutes}}分钟`;
+            if (minutes > 0) return `${{minutes}}分钟 ${{secs}}秒`;
+            return `${{secs}}秒`;
+          }}
+          function tick() {{
+            document.querySelectorAll('.cooldown-remaining').forEach((node) => {{
+              const until = Number(node.dataset.cooldownUntil || 0);
+              node.textContent = until ? formatRemaining(until - Date.now() / 1000) : '未知';
+            }});
+          }}
+          tick();
+          setInterval(tick, 1000);
+        }})();
+        </script>
+        """
+        self.send_html("FunPay Boost", body)
 
     def ggsel_product_rows(self, data: Any) -> list[dict[str, Any]]:
         if isinstance(data, list):
@@ -5828,6 +5985,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_funpay_boost_status(self) -> None:
         self.send_json(funpay_boost_snapshot())
+
+    def api_funpay_boost_history(self) -> None:
+        self.send_json({"status": funpay_boost_snapshot(), "rows": funpay_boost_history_rows()})
 
     def api_funpay_boost_toggle(self) -> None:
         data = self.read_json_body()
