@@ -1149,17 +1149,11 @@ class GgselClient:
         messages.sort(key=lambda item: sort_time(item.get("date_written")))
         return messages
 
-    def send_chat_message(
-        self,
-        order_id: int,
-        message: str,
-        uploads: list[UploadItem],
-        upload_token: str | None = None,
-    ) -> None:
+    def send_chat_message(self, order_id: int, message: str, uploads: list[UploadItem]) -> None:
         payload: dict[str, Any] = {"message": message}
         if uploads:
             try:
-                payload["files"] = self.upload_chat_files(uploads, upload_token=upload_token)
+                payload["files"] = self.upload_chat_files(uploads)
             except Exception as exc:
                 if self.seller_cookie:
                     self.send_seller_office_chat_message(order_id, message, uploads)
@@ -1169,20 +1163,19 @@ class GgselClient:
         if isinstance(data, dict) and data.get("retval") not in (None, 0, "0"):
             raise RuntimeError(data.get("retdesc") or data.get("desc") or f"GGSEL send failed: {data}")
 
-    def upload_chat_files(self, uploads: list[UploadItem], upload_token: str | None = None) -> list[dict[str, str]]:
+    def upload_chat_files(self, uploads: list[UploadItem]) -> list[dict[str, str]]:
         if not uploads:
             return []
         files = [
             ("files[]", (item.filename, item.data, item.content_type or "application/octet-stream"))
             for item in uploads
         ]
-        refresh_ggsel_token = upload_token is None
-        params = {"token": upload_token or self.token, "lang": "en-US"}
-        r = self.http.post(API_BASE + "/debates/v2/upload-preview", params=params, files=files)
-        if r.status_code == 401 and refresh_ggsel_token:
+        params = {"token": self.token, "lang": "en-US"}
+        r = self.http.post(self.api_base + "/debates/v2/upload-preview", params=params, files=files)
+        if r.status_code == 401:
             self._token = None
             params["token"] = self.token
-            r = self.http.post(API_BASE + "/debates/v2/upload-preview", params=params, files=files)
+            r = self.http.post(self.api_base + "/debates/v2/upload-preview", params=params, files=files)
         if r.status_code >= 400:
             raise RuntimeError(f"GGSEL file upload HTTP {r.status_code}: {short(r.text, 400)}")
         content_type = r.headers.get("content-type", "")
@@ -5022,13 +5015,7 @@ class Handler(BaseHTTPRequestHandler):
         if message and should_translate_outgoing_message(message, target_lang):
             message, _ = google_translate(message, target_lang, "zh-CN")
         if platform == "ggsel":
-            upload_token = None
-            if uploads and client.configured():
-                try:
-                    upload_token = client.token
-                except Exception:
-                    upload_token = None
-            ggsel_client.send_chat_message(order_id, message, uploads, upload_token=upload_token)
+            ggsel_client.send_chat_message(order_id, message, uploads)
             delete_stock_item_after_reply(platform, stock_offer_id, stock_item_id)
             sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
             self.redirect(f"/chats?platform=ggsel&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
