@@ -3484,28 +3484,45 @@ def run_funpay_boost_once() -> dict[str, Any]:
     return result
 
 
+def schedule_next_funpay_boost_run() -> float:
+    next_run_ts = time.time() + FUNPAY_BOOST_INTERVAL_SECONDS
+    next_run = dt.datetime.utcfromtimestamp(next_run_ts).strftime("%Y-%m-%d %H:%M:%S UTC")
+    update_funpay_boost_status(next_run=next_run)
+    return next_run_ts
+
+
 def funpay_boost_loop() -> None:
+    deadline = schedule_next_funpay_boost_run()
     while funpay_boost_snapshot().get("enabled"):
-        try:
-            run_funpay_boost_once()
-        except Exception:
-            pass
-        next_run = dt.datetime.utcnow() + dt.timedelta(seconds=FUNPAY_BOOST_INTERVAL_SECONDS)
-        update_funpay_boost_status(next_run=next_run.strftime("%Y-%m-%d %H:%M:%S UTC"))
-        deadline = time.time() + FUNPAY_BOOST_INTERVAL_SECONDS
         while time.time() < deadline:
             if not funpay_boost_snapshot().get("enabled"):
                 update_funpay_boost_status(next_run="")
                 return
             time.sleep(min(5, max(0.1, deadline - time.time())))
+        if not funpay_boost_snapshot().get("enabled"):
+            update_funpay_boost_status(next_run="")
+            return
+        try:
+            run_funpay_boost_once()
+        except Exception:
+            pass
+        deadline = schedule_next_funpay_boost_run()
 
 
 def start_funpay_boost_scheduler() -> dict[str, Any]:
     global FUNPAY_BOOST_THREAD
     funpay_client.ensure_configured()
     with FUNPAY_BOOST_LOCK:
+        already_enabled = bool(FUNPAY_BOOST_STATUS.get("enabled"))
         FUNPAY_BOOST_STATUS["enabled"] = True
         FUNPAY_BOOST_STATUS["last_error"] = ""
+        FUNPAY_BOOST_STATUS["next_run"] = ""
+    if not already_enabled:
+        run_funpay_boost_once()
+    if not funpay_boost_snapshot().get("enabled"):
+        return funpay_boost_snapshot()
+    schedule_next_funpay_boost_run()
+    with FUNPAY_BOOST_LOCK:
         already_alive = FUNPAY_BOOST_THREAD is not None and FUNPAY_BOOST_THREAD.is_alive()
         if not already_alive:
             FUNPAY_BOOST_THREAD = threading.Thread(target=funpay_boost_loop, daemon=True)
