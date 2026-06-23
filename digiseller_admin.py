@@ -146,6 +146,17 @@ def sort_time(value: Any) -> float:
                 return candidate.timestamp()
             except ValueError:
                 pass
+    relative_match = re.fullmatch(r"(today|yesterday|сегодня|вчера),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?", text, re.I)
+    if relative_match:
+        base = now
+        if relative_match.group(1).lower() in {"yesterday", "вчера"}:
+            base = base - dt.timedelta(days=1)
+        return base.replace(
+            hour=int(relative_match.group(2)),
+            minute=int(relative_match.group(3)),
+            second=int(relative_match.group(4) or 0),
+            microsecond=0,
+        ).timestamp()
     date_match = re.fullmatch(r"(\d{1,2})\.(\d{1,2})", text)
     if date_match:
         try:
@@ -155,18 +166,77 @@ def sort_time(value: Any) -> float:
             return parsed.timestamp()
         except ValueError:
             pass
-    relative_match = re.fullmatch(r"(today|yesterday),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?", text, re.I)
-    if relative_match:
-        base = now
-        if relative_match.group(1).lower() == "yesterday":
-            base = base - dt.timedelta(days=1)
-        return base.replace(
-            hour=int(relative_match.group(2)),
-            minute=int(relative_match.group(3)),
-            second=int(relative_match.group(4) or 0),
-            microsecond=0,
-        ).timestamp()
-    for fmt in ("%d %B, %H:%M:%S", "%d %b, %H:%M:%S"):
+    month_names = {
+        "jan": 1,
+        "january": 1,
+        "фев": 2,
+        "февраля": 2,
+        "feb": 2,
+        "february": 2,
+        "мар": 3,
+        "марта": 3,
+        "mar": 3,
+        "march": 3,
+        "апр": 4,
+        "апреля": 4,
+        "apr": 4,
+        "april": 4,
+        "май": 5,
+        "мая": 5,
+        "may": 5,
+        "июн": 6,
+        "июня": 6,
+        "jun": 6,
+        "june": 6,
+        "июл": 7,
+        "июля": 7,
+        "jul": 7,
+        "july": 7,
+        "авг": 8,
+        "августа": 8,
+        "aug": 8,
+        "august": 8,
+        "сен": 9,
+        "сентября": 9,
+        "sep": 9,
+        "sept": 9,
+        "september": 9,
+        "окт": 10,
+        "октября": 10,
+        "oct": 10,
+        "october": 10,
+        "ноя": 11,
+        "ноября": 11,
+        "nov": 11,
+        "november": 11,
+        "дек": 12,
+        "декабря": 12,
+        "dec": 12,
+        "december": 12,
+    }
+    month_match = re.fullmatch(
+        r"(\d{1,2})\s+([A-Za-zА-Яа-яЁё.]+)(?:\s+(\d{4}))?,?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?.*",
+        text,
+        re.I,
+    )
+    if month_match:
+        month = month_names.get(month_match.group(2).strip(".").lower())
+        if month:
+            try:
+                parsed = dt.datetime(
+                    int(month_match.group(3) or now.year),
+                    month,
+                    int(month_match.group(1)),
+                    int(month_match.group(4)),
+                    int(month_match.group(5)),
+                    int(month_match.group(6) or 0),
+                )
+                if parsed.timestamp() > time.time() + 86400:
+                    parsed = parsed.replace(year=now.year - 1)
+                return parsed.timestamp()
+            except ValueError:
+                pass
+    for fmt in ("%d %B, %H:%M:%S", "%d %b, %H:%M:%S", "%d %B, %H:%M", "%d %b, %H:%M"):
         try:
             parsed = dt.datetime.strptime(text, fmt)
             parsed = parsed.replace(year=now.year)
@@ -176,6 +246,28 @@ def sort_time(value: Any) -> float:
         except ValueError:
             pass
     return 0.0
+
+
+def full_time_from_date(date_value: Any, time_value: Any) -> str:
+    time_text = str(time_value or "").strip()
+    if not re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", time_text):
+        return time_text
+    date_timestamp = sort_time(date_value)
+    if not date_timestamp:
+        return time_text
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed_time = dt.datetime.strptime(time_text, fmt)
+            parsed_date = dt.datetime.fromtimestamp(date_timestamp)
+            return parsed_date.replace(
+                hour=parsed_time.hour,
+                minute=parsed_time.minute,
+                second=parsed_time.second,
+                microsecond=0,
+            ).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+    return time_text
 
 
 def is_recent_time(value: Any, days: int) -> bool:
@@ -1445,6 +1537,41 @@ class FunPayClient:
     def chat_product(self, node_id: int) -> str:
         return self.chat_product_from_page(self.chat_page(node_id))
 
+    def paid_order_id_from_message(self, text: Any) -> str:
+        order_match = re.search(r"\border\s+#([A-Za-z0-9]+)", clean_text(text), re.I)
+        return order_match.group(1) if order_match else ""
+
+    def recent_order_dates(self, limit: int = 100) -> dict[str, str]:
+        page = self.get("/orders/trade").text
+        dates: dict[str, str] = {}
+        pattern = re.compile(r'<a\b[^>]*class="[^"]*\btc-item\b[^"]*"[^>]*>.*?</a>', re.S | re.I)
+        for item in pattern.findall(page):
+            order_id = self.first_text(item, "tc-order").lstrip("#").strip()
+            order_date = self.first_text(item, "tc-date-time")
+            timestamp = sort_time(order_date)
+            if order_id and timestamp:
+                dates[order_id] = dt.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+            if len(dates) >= limit:
+                break
+        return dates
+
+    def latest_order_date_for_messages(self, messages: list[dict[str, Any]], order_dates: dict[str, str]) -> str:
+        for message in reversed(messages):
+            order_id = self.paid_order_id_from_message(message.get("message"))
+            if order_id and order_dates.get(order_id):
+                return order_dates[order_id]
+            if order_id and sort_time(message.get("date_written")):
+                return str(message.get("date_written") or "")
+        return ""
+
+    def message_sort_date(self, message_date: Any, order_date: Any) -> str:
+        text = str(message_date or "").strip()
+        if not text:
+            return ""
+        if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", text):
+            return full_time_from_date(order_date, text)
+        return text
+
     def csrf_token_from_page(self, page: str) -> str:
         data = self.app_data(page)
         csrf_token = str(data.get("csrf-token") or data.get("csrf_token") or "")
@@ -1793,6 +1920,10 @@ class FunPayClient:
     def recent_orders(self, order_days: int = RECENT_ORDER_DAYS, chat_days: int = RECENT_CHAT_DAYS, limit: int = 50) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         seen_orders: set[str] = set()
+        try:
+            order_dates = self.recent_order_dates(limit=limit)
+        except Exception:
+            order_dates = {}
         for chat in self.chats(limit=limit):
             if not is_recent_time(chat.get("last_date"), chat_days):
                 continue
@@ -1812,11 +1943,12 @@ class FunPayClient:
                 if order_id in seen_orders:
                     continue
                 seen_orders.add(order_id)
+                order_date = order_dates.get(order_id) or self.message_sort_date(message.get("date_written"), message.get("date_written"))
                 rows.append(
                     {
                         "source": "FunPay",
                         "platform": "funpay",
-                        "date_pay": message.get("date_written") or chat.get("last_date"),
+                        "date_pay": order_date or message.get("date_written") or chat.get("last_date"),
                         "invoice_id": order_id,
                         "chat_node_id": node_id,
                         "email": chat.get("name") or f"FunPay-{node_id}",
@@ -2093,13 +2225,17 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
     chat_button_class = "ok" if chat_browser.get("opened") else "warn"
     sales_badge = sales_order_badge_summary()
     sales_badge_count = int(sales_badge.get("count") or 0)
-    sales_badge_hidden = " hidden" if sales_badge_count <= 0 else ""
+    sales_badge_html = (
+        f"<span id=\"sales-order-badge\" style=\"display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:#ef4444;color:#fff;font-size:11px;font-weight:900;line-height:1;box-shadow:0 0 0 2px #1f7acb\">{h(sales_badge_count)}</span>"
+        if sales_badge_count > 0
+        else ""
+    )
     nav = f"""
     <div class="top">
       <a href="/" aria-label="Home"><img class="brand-logo" src="/assets/shinchan-logo.png" alt="Crayon Shin-chan"></a>
       <div class="top-nav">
         <a href="/">Dashboard</a>
-        <a href="/sales" style="display:inline-flex;align-items:center;gap:5px">Sales<span id="sales-order-badge" style="display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:#ef4444;color:#fff;font-size:11px;font-weight:900;line-height:1;box-shadow:0 0 0 2px #1f7acb"{sales_badge_hidden}>{h(sales_badge_count)}</span></a>
+        <a href="/sales" style="display:inline-flex;align-items:center;gap:5px">Sales{sales_badge_html}</a>
         <a href="/chats">Messages</a>
         <a href="/unread">Unread</a>
         <a href="/admin-messages">Admin</a>
@@ -5747,6 +5883,10 @@ class Handler(BaseHTTPRequestHandler):
             funpay_chats = []
             funpay_error = str(exc)
         funpay_chats = [chat for chat in funpay_chats if is_recent_time(chat.get("last_date"), RECENT_CHAT_DAYS)]
+        try:
+            funpay_order_dates = funpay_client.recent_order_dates(limit=100) if funpay_chats else {}
+        except Exception:
+            funpay_order_dates = {}
         for chat in funpay_chats:
             node_id = int(chat.get("node_id") or 0)
             if not node_id:
@@ -5755,10 +5895,12 @@ class Handler(BaseHTTPRequestHandler):
                 page = funpay_client.chat_page(node_id)
                 chat["product"] = funpay_client.chat_product_from_page(page) or chat.get("message") or "FunPay chat"
                 messages = funpay_client.chat_messages_from_page(node_id, page)
-                latest_message = max(messages, key=lambda item: sort_time(item.get("date_written")), default={})
+                latest_message = messages[-1] if messages else {}
                 latest_date = str(latest_message.get("date_written") or "")
-                if sort_time(latest_date):
-                    chat["last_sort_date"] = latest_date
+                order_date = funpay_client.latest_order_date_for_messages(messages, funpay_order_dates)
+                sort_date = funpay_client.message_sort_date(latest_date, order_date)
+                if sort_time(sort_date):
+                    chat["last_sort_date"] = sort_date
             except Exception:
                 chat["product"] = chat.get("message") or "FunPay chat"
         selected_kind = self.q("kind", "order")
