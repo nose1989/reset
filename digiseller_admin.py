@@ -2230,13 +2230,22 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
         if sales_badge_count > 0
         else ""
     )
+    try:
+        messages_badge_count = int(cached_unread_summary().get("message_nav_unread") or 0)
+    except Exception:
+        messages_badge_count = 0
+    messages_badge_html = (
+        f"<span id=\"messages-unread-badge\" style=\"display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:#ef4444;color:#fff;font-size:11px;font-weight:900;line-height:1;box-shadow:0 0 0 2px #1f7acb\">{h(messages_badge_count)}</span>"
+        if messages_badge_count > 0
+        else ""
+    )
     nav = f"""
     <div class="top">
       <a href="/" aria-label="Home"><img class="brand-logo" src="/assets/shinchan-logo.png" alt="Crayon Shin-chan"></a>
       <div class="top-nav">
         <a href="/">Dashboard</a>
         <a href="/sales" style="display:inline-flex;align-items:center;gap:5px">Sales{sales_badge_html}</a>
-        <a href="/chats">Messages</a>
+        <a id="messages-nav-link" href="/chats" style="display:inline-flex;align-items:center;gap:5px">Messages{messages_badge_html}</a>
         <a href="/unread">Unread</a>
         <a href="/admin-messages">Admin</a>
         <a href="/phrases">&#24120;&#29992;&#35821;</a>
@@ -2483,6 +2492,22 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
         const n = new Notification(title, {body});
         n.onclick = () => { window.focus(); if (url) location.href = url; };
       }
+      function updateNavBadge(linkId, badgeId, count) {
+        const link = document.getElementById(linkId);
+        if (!link) return;
+        let badge = document.getElementById(badgeId);
+        if (count <= 0) {
+          if (badge) badge.remove();
+          return;
+        }
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.id = badgeId;
+          badge.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:#ef4444;color:#fff;font-size:11px;font-weight:900;line-height:1;box-shadow:0 0 0 2px #1f7acb';
+          link.appendChild(badge);
+        }
+        badge.textContent = String(count);
+      }
       function alertUnread(data, force=false) {
         const latest = data.latest || {};
         const who = latest.email || '';
@@ -2508,6 +2533,7 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
           const res = await fetch('/api/unread-count?force=1', {cache: 'no-store', signal: controller.signal});
           const data = await res.json();
           const total = Number(data.total || 0);
+          updateNavBadge('messages-nav-link', 'messages-unread-badge', Number(data.message_nav_unread || 0));
           pill.textContent = total > 0 ? `\u672a\u8bfb ${total}` : '';
           pill.classList.toggle('show', total > 0);
           document.title = total > 0 ? `(${total}) ${baseTitle}` : baseTitle;
@@ -3028,6 +3054,7 @@ def unread_summary() -> dict[str, Any]:
     digiseller_unread_messages = sum(int(c.get("cnt_new") or 0) for c in buyer)
     ggsel_unread_messages = sum(int(c.get("cnt_new") or 0) for c in ggsel_buyer)
     funpay_unread_messages = sum(int(c.get("cnt_new") or 0) for c in funpay_buyer)
+    message_nav_unread = digiseller_unread_messages + ggsel_unread_messages + funpay_unread_messages + len(guest)
     total = digiseller_unread_messages + ggsel_unread_messages + funpay_unread_messages + len(guest) + len(admin)
     return {
         "ok": True,
@@ -3042,10 +3069,22 @@ def unread_summary() -> dict[str, Any]:
         "buyer_unread": buyer_unread,
         "guest_unread_chats": len(guest),
         "admin_unread": len(admin),
+        "message_nav_unread": message_nav_unread,
         "total": total,
         "latest": latest,
         "checked_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
+
+def cached_unread_summary(max_age: int = 30) -> dict[str, Any]:
+    now = time.time()
+    cached = UNREAD_CACHE.get("data")
+    if cached is not None and now - float(UNREAD_CACHE.get("time") or 0) < max_age:
+        return cached
+    data = unread_summary()
+    UNREAD_CACHE["time"] = now
+    UNREAD_CACHE["data"] = data
+    return data
+
 
 def clear_unread_cache() -> None:
     UNREAD_CACHE["time"] = 0.0
