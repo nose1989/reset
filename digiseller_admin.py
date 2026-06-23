@@ -1408,11 +1408,11 @@ class FunPayClient:
         return file_ids
 
     def app_data(self, html_text: str) -> dict[str, Any]:
-        match = re.search(r'data-app-data="([^"]+)"', html_text)
+        match = re.search(r"""data-app-data\s*=\s*(["'])(.*?)\1""", html_text, re.S | re.I)
         if not match:
             return {}
         try:
-            data = json.loads(html.unescape(match.group(1)))
+            data = json.loads(html.unescape(match.group(2)))
         except ValueError:
             return {}
         return data if isinstance(data, dict) else {}
@@ -1441,6 +1441,45 @@ class FunPayClient:
 
     def chat_product(self, node_id: int) -> str:
         return self.chat_product_from_page(self.chat_page(node_id))
+
+    def csrf_token_from_page(self, page: str) -> str:
+        data = self.app_data(page)
+        csrf_token = str(data.get("csrf-token") or data.get("csrf_token") or "")
+        if csrf_token:
+            return csrf_token
+        for pattern in (
+            r'<meta\b[^>]*(?:name|property)=["\']csrf-token["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+            r'<meta\b[^>]*\bcontent=["\']([^"\']+)["\'][^>]*(?:name|property)=["\']csrf-token["\']',
+            r'<input\b[^>]*\bname=["\']csrf_token["\'][^>]*\bvalue=["\']([^"\']+)["\']',
+            r'<input\b[^>]*\bvalue=["\']([^"\']+)["\'][^>]*\bname=["\']csrf_token["\']',
+            r'["\']csrf-token["\']\s*:\s*["\']([^"\']+)["\']',
+            r'["\']csrf_token["\']\s*:\s*["\']([^"\']+)["\']',
+        ):
+            match = re.search(pattern, page, re.I)
+            if match:
+                return html.unescape(match.group(1))
+        return ""
+
+    def chat_node_name_from_page(self, page: str) -> str:
+        fallback = ""
+        for match in re.finditer(r"<[^>]+\bdata-name\s*=\s*(['\"])(.*?)\1[^>]*>", page, re.I | re.S):
+            attrs = self.tag_attrs(match.group(0))
+            data_name = attrs.get("data-name") or ""
+            if not data_name:
+                continue
+            class_name = attrs.get("class") or ""
+            if "chat" in class_name.split():
+                return data_name
+            if not fallback:
+                fallback = data_name
+        return fallback
+
+    def chat_attrs_from_page(self, page: str) -> dict[str, str]:
+        for match in re.finditer(r"<div\b[^>]*>", page, re.I):
+            attrs = self.tag_attrs(match.group(0))
+            if "chat" in (attrs.get("class") or "").split():
+                return attrs
+        return {}
 
     def account_home_page(self) -> str:
         return self.get("/en/").text
@@ -1835,30 +1874,38 @@ class FunPayClient:
         return messages
 
     def send_chat_payload(self, node_id: int, page: str, content: str, image_id: str = "") -> None:
-        data = self.app_data(page)
-        csrf_token = str(data.get("csrf-token") or "")
-        chat_tag = re.search(r'<div\b[^>]*class="[^"]*\bchat\b[^"]*"[^>]*>', page, re.I)
-        attrs = self.tag_attrs(chat_tag.group(0) if chat_tag else "")
-        node_name = attrs.get("data-name") or ""
-        if not csrf_token or not node_name:
-            raise RuntimeError("FunPay chat page did not expose a send token")
+        csrf_token = self.csrf_token_from_page(page) or self.csrf_token_from_page(self.account_home_page())
+        attrs = self.chat_attrs_from_page(page)
+        node_name = attrs.get("data-name") or self.chat_node_name_from_page(page) or str(node_id)
+        if not csrf_token:
+            raise RuntimeError("FunPay page did not expose a CSRF token")
         ids = [int(value) for value in re.findall(r'id="message-(\d+)"', page)]
+        request_data = {
+            "node": node_name,
+            "last_message": max(ids) if ids else -1,
+            "content": content,
+        }
+        for key in ("data-compact", "data-show_avatar"):
+            if attrs.get(key):
+                request_data[key[5:]] = attrs[key]
         request = {
             "action": "chat_message",
-            "data": {
-                "node": node_name,
-                "last_message": max(ids) if ids else 0,
-                "content": content,
-                "compact": attrs.get("data-compact") or "",
-                "show_avatar": attrs.get("data-show_avatar") or "",
-            },
+            "data": request_data,
         }
         if image_id:
             request["data"]["image_id"] = image_id
-        response = self.post(
-            "/en/runner/",
+        objects = [
             {
-                "objects": "[]",
+                "type": "chat_node",
+                "id": node_name,
+                "tag": "00000000",
+                "data": {"node": node_name, "last_message": -1, "content": ""},
+            }
+        ]
+        response = self.post(
+            "/runner/",
+            {
+                "objects": json.dumps(objects, ensure_ascii=False, separators=(",", ":")),
                 "request": json.dumps(request, ensure_ascii=False, separators=(",", ":")),
                 "csrf_token": csrf_token,
             },
