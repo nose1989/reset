@@ -50,7 +50,7 @@ COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.15-ggsel-replenish"
+APP_VERSION = "v8.16-ggsel-replenish-draft"
 
 
 @dataclass
@@ -3287,7 +3287,7 @@ def funpay_offer_search_text(product_name: str) -> str:
     return clean_text(product)
 
 
-def send_stock_item_to_chat(order_id: int, platform: str, fallback_product: Any = "") -> dict[str, Any]:
+def stock_item_draft_for_chat(order_id: int, platform: str, fallback_product: Any = "") -> dict[str, Any]:
     normalized_platform = platform if platform in ("ggsel", "funpay") else "digiseller"
     if normalized_platform == "ggsel":
         offer = ggsel_seller_office_offer_for_order(order_id, fallback_product)
@@ -3303,16 +3303,37 @@ def send_stock_item_to_chat(order_id: int, platform: str, fallback_product: Any 
     message = stock["message"]
     offer_id = int(stock["offer_id"])
     stock_item_id = int(stock["stock_item_id"])
+    return {
+        "offer_id": offer_id,
+        "stock_item_id": stock_item_id,
+        "message": message,
+        "product": stock["product"],
+        "platform": normalized_platform,
+    }
+
+
+def delete_stock_item_after_reply(offer_id: int, stock_item_id: int) -> None:
+    if not offer_id or not stock_item_id:
+        return
+    try:
+        ggsel_client.seller_office_delete_product(offer_id, stock_item_id)
+    except Exception as exc:
+        raise RuntimeError(f"Reply was sent, but removing it from stock failed: {exc}") from exc
+
+
+def send_stock_item_to_chat(order_id: int, platform: str, fallback_product: Any = "") -> dict[str, Any]:
+    stock = stock_item_draft_for_chat(order_id, platform, fallback_product)
+    message = stock["message"]
+    offer_id = int(stock["offer_id"])
+    stock_item_id = int(stock["stock_item_id"])
+    normalized_platform = str(stock["platform"])
     if normalized_platform == "ggsel":
         ggsel_client.send_chat_message(order_id, message, [])
     elif normalized_platform == "funpay":
         funpay_client.send_chat_message(order_id, message, [])
     else:
         client.send_chat_message(order_id, message, [])
-    try:
-        ggsel_client.seller_office_delete_product(offer_id, stock_item_id)
-    except Exception as exc:
-        raise RuntimeError(f"Stock item was sent, but removing it from stock failed: {exc}") from exc
+    delete_stock_item_after_reply(offer_id, stock_item_id)
     return {"offer_id": offer_id, "stock_item_id": stock_item_id, "product": stock["product"], "platform": normalized_platform}
 
 
@@ -4007,16 +4028,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def reply_editor(self, order_id: int, target_lang: str, platform: str = "digiseller", email: str = "", product: str = "") -> str:
         editor_id = f"reply-{platform}-{order_id}"
-        stock_button = (
-            f"<button type='submit' formaction='/chats/send-stock' formmethod='post' "
-            f"onclick=\""
-            f"if (!confirm('\\u7b2c\\u4e00\\u6b65\\uff1a\\u786e\\u5b9a\\u7ed9\\u4e70\\u5bb6\\u8865\\u8d27\\uff1f\\u8865\\u8d27\\u6210\\u529f\\u540e\\u4f1a\\u4ece\\u5e93\\u5b58\\u5220\\u9664\\u4e00\\u6761\\u5546\\u54c1\\u3002')) return false;"
-            f"const stockAnswer = prompt('\\u7b2c\\u4e8c\\u6b65\\uff1a\\u8bf7\\u8f93\\u5165\\u8ba2\\u5355\\u53f7 {order_id} \\u786e\\u8ba4\\u8865\\u8d27');"
-            f"if (stockAnswer !== '{order_id}') {{ alert('\\u8ba2\\u5355\\u53f7\\u4e0d\\u5339\\u914d\\uff0c\\u5df2\\u53d6\\u6d88\\u8865\\u8d27\\u3002'); return false; }}"
-            f"document.getElementById('{editor_id}-stock-confirm').value = '{order_id}';"
-            f"return true;\">"
-            "&#34917;&#36135;</button>"
-        )
+        stock_button = f"<button id='{editor_id}-stock-button' type='button' data-stock-url='/api/stock-draft'>&#34917;&#36135;</button>"
         phrase_forms = []
         for phrase in load_common_phrases():
             text = str(phrase.get("text") or "")
@@ -4064,7 +4076,8 @@ class Handler(BaseHTTPRequestHandler):
           <input type="hidden" name="target_lang" value="{h(target_lang)}">
           <input type="hidden" name="email" value="{h(email)}">
           <input type="hidden" name="product" value="{h(product)}">
-          <input id="{editor_id}-stock-confirm" type="hidden" name="stock_confirm" value="">
+          <input id="{editor_id}-stock-offer-id" type="hidden" name="stock_offer_id" value="">
+          <input id="{editor_id}-stock-item-id" type="hidden" name="stock_item_id" value="">
           <textarea id="{editor_id}-message" name="message" placeholder="&#22312;&#36825;&#37324;&#22238;&#22797;&#20250;&#21592;&#20449;&#24687;&#65292;&#21487;&#22635;&#20889;&#36134;&#21495;&#12289;&#23494;&#30721;&#12289;&#38142;&#25509;&#12289;&#20351;&#29992;&#35828;&#26126;&#31561;&#12290;"></textarea>
           <div class="reply-actions">
             <div id="{editor_id}-dropzone" class="reply-dropzone">
@@ -4088,6 +4101,9 @@ class Handler(BaseHTTPRequestHandler):
           const selected = document.getElementById('{editor_id}-selected');
           const phrases = document.getElementById('{editor_id}-phrases');
           const phraseToggle = document.getElementById('{editor_id}-phrase-toggle');
+          const stockButton = document.getElementById('{editor_id}-stock-button');
+          const stockOfferId = document.getElementById('{editor_id}-stock-offer-id');
+          const stockItemId = document.getElementById('{editor_id}-stock-item-id');
           let previewUrls = [];
           let selectedFiles = Array.from(input.files || []);
           const previewModal = document.createElement('div');
@@ -4215,6 +4231,33 @@ class Handler(BaseHTTPRequestHandler):
               textarea.focus();
             }});
           }});
+          if (stockButton) {{
+            stockButton.addEventListener('click', async () => {{
+              if (!confirm('确定读取一条库存到回复框？只有点击“发送回复”成功后才会删除库存。')) return;
+              const originalText = stockButton.textContent;
+              stockButton.disabled = true;
+              stockButton.textContent = '读取中...';
+              try {{
+                const res = await fetch(stockButton.dataset.stockUrl || '/api/stock-draft', {{
+                  method: 'POST',
+                  body: new FormData(root),
+                  cache: 'no-store',
+                }});
+                const data = await res.json().catch(() => ({{}}));
+                if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${{res.status}}`);
+                textarea.value = data.message || '';
+                stockOfferId.value = data.offer_id || '';
+                stockItemId.value = data.stock_item_id || '';
+                textarea.focus();
+                stockButton.textContent = '库存已填，发送后删除';
+              }} catch (error) {{
+                alert(`补货读取失败：${{error.message || error}}`);
+                stockButton.textContent = originalText;
+              }} finally {{
+                stockButton.disabled = false;
+              }}
+            }});
+          }}
           input.addEventListener('change', () => {{
             addFiles(input.files);
           }});
@@ -4354,6 +4397,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_chat_reply()
             if path == "/chats/send-stock":
                 return self.send_stock_reply()
+            if path == "/api/stock-draft":
+                return self.api_stock_draft()
             if path == "/phrases/save":
                 return self.save_phrase()
             if path == "/phrases/delete":
@@ -4384,6 +4429,19 @@ class Handler(BaseHTTPRequestHandler):
         data = json.loads(raw.decode("utf-8"))
         return data if isinstance(data, dict) else {}
 
+    def api_stock_draft(self) -> None:
+        fields, _ = self.read_form()
+        order_id = int(fields.get("order_id", "0") or 0)
+        platform = fields.get("platform", "digiseller").strip() or "digiseller"
+        product = fields.get("product", "").strip()
+        if not order_id:
+            return self.send_json({"ok": False, "error": "Order ID is missing"}, 400)
+        try:
+            stock = stock_item_draft_for_chat(order_id, platform, product)
+        except Exception as exc:
+            return self.send_json({"ok": False, "error": str(exc)}, 500)
+        return self.send_json({"ok": True, **stock})
+
     def send_chat_reply(self) -> None:
         fields, uploads = self.read_form()
         order_id = int(fields.get("order_id", "0") or 0)
@@ -4391,6 +4449,8 @@ class Handler(BaseHTTPRequestHandler):
         phrase_id = fields.get("phrase_id", "").strip()
         target_lang = fields.get("target_lang", "").strip() or "en"
         platform = fields.get("platform", "digiseller").strip() or "digiseller"
+        stock_offer_id = int(fields.get("stock_offer_id", "0") or 0)
+        stock_item_id = int(fields.get("stock_item_id", "0") or 0)
         if not order_id:
             raise RuntimeError("Order ID is missing")
         if phrase_id:
@@ -4405,40 +4465,23 @@ class Handler(BaseHTTPRequestHandler):
             message, _ = google_translate(message, target_lang, "zh-CN")
         if platform == "ggsel":
             ggsel_client.send_chat_message(order_id, message, uploads)
-            self.redirect(f"/chats?platform=ggsel&order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
+            delete_stock_item_after_reply(stock_offer_id, stock_item_id)
+            sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
+            self.redirect(f"/chats?platform=ggsel&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
             return
         if platform == "funpay":
             funpay_client.send_chat_message(order_id, message, uploads)
-            self.redirect(f"/chats?platform=funpay&order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
+            delete_stock_item_after_reply(stock_offer_id, stock_item_id)
+            sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
+            self.redirect(f"/chats?platform=funpay&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
             return
         client.send_chat_message(order_id, message, uploads)
-        self.redirect(f"/chats?order_id={order_id}&sent=1&tl={urllib.parse.quote(target_lang)}")
+        delete_stock_item_after_reply(stock_offer_id, stock_item_id)
+        sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
+        self.redirect(f"/chats?order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
 
     def send_stock_reply(self) -> None:
-        fields, _ = self.read_form()
-        order_id = int(fields.get("order_id", "0") or 0)
-        platform = fields.get("platform", "digiseller").strip() or "digiseller"
-        target_lang = fields.get("target_lang", "").strip() or "en"
-        email = fields.get("email", "").strip()
-        product = fields.get("product", "").strip()
-        stock_confirm = fields.get("stock_confirm", "").strip()
-        if not order_id:
-            raise RuntimeError("Order ID is missing")
-        if stock_confirm != str(order_id):
-            raise RuntimeError("Stock send confirmation failed")
-        result = send_stock_item_to_chat(order_id, platform, product)
-        if result.get("platform") == "ggsel":
-            safe_mark_ggsel_chat_read(order_id)
-        elif result.get("platform") == "funpay":
-            clear_unread_cache()
-        else:
-            safe_mark_chat_read(order_id)
-        params = {"platform": str(result.get("platform") or platform), "order_id": str(order_id), "stock_sent": "1", "tl": target_lang}
-        if email:
-            params["email"] = email
-        if product:
-            params["product"] = product
-        self.redirect("/chats?" + urllib.parse.urlencode(params))
+        raise RuntimeError("Stock replenishment now fills the reply box first. Refresh the chat, click Replenish, then click Send Reply.")
 
     def home(self) -> None:
         configured = client.configured()
