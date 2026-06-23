@@ -1501,8 +1501,11 @@ class FunPayClient:
         failed = data.get("success") is False or data.get("status") == "error" or bool(data.get("error"))
         if not failed:
             return {"node_id": node_id, "status": "success", "message": message or "Offers boosted"}
-        cooldown = not message or bool(re.search(r"уже|ранее|час|минут|секунд|подня|повтор|огранич|cooldown|later|wait|raised", message, re.I))
+        cooldown = not message or bool(re.search(r"уже|ранее|час|минут|секунд|подня|повтор|огранич|cooldown|later|wait|raised|ожид", message, re.I))
         return {"node_id": node_id, "status": "skipped" if cooldown else "failed", "message": message or "Already boosted or time-limited"}
+
+    def quiet_boost_failure(self, message: str) -> bool:
+        return bool(re.search(r"Could not determine FunPay game ID|No active FunPay offer categories|404|403|not found|forbidden", message, re.I))
 
     def raise_node_offers(self, node_id: int) -> tuple[dict[str, Any], list[int]]:
         try:
@@ -1519,7 +1522,9 @@ class FunPayClient:
                 result = {**result, "status": "success", "message": "Offers boosted"}
             return result, modal_node_ids
         except Exception as exc:
-            return {"node_id": node_id, "status": "failed", "message": str(exc)}, []
+            message = str(exc)
+            status = "skipped" if self.quiet_boost_failure(message) else "failed"
+            return {"node_id": node_id, "status": status, "message": message}, []
 
     def boost_all_active_offers(self) -> dict[str, Any]:
         node_ids = self.active_offer_node_ids()
@@ -1543,8 +1548,6 @@ class FunPayClient:
             if result.get("status") == "success":
                 remember_funpay_boost_cooldown(boosted_node_ids, time.time() + FUNPAY_BOOST_INTERVAL_SECONDS)
                 raised_together.update(item for item in boosted_node_ids if item != node_id)
-            else:
-                record_funpay_boost_attempt(node_id, str(result.get("status") or "failed"), str(result.get("message") or ""))
             if index < len(node_ids) - 1:
                 time.sleep(0.7)
         return {
