@@ -53,7 +53,7 @@ COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 DIGISELLER_STOCK_CACHE_FILE = APP_DIR / "digiseller_stock_cache.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.19-ggsel-views"
+APP_VERSION = "v8.21-ggsel-auto-login"
 GGSEL_INLINE_ATTACHMENT_MAX_BYTES = 128 * 1024
 GGSEL_TEXT_ATTACHMENT_TYPES = {
     "application/json",
@@ -1186,6 +1186,8 @@ class GgselClient:
         self.api_key = os.getenv("GGSEL_API_KEY", "").strip()
         self.api_base = os.getenv("GGSEL_API_BASE", "https://seller.ggsel.com/api_sellers/api").strip().rstrip("/")
         self.seller_cookie = os.getenv("GGSEL_SELLER_COOKIE", os.getenv("GGSEL_COOKIE", "")).strip()
+        self.seller_email = os.getenv("GGSEL_SELLER_EMAIL", os.getenv("GGSEL_SELLER_ACCOUNT", "")).strip()
+        self.seller_password = os.getenv("GGSEL_SELLER_PASSWORD", "").strip()
         self.seller_office_base = os.getenv("GGSEL_SELLER_OFFICE_BASE", "https://seller.ggsel.com").strip().rstrip("/")
         default_seller_office_api_base = self.seller_office_base if self.seller_office_base.endswith("/api") else self.seller_office_base + "/api"
         self.seller_office_api_base = os.getenv("GGSEL_SELLER_OFFICE_API_BASE", default_seller_office_api_base).strip().rstrip("/")
@@ -1614,7 +1616,57 @@ class GgselClient:
         return f"https://ggsel.net/en/catalog/product/{urllib.parse.quote(str(product_id))}"
 
     def seller_office_configured(self) -> bool:
-        return bool(self.seller_cookie)
+        return bool(self.seller_cookie or (self.seller_email and self.seller_password))
+
+    def seller_office_cookie_header(self) -> str:
+        host = urllib.parse.urlparse(self.seller_office_base).hostname or "seller.ggsel.com"
+        parts: list[str] = []
+        seen: set[str] = set()
+        for cookie in self.http.cookies.jar:
+            domain = cookie.domain.lstrip(".")
+            if domain and host != domain and not host.endswith("." + domain):
+                continue
+            if cookie.name in seen:
+                continue
+            seen.add(cookie.name)
+            parts.append(f"{cookie.name}={cookie.value}")
+        return "; ".join(parts)
+
+    def seller_office_login(self) -> None:
+        if not (self.seller_email and self.seller_password):
+            raise RuntimeError(
+                "GGSEL_SELLER_COOKIE is missing. Put the seller login cookie in .env, "
+                "or set GGSEL_SELLER_EMAIL and GGSEL_SELLER_PASSWORD for automatic login."
+            )
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": self.seller_office_base,
+            "Referer": f"{self.seller_office_base}/en",
+            "User-Agent": "Digiseller Local Admin",
+            "locale": "en",
+            "x-request-id": str(uuid.uuid4()),
+        }
+        self.http.get(
+            f"{self.seller_office_base}/en",
+            headers={"Accept": "text/html,application/xhtml+xml", "User-Agent": "Digiseller Local Admin"},
+            follow_redirects=True,
+        )
+        r = self.http.post(
+            f"{self.seller_office_base}/api/auth/login",
+            json={"email": self.seller_email, "password": self.seller_password},
+            headers=headers,
+            follow_redirects=True,
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"GGSEL seller login failed: {short(r.text, 400)}")
+        self.seller_cookie = self.seller_office_cookie_header()
+        if not self.seller_cookie:
+            raise RuntimeError("GGSEL seller login did not return cookies")
+
+    def ensure_seller_office_cookie(self) -> None:
+        if not self.seller_cookie:
+            self.seller_office_login()
 
     def seller_office_request(
         self,
@@ -1623,8 +1675,7 @@ class GgselClient:
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> Any:
-        if not self.seller_cookie:
-            raise RuntimeError("GGSEL_SELLER_COOKIE is missing. Put the seller login cookie in .env to send stock items.")
+        self.ensure_seller_office_cookie()
         headers = {
             "Accept": "application/json",
             "User-Agent": "Digiseller Local Admin",
@@ -1641,7 +1692,20 @@ class GgselClient:
             follow_redirects=True,
         )
         if r.status_code in (401, 403):
-            raise RuntimeError("GGSEL seller cookie is missing or expired")
+            if self.seller_email and self.seller_password:
+                self.seller_cookie = ""
+                self.seller_office_login()
+                headers["Cookie"] = self.seller_cookie
+                r = self.http.request(
+                    method,
+                    self.seller_office_api_base + path,
+                    params=params or {},
+                    json=json_body,
+                    headers=headers,
+                    follow_redirects=True,
+                )
+            if r.status_code in (401, 403):
+                raise RuntimeError("GGSEL seller cookie is missing or expired")
         if r.status_code >= 400:
             raise RuntimeError(f"GGSEL seller office HTTP {r.status_code}: {short(r.text, 400)}")
         if not r.content:
@@ -1670,8 +1734,7 @@ class GgselClient:
         self.seller_office_request("DELETE", path)
 
     def seller_office_fetch_text(self, url_or_path: str) -> str:
-        if not self.seller_cookie:
-            raise RuntimeError("GGSEL_SELLER_COOKIE is missing. Put the seller login cookie in .env to send stock items.")
+        self.ensure_seller_office_cookie()
         target = url_or_path.strip()
         if not target:
             return ""
@@ -5713,7 +5776,6 @@ class Handler(BaseHTTPRequestHandler):
         if id_type not in ("product", "offer"):
             id_type = "product"
         configured = ggsel_client.seller_office_configured()
-        status = "<span class='ok'>configured</span>" if configured else "<span class='bad'>missing GGSEL_SELLER_COOKIE</span>"
         offer_id = raw_id if id_type == "offer" else None
         offer_title = ""
         lookup_note = ""
@@ -5735,6 +5797,16 @@ class Handler(BaseHTTPRequestHandler):
                 dashboard = ggsel_client.seller_office_dashboard(start_date, end_date, offer_ids)
             except Exception as exc:
                 api_error = str(exc)
+        cookie_error = "seller cookie" in api_error.lower() or "seller login" in api_error.lower()
+        auto_login_configured = bool(ggsel_client.seller_email and ggsel_client.seller_password)
+        if cookie_error:
+            status = "<span class='bad'>GGSEL seller auth failed</span>"
+        elif ggsel_client.seller_cookie:
+            status = "<span class='ok'>GGSEL_SELLER_COOKIE set</span>"
+        elif auto_login_configured:
+            status = "<span class='ok'>GGSEL auto login configured</span>"
+        else:
+            status = "<span class='bad'>missing GGSEL seller auth</span>"
         statistic = dashboard.get("statistic") if isinstance(dashboard.get("statistic"), dict) else {}
         sales_chart = dashboard.get("sales") if isinstance(dashboard.get("sales"), dict) else {}
         views_value = stat_value(statistic, "views", "value") or sales_chart.get("views_count")
@@ -5756,7 +5828,16 @@ class Handler(BaseHTTPRequestHandler):
         id_label = "GGSEL 商品 ID" if id_type == "product" else "Offer ID"
         title_html = f"<p class='muted'>当前商品：{h(offer_title)}</p>" if offer_title else ""
         note_html = f"<p class='muted'>{h(lookup_note)}</p>" if lookup_note else ""
-        error_html = f"<div class='card bad'>GGSEL dashboard API error:<pre class='code'>{h(api_error)}</pre></div>" if api_error else ""
+        if cookie_error:
+            error_html = """
+            <div class='card bad'>
+              <b>GGSEL 登录 cookie 缺失或已过期</b>
+              <p>浏览量来自 seller.ggsel.com 卖家后台 dashboard 接口，不能只用 <code>GGSEL_API_KEY</code> 查询。</p>
+              <p>请更新 <code>GGSEL_SELLER_COOKIE</code>，或在 <code>.env</code> 设置 <code>GGSEL_SELLER_EMAIL</code> / <code>GGSEL_SELLER_PASSWORD</code> 后重启后台。</p>
+            </div>
+            """
+        else:
+            error_html = f"<div class='card bad'>GGSEL dashboard API error:<pre class='code'>{h(api_error)}</pre></div>" if api_error else ""
         form = f"""
         <form class='card'>
           <h2>GGSEL 浏览统计</h2>
@@ -5772,7 +5853,7 @@ class Handler(BaseHTTPRequestHandler):
           </label>
           <label>{h(id_label)} <input name='product_id' value='{h(raw_id or "")}' placeholder='留空查看全部商品汇总'></label>
           <button>查询</button>
-          <p class='muted'>需要 <code>GGSEL_SELLER_COOKIE</code>。查询单个商品时，会先用商品 ID 换算 Offer ID，再传给 <code>offer_ids[]</code>。</p>
+          <p class='muted'>需要有效的 <code>GGSEL_SELLER_COOKIE</code>；也可以设置 <code>GGSEL_SELLER_EMAIL</code> / <code>GGSEL_SELLER_PASSWORD</code> 自动登录。查询单个商品时，会先用商品 ID 换算 Offer ID，再传给 <code>offer_ids[]</code>。</p>
           {title_html}
           {note_html}
         </form>
