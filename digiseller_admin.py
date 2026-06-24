@@ -53,7 +53,7 @@ COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 DIGISELLER_STOCK_CACHE_FILE = APP_DIR / "digiseller_stock_cache.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.17-plati-replenish-draft"
+APP_VERSION = "v8.18-coding-prompts"
 GGSEL_INLINE_ATTACHMENT_MAX_BYTES = 128 * 1024
 GGSEL_TEXT_ATTACHMENT_TYPES = {
     "application/json",
@@ -73,6 +73,85 @@ GGSEL_TEXT_ATTACHMENT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+PROMPT_SOURCE_REPOS: tuple[tuple[str, str, str], ...] = (
+    (
+        "nprasann/ai-engineering-prompt-templates",
+        "https://github.com/nprasann/ai-engineering-prompt-templates",
+        "MIT；通用 AI 编程提示词模板，强调先计划后执行。",
+    ),
+    (
+        "PatrickJS/awesome-cursorrules",
+        "https://github.com/PatrickJS/awesome-cursorrules",
+        "Cursor rules 合集；适合参考 .cursor/rules 的项目约束写法。",
+    ),
+    (
+        "satinath-nit/ai-dev-playbook",
+        "https://github.com/satinath-nit/ai-dev-playbook",
+        "面向真实编码任务的提示词流程，可参考任务拆分方式。",
+    ),
+    (
+        "aminrj/ai-copilot-prompts",
+        "https://github.com/aminrj/ai-copilot-prompts",
+        "Copilot、Claude Code、Cursor 等工具的分类提示词合集。",
+    ),
+)
+CODING_PROMPT_TEMPLATES: tuple[dict[str, str], ...] = (
+    {
+        "title": "只读检查：先要最小改动计划",
+        "use": "不确定怎么改时先用，避免 AI 直接大改。",
+        "prompt": """请先只读检查这个仓库，不要改文件。
+目标：<写清楚你要完成的功能或 bug>
+请输出：
+1. 需要看的关键文件
+2. 最小可行改动方案
+3. 预计只会修改哪些文件
+4. 需要运行的 lint/typecheck/test 命令
+限制：不要重构，不要新增依赖，除非你说明必须新增的理由。""",
+    },
+    {
+        "title": "执行：严格按最小改动实现",
+        "use": "计划确认后使用，让 AI 只改必要位置。",
+        "prompt": """请按上面的计划实现，要求代码改动最小。
+只修改完成目标必须修改的文件，不做无关重构，不改测试来迎合实现。
+如果发现计划不成立，先停下来说明原因和新的最小方案。
+完成后请列出改动文件，并运行可用的 lint/typecheck/test。""",
+    },
+    {
+        "title": "修 bug：先复现再修",
+        "use": "页面、接口、聊天、上传等行为异常时使用。",
+        "prompt": """请先根据描述复现问题并定位根因，不要马上改代码。
+问题：<描述现象、页面、输入、期望结果>
+确认根因后，用最小代码改动修复。
+不要改变现有 API、页面路径或数据格式，除非这是修复所必需。
+修复后说明复现步骤、修复点、验证命令。""",
+    },
+    {
+        "title": "给现有项目加小功能",
+        "use": "适合本地 admin 页面新增一个入口、按钮、字段或小工具。",
+        "prompt": """请在现有代码风格下添加这个小功能：<功能描述>。
+优先复用现有函数、CSS、路由和数据结构。
+不要引入框架，不要拆文件，不要新增依赖，除非现有结构无法完成。
+UI 文案保持简短；如果需要新页面，请加到现有导航并保持样式一致。""",
+    },
+    {
+        "title": "让 AI 生成项目规则",
+        "use": "给 Cursor、Windsurf、Claude Code 或 Devin 写项目约束。",
+        "prompt": """请阅读 README、主要入口文件和现有代码风格，生成一份简短项目规则。
+规则要包含：运行方式、禁止提交的文件、代码风格、测试命令、最小改动原则。
+不要编造不存在的命令；不确定的地方标记为“需要确认”。""",
+    },
+    {
+        "title": "提交前自查",
+        "use": "准备 PR 前使用，减少遗漏。",
+        "prompt": """请审查当前 diff：
+1. 是否有无关文件或临时文件
+2. 是否泄露密钥、cookie、token
+3. 是否有可更小的实现
+4. 是否破坏已有页面/接口
+5. 还需要运行哪些检查
+请只给高风险问题和必须修复项，不要泛泛而谈。""",
+    },
+)
 
 
 @dataclass
@@ -2472,6 +2551,7 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
         <a href="/unread">Unread</a>
         <a href="/admin-messages">Admin</a>
         <a href="/phrases">&#24120;&#29992;&#35821;</a>
+        <a href="/coding-prompts">AI&#25552;&#31034;&#35789;</a>
         <a href="/product">Product</a>
         <a href="/stock">Stock</a>
         <a href="/ggsel">GGSEL</a>
@@ -5022,6 +5102,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.admin_messages_page()
             if path == "/phrases":
                 return self.phrases_page()
+            if path == "/coding-prompts":
+                return self.coding_prompts_page()
             if path == "/product":
                 return self.product()
             if path == "/stock":
@@ -5464,6 +5546,84 @@ class Handler(BaseHTTPRequestHandler):
             })
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, 502)
+
+    def coding_prompts_page(self) -> None:
+        source_rows = "".join(
+            f"<li><a href='{h(url)}' target='_blank' rel='noreferrer'>{h(name)}</a>"
+            f" <span class='muted'>{h(note)}</span></li>"
+            for name, url, note in PROMPT_SOURCE_REPOS
+        )
+        prompt_cards = ""
+        for item in CODING_PROMPT_TEMPLATES:
+            prompt_cards += (
+                "<div class='prompt-card'>"
+                f"<div class='prompt-card-head'><h3>{h(item['title'])}</h3>"
+                "<button class='prompt-copy' type='button'>复制</button></div>"
+                f"<p class='muted'>{h(item['use'])}</p>"
+                f"<pre class='code prompt-text'>{h(item['prompt'])}</pre>"
+                "</div>"
+            )
+        body = f"""
+        <style>
+        .prompt-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}}
+        .prompt-card{{border:1px solid #e2e8f0;border-radius:12px;background:#fff;padding:14px}}
+        .prompt-card-head{{display:flex;align-items:center;justify-content:space-between;gap:10px}}
+        .prompt-card-head h3{{margin:0}}
+        .prompt-copy{{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}}
+        .prompt-copy.copied{{background:#dcfce7;color:#166534;border-color:#bbf7d0}}
+        .prompt-text{{white-space:pre-wrap;line-height:1.55}}
+        .prompt-steps li{{margin:6px 0}}
+        </style>
+        <div class='card'>
+          <h2>AI 编程提示词</h2>
+          <p class='muted'>目标是让 AI 先理解项目，再用最小代码改动完成任务。这里没有直接复制第三方仓库内容，只整理可直接使用的通用提示词和参考链接。</p>
+          <ol class='prompt-steps'>
+            <li>先复制“只读检查”提示词，让 AI 只看代码并给最小方案。</li>
+            <li>确认方案后，再复制“严格按最小改动实现”。</li>
+            <li>每次只做一个小目标，避免把修 bug、重构、加功能混在一起。</li>
+            <li>提交前用“提交前自查”，再运行项目已有检查命令。</li>
+          </ol>
+        </div>
+        <div class='card'>
+          <h3>GitHub 参考仓库</h3>
+          <ul>{source_rows}</ul>
+          <p class='muted'>如果要复制第三方仓库里的原文，请先检查对应 LICENSE；当前页面仅作为链接和改写后的模板库。</p>
+        </div>
+        <div class='prompt-grid'>{prompt_cards}</div>
+        <script>
+        (() => {{
+          async function copyText(text) {{
+            if (navigator.clipboard && window.isSecureContext) {{
+              await navigator.clipboard.writeText(text);
+              return;
+            }}
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            document.execCommand('copy');
+            textarea.remove();
+          }}
+          document.querySelectorAll('.prompt-copy').forEach((button) => {{
+            button.addEventListener('click', async () => {{
+              const card = button.closest('.prompt-card');
+              const text = card?.querySelector('.prompt-text')?.textContent || '';
+              await copyText(text.trim());
+              button.textContent = '已复制';
+              button.classList.add('copied');
+              setTimeout(() => {{
+                button.textContent = '复制';
+                button.classList.remove('copied');
+              }}, 1200);
+            }});
+          }});
+        }})();
+        </script>
+        """
+        self.send_html("AI coding prompts", body)
 
     def phrases_page(self) -> None:
         phrases = load_common_phrases()
