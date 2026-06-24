@@ -4727,6 +4727,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
+    def wants_json_response(self) -> bool:
+        return self.headers.get("X-Requested-With") == "fetch" or "application/json" in self.headers.get("Accept", "")
+
     def params(self) -> dict[str, list[str]]:
         return urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
 
@@ -5049,8 +5052,14 @@ class Handler(BaseHTTPRequestHandler):
               body.appendChild(pending);
               body.scrollTop = body.scrollHeight;
             }}
+            const formData = new FormData(root);
+            let sent = false;
             try {{
-              const res = await fetch(root.action, {{method: 'POST', body: new FormData(root), redirect: 'follow'}});
+              const res = await fetch(root.action, {{
+                method: 'POST',
+                body: formData,
+                headers: {{'Accept': 'application/json', 'X-Requested-With': 'fetch'}}
+              }});
               if (!res.ok) {{
                 const contentType = res.headers.get('content-type') || '';
                 let detail = '';
@@ -5067,13 +5076,51 @@ class Handler(BaseHTTPRequestHandler):
                 }}
                 throw new Error(detail || `HTTP ${{res.status}}`);
               }}
-              location.href = res.url || location.href;
+              const data = await res.json().catch(() => ({{}}));
+              if (!data.ok) throw new Error(data.error || 'Send failed');
+              sent = true;
+              textarea.value = '';
+              selectedFiles = [];
+              syncInputFiles();
+              renderSelectedFiles();
+              const params = new URLSearchParams({{
+                platform: data.platform || formData.get('platform') || 'digiseller',
+                order_id: String(data.order_id || formData.get('order_id') || ''),
+                email: String(formData.get('email') || ''),
+                product: String(formData.get('product') || '')
+              }});
+              const panelRes = await fetch('/api/chat-panel?' + params.toString(), {{cache: 'no-store'}});
+              if (!panelRes.ok) throw new Error(`HTTP ${{panelRes.status}}`);
+              const panelData = await panelRes.json();
+              if (!panelData.ok) throw new Error(panelData.error || 'Refresh failed');
+              const panel = root.closest('.conversation-panel');
+              if (panel) {{
+                panel.outerHTML = panelData.html;
+                const newPanel = document.getElementById('chat-panel');
+                if (newPanel) {{
+                  newPanel.querySelectorAll('script').forEach((oldScript) => {{
+                    const script = document.createElement('script');
+                    script.textContent = oldScript.textContent;
+                    document.body.appendChild(script);
+                    script.remove();
+                  }});
+                  const newBody = newPanel.querySelector('.conversation-body');
+                  if (newBody) newBody.scrollTop = newBody.scrollHeight;
+                  if (window.loadDigisellerTranslations) window.loadDigisellerTranslations(newPanel);
+                }}
+              }}
+              if (window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
             }} catch (error) {{
-              pending.classList.add('send-failed');
               const meta = pending.querySelector('.muted');
-              if (meta) meta.textContent = '\u53d1\u9001\u5931\u8d25';
               const bubble = pending.querySelector('.chat-bubble');
-              if (bubble) bubble.textContent = `\u53d1\u9001\u5931\u8d25\uff1a${{error.message || error}}`;
+              if (sent) {{
+                if (meta) meta.textContent = '\u5df2\u53d1\u9001';
+                if (bubble) bubble.textContent = text || '\u6d88\u606f\u5df2\u53d1\u9001\uff0c\u5237\u65b0\u5bf9\u8bdd\u5931\u8d25';
+              }} else {{
+                pending.classList.add('send-failed');
+                if (meta) meta.textContent = '\u53d1\u9001\u5931\u8d25';
+                if (bubble) bubble.textContent = `\u53d1\u9001\u5931\u8d25\uff1a${{error.message || error}}`;
+              }}
               button.disabled = false;
               button.textContent = originalText;
             }}
@@ -5219,22 +5266,33 @@ class Handler(BaseHTTPRequestHandler):
             raise RuntimeError("Type a message or choose at least one file")
         if message and should_translate_outgoing_message(message, target_lang):
             message, _ = google_translate(message, target_lang, "zh-CN")
+        stock_sent = bool(stock_offer_id and stock_item_id)
+        sent_flag = "&stock_sent=1" if stock_sent else ""
+
+        def finish(location: str, sent_platform: str) -> None:
+            if self.wants_json_response():
+                return self.send_json(
+                    {
+                        "ok": True,
+                        "platform": sent_platform,
+                        "order_id": order_id,
+                        "target_lang": target_lang,
+                        "stock_sent": stock_sent,
+                    }
+                )
+            self.redirect(location)
+
         if platform == "ggsel":
             ggsel_client.send_chat_message(order_id, message, uploads)
             delete_stock_item_after_reply(platform, stock_offer_id, stock_item_id)
-            sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
-            self.redirect(f"/chats?platform=ggsel&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
-            return
+            return finish(f"/chats?platform=ggsel&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}", "ggsel")
         if platform == "funpay":
             funpay_client.send_chat_message(order_id, message, uploads)
             delete_stock_item_after_reply(platform, stock_offer_id, stock_item_id)
-            sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
-            self.redirect(f"/chats?platform=funpay&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
-            return
+            return finish(f"/chats?platform=funpay&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}", "funpay")
         client.send_chat_message(order_id, message, uploads)
         delete_stock_item_after_reply("digiseller", stock_offer_id, stock_item_id)
-        sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
-        self.redirect(f"/chats?order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
+        return finish(f"/chats?order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}", "digiseller")
 
     def send_stock_reply(self) -> None:
         raise RuntimeError("Stock replenishment now fills the reply box first. Refresh the chat, click Replenish, then click Send Reply.")
