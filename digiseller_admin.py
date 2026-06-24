@@ -53,7 +53,7 @@ COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 DIGISELLER_STOCK_CACHE_FILE = APP_DIR / "digiseller_stock_cache.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.19-ggsel-views"
+APP_VERSION = "v8.20-ggsel-cookie-help"
 GGSEL_INLINE_ATTACHMENT_MAX_BYTES = 128 * 1024
 GGSEL_TEXT_ATTACHMENT_TYPES = {
     "application/json",
@@ -5713,7 +5713,6 @@ class Handler(BaseHTTPRequestHandler):
         if id_type not in ("product", "offer"):
             id_type = "product"
         configured = ggsel_client.seller_office_configured()
-        status = "<span class='ok'>configured</span>" if configured else "<span class='bad'>missing GGSEL_SELLER_COOKIE</span>"
         offer_id = raw_id if id_type == "offer" else None
         offer_title = ""
         lookup_note = ""
@@ -5735,6 +5734,13 @@ class Handler(BaseHTTPRequestHandler):
                 dashboard = ggsel_client.seller_office_dashboard(start_date, end_date, offer_ids)
             except Exception as exc:
                 api_error = str(exc)
+        cookie_error = "seller cookie" in api_error.lower()
+        if cookie_error:
+            status = "<span class='bad'>GGSEL_SELLER_COOKIE expired</span>"
+        elif configured:
+            status = "<span class='ok'>GGSEL_SELLER_COOKIE set</span>"
+        else:
+            status = "<span class='bad'>missing GGSEL_SELLER_COOKIE</span>"
         statistic = dashboard.get("statistic") if isinstance(dashboard.get("statistic"), dict) else {}
         sales_chart = dashboard.get("sales") if isinstance(dashboard.get("sales"), dict) else {}
         views_value = stat_value(statistic, "views", "value") or sales_chart.get("views_count")
@@ -5756,7 +5762,16 @@ class Handler(BaseHTTPRequestHandler):
         id_label = "GGSEL 商品 ID" if id_type == "product" else "Offer ID"
         title_html = f"<p class='muted'>当前商品：{h(offer_title)}</p>" if offer_title else ""
         note_html = f"<p class='muted'>{h(lookup_note)}</p>" if lookup_note else ""
-        error_html = f"<div class='card bad'>GGSEL dashboard API error:<pre class='code'>{h(api_error)}</pre></div>" if api_error else ""
+        if cookie_error:
+            error_html = """
+            <div class='card bad'>
+              <b>GGSEL_SELLER_COOKIE 缺失或已过期</b>
+              <p>浏览量来自 seller.ggsel.com 卖家后台 dashboard 接口，不能只用 <code>GGSEL_API_KEY</code> 查询。</p>
+              <p>请重新登录 seller.ggsel.com，复制完整 Cookie，并更新本地 <code>.env</code> 里的 <code>GGSEL_SELLER_COOKIE</code> 后重启后台。</p>
+            </div>
+            """
+        else:
+            error_html = f"<div class='card bad'>GGSEL dashboard API error:<pre class='code'>{h(api_error)}</pre></div>" if api_error else ""
         form = f"""
         <form class='card'>
           <h2>GGSEL 浏览统计</h2>
@@ -5772,7 +5787,7 @@ class Handler(BaseHTTPRequestHandler):
           </label>
           <label>{h(id_label)} <input name='product_id' value='{h(raw_id or "")}' placeholder='留空查看全部商品汇总'></label>
           <button>查询</button>
-          <p class='muted'>需要 <code>GGSEL_SELLER_COOKIE</code>。查询单个商品时，会先用商品 ID 换算 Offer ID，再传给 <code>offer_ids[]</code>。</p>
+          <p class='muted'>需要有效的 <code>GGSEL_SELLER_COOKIE</code>。查询单个商品时，会先用商品 ID 换算 Offer ID，再传给 <code>offer_ids[]</code>。</p>
           {title_html}
           {note_html}
         </form>
