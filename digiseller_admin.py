@@ -53,7 +53,7 @@ COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 DIGISELLER_STOCK_CACHE_FILE = APP_DIR / "digiseller_stock_cache.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.18-coding-prompts"
+APP_VERSION = "v8.19-ggsel-views"
 GGSEL_INLINE_ATTACHMENT_MAX_BYTES = 128 * 1024
 GGSEL_TEXT_ATTACHMENT_TYPES = {
     "application/json",
@@ -192,6 +192,50 @@ def strip_path_prefix(path: str, prefix: str) -> str:
 def short(value: Any, length: int = 110) -> str:
     text = clean_text(value)
     return text if len(text) <= length else text[: length - 1] + "…"
+
+
+def parse_ymd_date(value: Any, default: dt.date) -> dt.date:
+    text = clean_text(value)
+    if not text:
+        return default
+    try:
+        return dt.date.fromisoformat(text[:10])
+    except ValueError:
+        return default
+
+
+def int_from_query(value: Any) -> int | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        number = int(text)
+    except ValueError:
+        return None
+    return number if number > 0 else None
+
+
+def stat_value(data: dict[str, Any], *keys: str) -> Any:
+    current: Any = data
+    for key in keys:
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(key)
+    return current if current is not None else ""
+
+
+def format_stat(value: Any, suffix: str = "") -> str:
+    if value in (None, ""):
+        return "-"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return h(value)
+    if number.is_integer():
+        text = f"{int(number):,}"
+    else:
+        text = f"{number:,.2f}".rstrip("0").rstrip(".")
+    return h(f"{text}{suffix}")
 
 
 def product_brand(product: Any) -> tuple[str, str, str, str, str] | None:
@@ -1610,6 +1654,18 @@ class GgselClient:
     def seller_office_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return self.seller_office_request("GET", path, params=params)
 
+    def seller_office_dashboard(self, start_date: dt.date, end_date: dt.date, offer_ids: list[int] | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "date_start": start_date.isoformat(),
+            "date_end": end_date.isoformat(),
+            "scope": "active",
+        }
+        if offer_ids:
+            params["offer_ids[]"] = offer_ids
+        data = self.seller_office_get("/api_seller_office/v1/dashboard", params)
+        dashboard = data.get("data") if isinstance(data, dict) else data
+        return dashboard if isinstance(dashboard, dict) else {}
+
     def seller_office_delete(self, path: str) -> None:
         self.seller_office_request("DELETE", path)
 
@@ -2555,6 +2611,7 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
         <a href="/product">Product</a>
         <a href="/stock">Stock</a>
         <a href="/ggsel">GGSEL</a>
+        <a href="/ggsel-views">GGSEL浏览量</a>
         <a href="/funpay-boost">FunPay Boost</a>
       </div>
       <form id="unique-code-form" class="unique-lookup" action="/unique-code" method="get">
@@ -5206,6 +5263,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.stock()
             if path == "/ggsel":
                 return self.ggsel()
+            if path == "/ggsel-views":
+                return self.ggsel_views()
             if path == "/funpay-boost":
                 return self.funpay_boost_page()
             if path == "/unique-code":
@@ -5624,6 +5683,7 @@ class Handler(BaseHTTPRequestHandler):
           <p class='muted'>Reads <code>GGSEL_API_KEY</code> and <code>GGSEL_SELLER_ID</code> from <code>.env</code>. API keys are never stored in code.</p>
           <label>Rows <input name='count' value='{count}' size='4'></label>
           <button>Refresh</button>
+          <a href='/ggsel-views'>View GGSEL product views</a>
           <p class='muted'>API: <code>{h(ggsel_client.api_base)}</code> · seller_id: <code>{h(ggsel_client.seller_id or '-')}</code></p>
         </form>
         """
@@ -5640,6 +5700,100 @@ class Handler(BaseHTTPRequestHandler):
             + table(["Date", "Type", "Invoice", "Product ID", "Product", "Text"], review_rows)
         )
         self.send_html("GGSEL", body)
+
+    def ggsel_views(self) -> None:
+        today = dt.date.today()
+        default_start = today - dt.timedelta(days=30)
+        start_date = parse_ymd_date(self.q("date_start", ""), default_start)
+        end_date = parse_ymd_date(self.q("date_end", ""), today)
+        if end_date < start_date:
+            start_date, end_date = end_date, start_date
+        raw_id = int_from_query(self.q("product_id", ""))
+        id_type = clean_text(self.q("id_type", "product"))
+        if id_type not in ("product", "offer"):
+            id_type = "product"
+        configured = ggsel_client.seller_office_configured()
+        status = "<span class='ok'>configured</span>" if configured else "<span class='bad'>missing GGSEL_SELLER_COOKIE</span>"
+        offer_id = raw_id if id_type == "offer" else None
+        offer_title = ""
+        lookup_note = ""
+        api_error = ""
+        dashboard: dict[str, Any] = {}
+        if configured and raw_id and id_type == "product":
+            try:
+                offer = ggsel_client.seller_office_offer_by_ggsel_id(raw_id)
+                offer_id = int_from_query(offer.get("id") or offer.get("offer_id")) or raw_id
+                offer_title = clean_text(offer.get("title") or offer.get("name") or offer.get("name_goods"))
+                if offer_id == raw_id and not offer:
+                    lookup_note = "未找到商品 ID 到 Offer ID 的映射，已按 Offer ID 直接查询。"
+            except Exception as exc:
+                offer_id = raw_id
+                lookup_note = f"商品 ID 映射失败，已按 Offer ID 直接查询：{short(exc, 160)}"
+        if configured:
+            try:
+                offer_ids = [offer_id] if offer_id else None
+                dashboard = ggsel_client.seller_office_dashboard(start_date, end_date, offer_ids)
+            except Exception as exc:
+                api_error = str(exc)
+        statistic = dashboard.get("statistic") if isinstance(dashboard.get("statistic"), dict) else {}
+        sales_chart = dashboard.get("sales") if isinstance(dashboard.get("sales"), dict) else {}
+        views_value = stat_value(statistic, "views", "value") or sales_chart.get("views_count")
+        revenue_value = stat_value(statistic, "revenue", "value")
+        sales_value = stat_value(statistic, "sales", "value") or sales_chart.get("sales_count")
+        conversion_value = stat_value(statistic, "conversion", "value")
+        press_buy_value = sales_chart.get("press_buy_count")
+        date_rows = []
+        date_range = sales_chart.get("date_range") if isinstance(sales_chart.get("date_range"), list) else []
+        for item in date_range:
+            if not isinstance(item, dict):
+                continue
+            date_rows.append([
+                h(item.get("date")),
+                format_stat(item.get("views_count")),
+                format_stat(item.get("press_buy_count")),
+                format_stat(item.get("sales_count")),
+            ])
+        id_label = "GGSEL 商品 ID" if id_type == "product" else "Offer ID"
+        title_html = f"<p class='muted'>当前商品：{h(offer_title)}</p>" if offer_title else ""
+        note_html = f"<p class='muted'>{h(lookup_note)}</p>" if lookup_note else ""
+        error_html = f"<div class='card bad'>GGSEL dashboard API error:<pre class='code'>{h(api_error)}</pre></div>" if api_error else ""
+        form = f"""
+        <form class='card'>
+          <h2>GGSEL 浏览统计</h2>
+          <p>Config: {status}</p>
+          <p class='muted'>使用 GGSEL 卖家后台 dashboard 接口：<code>/api_seller_office/v1/dashboard</code>。接口返回的是商品页访问量 <code>views</code>，不是 Products 列表里的销量。</p>
+          <label>开始日期 <input type='date' name='date_start' value='{h(start_date.isoformat())}'></label>
+          <label>结束日期 <input type='date' name='date_end' value='{h(end_date.isoformat())}'></label>
+          <label>类型
+            <select name='id_type'>
+              <option value='product' {'selected' if id_type == 'product' else ''}>GGSEL 商品 ID</option>
+              <option value='offer' {'selected' if id_type == 'offer' else ''}>Offer ID</option>
+            </select>
+          </label>
+          <label>{h(id_label)} <input name='product_id' value='{h(raw_id or "")}' placeholder='留空查看全部商品汇总'></label>
+          <button>查询</button>
+          <p class='muted'>需要 <code>GGSEL_SELLER_COOKIE</code>。查询单个商品时，会先用商品 ID 换算 Offer ID，再传给 <code>offer_ids[]</code>。</p>
+          {title_html}
+          {note_html}
+        </form>
+        """
+        stats = f"""
+        <div class='grid'>
+          <div class='stat'><b>{format_stat(views_value)}</b><br>Views / 商品页访问量</div>
+          <div class='stat'><b>{format_stat(press_buy_value)}</b><br>Payment transitions / 点击购买</div>
+          <div class='stat'><b>{format_stat(sales_value)}</b><br>Sales / 订单数</div>
+          <div class='stat'><b>{format_stat(revenue_value, ' USD')}</b><br>Revenue / 销售额</div>
+          <div class='stat'><b>{format_stat(conversion_value, '%')}</b><br>Conversion / 转化率</div>
+        </div>
+        """
+        body = (
+            form
+            + error_html
+            + stats
+            + "<div class='card'><h3>Daily detail</h3><p class='muted'>每日访问量、点击购买和订单数来自 dashboard 的 <code>sales.date_range</code>。</p></div>"
+            + table(["Date", "Views", "Payment transitions", "Sales"], date_rows)
+        )
+        self.send_html("GGSEL 浏览统计", body)
 
     def api_ggsel_products(self) -> None:
         count = min(max(int(self.q("count", "20") or "20"), 1), 100)
