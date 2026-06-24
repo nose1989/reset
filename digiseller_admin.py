@@ -4792,10 +4792,12 @@ class Handler(BaseHTTPRequestHandler):
             file_note = f"<span class='common-phrase-files-note'>+{len(files)} file</span>" if files else ""
             previews_html = f"<div class='common-phrase-previews'>{''.join(preview_items)}</div>" if preview_items else ""
             phrase_forms.append(
-                f"<form class='common-phrase-card' method='post' action='/chats/send'>"
+                f"<form class='common-phrase-card' method='post' action='/chats/send' data-pending-text='{h(text or fallback_label)}'>"
                 f"<input type='hidden' name='order_id' value='{order_id}'>"
                 f"<input type='hidden' name='platform' value='{h(platform)}'>"
                 f"<input type='hidden' name='target_lang' value='{h(target_lang)}'>"
+                f"<input type='hidden' name='email' value='{h(email)}'>"
+                f"<input type='hidden' name='product' value='{h(product)}'>"
                 f"<input type='hidden' name='phrase_id' value='{h(phrase['id'])}'>"
                 f"{previews_html}"
                 f"<button class='common-phrase-send' type='submit' title='{h(text or fallback_label)}'>"
@@ -5036,26 +5038,26 @@ class Handler(BaseHTTPRequestHandler):
               addFiles(event.dataTransfer.files);
             }});
           }});
-          root.addEventListener('submit', async (event) => {{
-            event.preventDefault();
-            const button = root.querySelector('button[type="submit"]');
-            const originalText = button.textContent;
-            button.disabled = true;
-            button.textContent = '\u53d1\u9001\u4e2d...';
-            const body = root.closest('.conversation-panel')?.querySelector('.conversation-body');
+          async function submitChatForm(form, button, pendingText, clearEditor) {{
+            const originalText = button ? button.textContent : '';
+            if (button) {{
+              button.disabled = true;
+              button.textContent = '\u53d1\u9001\u4e2d...';
+            }}
+            const body = form.closest('.conversation-panel')?.querySelector('.conversation-body');
             const pending = document.createElement('div');
             pending.className = 'chat-row seller pending-send';
-            const text = textarea.value.trim();
+            const text = String(pendingText || '').trim();
             pending.innerHTML = '<div class="chat-meta"><span class="chat-author">nose1989 <span class="muted">\u53d1\u9001\u4e2d...</span></span></div><div class="chat-bubble"></div>';
             pending.querySelector('.chat-bubble').textContent = text || '\u9644\u4ef6\u6b63\u5728\u53d1\u9001...';
             if (body) {{
               body.appendChild(pending);
               body.scrollTop = body.scrollHeight;
             }}
-            const formData = new FormData(root);
+            const formData = new FormData(form);
             let sent = false;
             try {{
-              const res = await fetch(root.action, {{
+              const res = await fetch(form.action, {{
                 method: 'POST',
                 body: formData,
                 headers: {{'Accept': 'application/json', 'X-Requested-With': 'fetch'}}
@@ -5079,10 +5081,12 @@ class Handler(BaseHTTPRequestHandler):
               const data = await res.json().catch(() => ({{}}));
               if (!data.ok) throw new Error(data.error || 'Send failed');
               sent = true;
-              textarea.value = '';
-              selectedFiles = [];
-              syncInputFiles();
-              renderSelectedFiles();
+              if (clearEditor) {{
+                textarea.value = '';
+                selectedFiles = [];
+                syncInputFiles();
+                renderSelectedFiles();
+              }}
               const params = new URLSearchParams({{
                 platform: data.platform || formData.get('platform') || 'digiseller',
                 order_id: String(data.order_id || formData.get('order_id') || ''),
@@ -5121,10 +5125,24 @@ class Handler(BaseHTTPRequestHandler):
                 if (meta) meta.textContent = '\u53d1\u9001\u5931\u8d25';
                 if (bubble) bubble.textContent = `\u53d1\u9001\u5931\u8d25\uff1a${{error.message || error}}`;
               }}
-              button.disabled = false;
-              button.textContent = originalText;
+              if (button) {{
+                button.disabled = false;
+                button.textContent = originalText;
+              }}
             }}
+          }}
+          root.addEventListener('submit', async (event) => {{
+            event.preventDefault();
+            await submitChatForm(root, event.submitter || root.querySelector('button[type="submit"]'), textarea.value.trim(), true);
           }});
+          if (phrases) {{
+            phrases.querySelectorAll('form.common-phrase-card').forEach((form) => {{
+              form.addEventListener('submit', async (event) => {{
+                event.preventDefault();
+                await submitChatForm(form, event.submitter || form.querySelector('button[type="submit"]'), form.dataset.pendingText || '', false);
+              }});
+            }});
+          }}
         }})();
         </script>
         """
