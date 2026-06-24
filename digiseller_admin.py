@@ -3832,6 +3832,37 @@ def ggsel_order_product_id(order_id: int, fallback: Any = "") -> str:
     return fallback_text or str(order_id)
 
 
+def ggsel_order_amount_from_info(info: dict[str, Any]) -> tuple[str, str]:
+    containers: list[dict[str, Any]] = []
+    for value in (info, info.get("content"), info.get("sale"), info.get("order"), info.get("purchase")):
+        if isinstance(value, dict):
+            containers.append(value)
+    for container in containers:
+        amount = clean_text(container.get("amount") or container.get("amount_in") or container.get("sum") or container.get("total"))
+        currency = clean_text(container.get("type_curr") or container.get("currency") or container.get("currency_type"))
+        if amount:
+            return amount, currency
+    for container in containers:
+        amount_usd = clean_text(container.get("amount_usd") or container.get("sum_usd") or container.get("total_usd"))
+        if amount_usd:
+            return amount_usd, "USD"
+    return "", ""
+
+
+def ggsel_sale_order_amount(sale: dict[str, Any]) -> tuple[str, str]:
+    try:
+        order_id = int(sale.get("invoice_id") or sale.get("id_i") or sale.get("id") or 0)
+    except (TypeError, ValueError):
+        order_id = 0
+    amount = ""
+    currency = ""
+    if order_id:
+        amount, currency = ggsel_order_amount_from_info(cached_ggsel_order_info(order_id))
+    if not amount:
+        amount, currency = ggsel_order_amount_from_info(sale)
+    return amount, currency
+
+
 def ggsel_seller_office_offer_for_order(order_id: int, fallback_product: Any = "") -> dict[str, Any]:
     product_id = ggsel_order_product_id(order_id, fallback_product)
     if looks_like_ggsel_product_id(product_id):
@@ -5548,13 +5579,14 @@ class Handler(BaseHTTPRequestHandler):
             product_url = ggsel_client.product_url(product_id)
             invoice_id = sale.get("invoice_id")
             product_name = product.get("name") or sale.get("name") or f"GGSEL product {product_id}"
+            amount, currency = ggsel_sale_order_amount(sale)
             chat_href = "/chats?" + urllib.parse.urlencode({"platform": "ggsel", "order_id": str(invoice_id or ""), "email": str(sale.get("email") or f"ggsel-{invoice_id}"), "product": str(product_name)})
             sales_rows.append([
                 h(sale.get("date")),
                 f"<a class='order-link' href='{h(chat_href)}'>{h(invoice_id)}</a>",
                 f"<a href='{h(product_url)}' target='_blank'>{h(product_id)}</a>" if product_url else h(product_id),
                 h(short(product_name, 100)),
-                h(product.get("price_usd") or sale.get("price_usd") or ""),
+                h(f"{amount} {currency}".strip()),
             ])
         chat_rows = []
         for chat in chats_data.get("items") or chats_data.get("chats") or []:
@@ -5994,6 +6026,7 @@ class Handler(BaseHTTPRequestHandler):
                     invoice_id = sale.get("invoice_id")
                     product = sale.get("product") if isinstance(sale.get("product"), dict) else {}
                     product_id = product.get("id") or sale.get("product_id") or sale.get("id_goods")
+                    amount, currency = ggsel_sale_order_amount(sale)
                     ggsel_rows.append(
                         {
                             "source": "GGSEL",
@@ -6002,8 +6035,8 @@ class Handler(BaseHTTPRequestHandler):
                             "email": sale.get("email") or "",
                             "product_id": product_id,
                             "product_name": product.get("name") or sale.get("product_name") or sale.get("name") or f"GGSEL product {product_id}",
-                            "amount_in": product.get("price_usd") or sale.get("price_usd") or "",
-                            "amount_currency": "USD" if product.get("price_usd") or sale.get("price_usd") else "",
+                            "amount_in": amount,
+                            "amount_currency": currency,
                             "partner_id": sale.get("partner_id") or "-",
                             "referer": "ggsel.net",
                             "platform": "ggsel",
