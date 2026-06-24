@@ -58,6 +58,7 @@ http://127.0.0.1:8765
 - Unread / Admin: unread buyer/admin messages.
 - Product / Stock: product details and stock upload tools.
 - GGSEL: GGSEL catalog/seller products, searchable by product ID or name.
+- AI提示词: copy-ready programming prompts for minimal-code-change AI workflows, with GitHub reference links.
 
 ## GGSEL integration
 
