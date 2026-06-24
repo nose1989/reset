@@ -4647,6 +4647,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
+    def wants_json_response(self) -> bool:
+        accept = self.headers.get("Accept", "")
+        requested_with = self.headers.get("X-Requested-With", "")
+        return "application/json" in accept or requested_with == "fetch"
+
     def params(self) -> dict[str, list[str]]:
         return urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
 
@@ -4953,16 +4958,21 @@ class Handler(BaseHTTPRequestHandler):
               addFiles(event.dataTransfer.files);
             }});
           }});
-          root.addEventListener('submit', async (event) => {{
+          function sendingText(form) {{
+            if (form === root) return textarea.value.trim();
+            const sendButton = form.querySelector('button[type="submit"]');
+            return (sendButton?.getAttribute('title') || sendButton?.textContent || '').trim();
+          }}
+          async function sendReplyForm(form, event) {{
             event.preventDefault();
-            const button = root.querySelector('button[type="submit"]');
+            const button = form.querySelector('button[type="submit"]');
             const originalText = button.textContent;
             button.disabled = true;
             button.textContent = '\u53d1\u9001\u4e2d...';
             const body = root.closest('.conversation-panel')?.querySelector('.conversation-body');
             const pending = document.createElement('div');
             pending.className = 'chat-row seller pending-send';
-            const text = textarea.value.trim();
+            const text = sendingText(form);
             pending.innerHTML = '<div class="chat-meta"><span class="chat-author">nose1989 <span class="muted">\u53d1\u9001\u4e2d...</span></span></div><div class="chat-bubble"></div>';
             pending.querySelector('.chat-bubble').textContent = text || '\u9644\u4ef6\u6b63\u5728\u53d1\u9001...';
             if (body) {{
@@ -4970,13 +4980,22 @@ class Handler(BaseHTTPRequestHandler):
               body.scrollTop = body.scrollHeight;
             }}
             try {{
-              const res = await fetch(root.action, {{method: 'POST', body: new FormData(root), redirect: 'follow'}});
-              if (!res.ok) {{
+              const res = await fetch(form.action, {{
+                method: 'POST',
+                body: new FormData(form),
+                headers: {{'Accept': 'application/json', 'X-Requested-With': 'fetch'}},
+                redirect: 'manual',
+              }});
+              const contentType = res.headers.get('content-type') || '';
+              let data = {{}};
+              if (contentType.includes('application/json')) {{
+                data = await res.json().catch(() => ({{}}));
+              }}
+              if (!res.ok || data.ok !== true) {{
                 const contentType = res.headers.get('content-type') || '';
-                let detail = '';
+                let detail = data.error || '';
                 if (contentType.includes('application/json')) {{
-                  const data = await res.json().catch(() => ({{}}));
-                  detail = data.error || '';
+                  detail = detail || '';
                 }} else {{
                   const html = await res.text().catch(() => '');
                   const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -4987,7 +5006,20 @@ class Handler(BaseHTTPRequestHandler):
                 }}
                 throw new Error(detail || `HTTP ${{res.status}}`);
               }}
-              location.href = res.url || location.href;
+              pending.classList.remove('pending-send');
+              const meta = pending.querySelector('.muted');
+              if (meta) meta.textContent = '\u5df2\u53d1\u9001';
+              if (form === root) {{
+                textarea.value = '';
+                selectedFiles = [];
+                syncInputFiles();
+                renderSelectedFiles();
+                stockOfferId.value = '';
+                stockItemId.value = '';
+              }}
+              if (window.reloadDigisellerActiveChatPanel) {{
+                window.reloadDigisellerActiveChatPanel({{silent: true}});
+              }}
             }} catch (error) {{
               pending.classList.add('send-failed');
               const meta = pending.querySelector('.muted');
@@ -4996,7 +5028,14 @@ class Handler(BaseHTTPRequestHandler):
               if (bubble) bubble.textContent = `\u53d1\u9001\u5931\u8d25\uff1a${{error.message || error}}`;
               button.disabled = false;
               button.textContent = originalText;
+              return;
             }}
+            button.disabled = false;
+            button.textContent = originalText;
+          }}
+          root.addEventListener('submit', (event) => sendReplyForm(root, event));
+          document.querySelectorAll('#{editor_id}-phrases .common-phrase-card').forEach((form) => {{
+            form.addEventListener('submit', (event) => sendReplyForm(form, event));
           }});
         }})();
         </script>
@@ -5141,18 +5180,27 @@ class Handler(BaseHTTPRequestHandler):
             ggsel_client.send_chat_message(order_id, message, uploads)
             delete_stock_item_after_reply(platform, stock_offer_id, stock_item_id)
             sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
-            self.redirect(f"/chats?platform=ggsel&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
+            location = f"/chats?platform=ggsel&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}"
+            if self.wants_json_response():
+                return self.send_json({"ok": True, "platform": "ggsel", "order_id": order_id, "stock_sent": bool(sent_flag), "location": location})
+            self.redirect(location)
             return
         if platform == "funpay":
             funpay_client.send_chat_message(order_id, message, uploads)
             delete_stock_item_after_reply(platform, stock_offer_id, stock_item_id)
             sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
-            self.redirect(f"/chats?platform=funpay&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
+            location = f"/chats?platform=funpay&order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}"
+            if self.wants_json_response():
+                return self.send_json({"ok": True, "platform": "funpay", "order_id": order_id, "stock_sent": bool(sent_flag), "location": location})
+            self.redirect(location)
             return
         client.send_chat_message(order_id, message, uploads)
         delete_stock_item_after_reply("digiseller", stock_offer_id, stock_item_id)
         sent_flag = "&stock_sent=1" if stock_offer_id and stock_item_id else ""
-        self.redirect(f"/chats?order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}")
+        location = f"/chats?order_id={order_id}&sent=1{sent_flag}&tl={urllib.parse.quote(target_lang)}"
+        if self.wants_json_response():
+            return self.send_json({"ok": True, "platform": "digiseller", "order_id": order_id, "stock_sent": bool(sent_flag), "location": location})
+        self.redirect(location)
 
     def send_stock_reply(self) -> None:
         raise RuntimeError("Stock replenishment now fills the reply box first. Refresh the chat, click Replenish, then click Send Reply.")
@@ -6575,6 +6623,12 @@ class Handler(BaseHTTPRequestHandler):
               if (!options.silent) location.href = link.href;
             }
           }
+          window.reloadDigisellerActiveChatPanel = async (options = {}) => {
+            const active = list.querySelector('.conversation-item.active');
+            if (!active) return false;
+            await loadPanel(active, {...options, silent: options.silent ?? true});
+            return true;
+          };
           list.addEventListener('click', async (event) => {
             const link = event.target.closest('.conversation-item');
             if (!link) return;
