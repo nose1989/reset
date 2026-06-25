@@ -6830,9 +6830,7 @@ class Handler(BaseHTTPRequestHandler):
 
         selected_messages: list[dict[str, Any]] = []
         defer_selected_panel = bool(selected_corr_id or selected_order)
-        if defer_selected_panel:
-            pass
-        elif selected_kind == "guest" and selected_corr_id:
+        if not defer_selected_panel and selected_kind == "guest" and selected_corr_id:
             if selected_guest_chat is None:
                 selected_guest_chat = {
                     "CorrID": selected_corr_id,
@@ -6843,7 +6841,7 @@ class Handler(BaseHTTPRequestHandler):
             client.mark_guest_read(selected_corr_type, selected_corr_id)
             clear_unread_cache()
             selected_messages = client.guest_messages(selected_corr_type, selected_corr_id)[-10:]
-        elif selected_order:
+        elif not defer_selected_panel and selected_order:
             if selected_platform == "funpay":
                 try:
                     selected_messages = funpay_client.chat_messages(selected_order)
