@@ -53,7 +53,7 @@ COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 DIGISELLER_STOCK_CACHE_FILE = APP_DIR / "digiseller_stock_cache.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.19-ggsel-views"
+APP_VERSION = "v8.20-async-chat-panel"
 GGSEL_INLINE_ATTACHMENT_MAX_BYTES = 128 * 1024
 GGSEL_TEXT_ATTACHMENT_TYPES = {
     "application/json",
@@ -6361,6 +6361,29 @@ class Handler(BaseHTTPRequestHandler):
             return f"<div id='chat-panel' class='conversation-panel' data-kind='order' data-order-id='{selected_order}' data-message-count='{len(selected_messages)}'><div class='conversation-header'>{header}</div><div class='conversation-body'>{notice}{''.join(rows)}</div>{self.reply_editor(selected_order, buyer_lang, email=str(selected_chat.get('email') or ''), product=str(selected_chat.get('product') or ''))}</div>"
         return "<div id='chat-panel' class='conversation-panel' data-kind='order'><div class='empty-state'>No chats found</div></div>"
 
+    def loading_chat_panel_html(self, selected_kind: str, selected_platform: str, selected_order: int, selected_chat: dict[str, Any] | None, selected_guest_chat: dict[str, Any] | None) -> str:
+        title = "加载中"
+        preview = "正在加载订单消息"
+        attrs = f"data-kind='{h(selected_kind)}'"
+        if selected_kind == "guest" and selected_guest_chat:
+            title = str(selected_guest_chat.get("Name") or "Guest")
+            preview = str(selected_guest_chat.get("PurchaseName") or "Pre-order consultation")
+        elif selected_order and selected_chat:
+            title = str(selected_chat.get("email") or selected_chat.get("name") or f"order-{selected_order}").split("@", 1)[0]
+            preview = str(selected_chat.get("product") or "Direct order lookup")
+            attrs += f" data-platform='{h(selected_platform)}' data-order-id='{selected_order}'"
+        return (
+            f"<div id='chat-panel' class='conversation-panel loading' {attrs}>"
+            "<div class='conversation-header'><div class='conversation-header-main'>"
+            f"<div class='conversation-header-title'>{h(title)}</div>"
+            f"<div class='muted'>{h(short(preview, 120))}</div></div></div>"
+            "<div class='chat-loading'><div class='chat-loading-spinner'></div>"
+            "<div class='chat-loading-title'>正在加载消息...</div>"
+            "<div class='chat-loading-subtitle'>订单消息会异步加载，不刷新整个页面</div>"
+            "<div class='loading-lines'><div class='loading-line'></div><div class='loading-line short'></div><div class='loading-line'></div></div>"
+            "</div></div>"
+        )
+
     def guest_chat_panel_html(self, chat: dict[str, Any], messages: list[dict[str, Any]]) -> str:
         corr_id = int(chat.get("CorrID") or chat.get("corrID") or 0)
         corr_type = str(chat.get("CorrType") or chat.get("Type") or "visitor")
@@ -6806,7 +6829,8 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         selected_messages: list[dict[str, Any]] = []
-        if selected_kind == "guest" and selected_corr_id:
+        defer_selected_panel = bool(selected_corr_id or selected_order)
+        if not defer_selected_panel and selected_kind == "guest" and selected_corr_id:
             if selected_guest_chat is None:
                 selected_guest_chat = {
                     "CorrID": selected_corr_id,
@@ -6817,7 +6841,7 @@ class Handler(BaseHTTPRequestHandler):
             client.mark_guest_read(selected_corr_type, selected_corr_id)
             clear_unread_cache()
             selected_messages = client.guest_messages(selected_corr_type, selected_corr_id)[-10:]
-        elif selected_order:
+        elif not defer_selected_panel and selected_order:
             if selected_platform == "funpay":
                 try:
                     selected_messages = funpay_client.chat_messages(selected_order)
@@ -6847,7 +6871,9 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     selected_chat = {"id_i": selected_order, "email": self.q("email", f"order-{selected_order}"), "product": f"Chat load failed: {exc}", "platform": "digiseller"}
 
-        if selected_kind == "guest" and selected_guest_chat:
+        if defer_selected_panel:
+            panel = self.loading_chat_panel_html(selected_kind, selected_platform, selected_order, selected_chat, selected_guest_chat)
+        elif selected_kind == "guest" and selected_guest_chat:
             panel = self.guest_chat_panel_html(selected_guest_chat, selected_messages)
         elif selected_platform == "funpay" and selected_chat:
             panel = self.funpay_chat_panel_html(selected_order, selected_chat, selected_messages)
@@ -6964,6 +6990,19 @@ class Handler(BaseHTTPRequestHandler):
                 </div>
               </div>`;
           }
+          function showPanelError(panel, link, error) {
+            const name = link.querySelector('.conversation-name')?.textContent?.trim() || '加载失败';
+            const message = error?.message || String(error || 'Load failed');
+            panel.className = 'conversation-panel';
+            panel.innerHTML = `
+              <div class="conversation-header">
+                <div class="conversation-header-main">
+                  <div class="conversation-header-title">${escapeHtml(name)}</div>
+                  <div class="muted">消息加载失败</div>
+                </div>
+              </div>
+              <div class="empty-state">加载消息失败：${escapeHtml(message)}</div>`;
+          }
           let panelRequestSeq = 0;
           async function loadPanel(link, options = {}) {
             const requestSeq = ++panelRequestSeq;
@@ -6995,7 +7034,7 @@ class Handler(BaseHTTPRequestHandler):
               if (options.pushHistory) history.pushState(null, '', link.href);
               if (options.refreshUnread && window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
             } catch (error) {
-              if (!options.silent) location.href = link.href;
+              if (requestSeq === panelRequestSeq && link.classList.contains('active')) showPanelError(panel, link, error);
             }
           }
           list.addEventListener('click', async (event) => {
@@ -7016,6 +7055,11 @@ class Handler(BaseHTTPRequestHandler):
               applyConversationFilters();
             });
           });
+          const activeLink = list.querySelector('.conversation-item.active');
+          const activePanel = document.getElementById('chat-panel');
+          if (activeLink && activePanel?.classList.contains('loading')) {
+            loadPanel(activeLink, {clearBadge: true, refreshUnread: true});
+          }
           window.handleDigisellerUnreadData = (data) => {
             const buyerUnread = Array.isArray(data.buyer_unread) ? data.buyer_unread : [];
             const unreadByOrder = new Map();
