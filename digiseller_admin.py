@@ -2528,6 +2528,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 .messages-layout{display:grid;grid-template-columns:360px minmax(0,1fr);height:calc(100vh - 120px);min-height:0;background:white;border:1px solid #d9e2ec;border-radius:12px;overflow:hidden;box-shadow:0 1px 2px #0001}.conversation-list{border-right:1px solid #e5e7eb;overflow-y:scroll;min-height:0;background:#fff}.conversation-title{font-size:34px;font-weight:800;padding:22px 22px 14px}.conversation-item{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;padding:12px 14px;border-bottom:1px solid #eef2f7;color:#1f2937}.conversation-item:hover{background:#f4f8ff}.conversation-item.active{background:#3f85d6;color:#fff}.conversation-item.active .muted,.conversation-item.active .preview{color:#eaf2ff}.avatar{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#111827;color:#fff;font-weight:800}.product-logo-avatar{box-sizing:border-box;flex-direction:column;gap:1px;border:1px solid #cbd5e1;line-height:1}.brand-image-avatar{overflow:hidden;padding:5px}.product-brand-logo{display:block;max-width:36px;max-height:36px;width:36px;height:36px;object-fit:contain}.product-logo-fallback{font-size:14px;font-weight:900;color:#111827}.product-logo-mark{font-size:15px;font-weight:900;letter-spacing:-.04em}.product-logo-name{max-width:42px;font-size:8px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.conversation-item.active .product-logo-avatar{border-color:#eff6ff;box-shadow:0 0 0 2px #ffffff55}.conversation-name{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.preview{color:#9ca3af;line-height:1.25;max-height:38px;overflow:hidden}.conversation-time{font-size:14px;white-space:nowrap}.badge{display:inline-block;min-width:18px;padding:2px 6px;border-radius:999px;background:#ef4444;color:white;font-size:12px;text-align:center;margin-top:6px}.conversation-panel{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:#fff}.conversation-panel.loading{position:relative}.chat-loading{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#64748b;background:#fff}.chat-loading-spinner{width:34px;height:34px;border:4px solid #dbeafe;border-top-color:#1f7acb;border-radius:50%;animation:spin .8s linear infinite}.chat-loading-title{font-weight:800;color:#1f2937}.chat-loading-subtitle{font-size:13px}.loading-line{height:12px;border-radius:999px;background:linear-gradient(90deg,#eef2f7,#dbeafe,#eef2f7);background-size:200% 100%;animation:shine 1.1s linear infinite}.loading-lines{width:min(520px,70%);display:flex;flex-direction:column;gap:10px}.loading-lines .short{width:55%}@keyframes spin{to{transform:rotate(360deg)}}@keyframes shine{to{background-position:-200% 0}}.conversation-header{flex:0 0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid #e5e7eb}.conversation-header-main{min-width:0}.conversation-header-side{display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:360px;text-align:right}.conversation-header-title{font-size:18px;font-weight:800}.order-options{background:#f8fafc;border:1px solid #dbe4ee;border-radius:8px;padding:8px 10px;color:#334155;font-size:13px;line-height:1.35}.order-options-title{color:#64748b;font-size:12px;font-weight:800;margin-bottom:4px}.order-option-name{font-weight:800}.order-option-value{color:#0f172a}.conversation-body{padding:20px 24px;overflow-y:scroll;min-height:0;flex:1 1 auto;scrollbar-gutter:stable}.chat-row{margin:0 0 18px}.chat-meta{display:flex;justify-content:space-between;gap:12px;color:#6b7280;font-size:13px;margin-bottom:6px}.chat-author{font-weight:800;color:#1f2937}.chat-bubble{display:inline-block;max-width:78%;border-radius:10px;padding:10px 12px;line-height:1.45;background:#f3f4f6;white-space:pre-wrap;text-align:left}.chat-row.seller{text-align:right}.chat-row.seller .chat-meta{justify-content:flex-end}.chat-row.seller .chat-bubble{background:#eef6ff}.chat-row.buyer .chat-bubble{background:#fff;border:1px solid #e5e7eb}.read-receipt{display:inline-flex;align-items:center;gap:3px;margin:0 8px;color:#047857;font-size:12px;font-weight:800;white-space:nowrap}.toolbar a{margin-left:12px}.empty-state{padding:40px;color:#6b7280;text-align:center}.conversation-list::-webkit-scrollbar,.conversation-body::-webkit-scrollbar,.reply-editor::-webkit-scrollbar{width:12px}.conversation-list::-webkit-scrollbar-thumb,.conversation-body::-webkit-scrollbar-thumb,.reply-editor::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:999px;border:3px solid #f8fafc}@media(max-width:850px){.messages-layout{grid-template-columns:1fr;height:calc(100vh - 110px)}.conversation-panel{min-height:0}.conversation-list{max-height:260px;border-right:0;border-bottom:1px solid #e5e7eb}.conversation-header{flex-direction:column}.conversation-header-side{align-items:flex-start;text-align:left;max-width:none}}
 
 .alert-controls{position:fixed;right:18px;bottom:18px;z-index:50;display:flex;gap:8px;align-items:center}.alert-button{background:#16a34a;color:#fff;border:0;border-radius:999px;padding:10px 14px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-button.off{background:#64748b}.alert-pill{display:none;background:#dc2626;color:#fff;border-radius:999px;padding:9px 12px;font-weight:800;box-shadow:0 4px 14px #0002}.alert-pill.show{display:inline-block}.unread-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#ef4444;margin-left:6px}
+.avatar.has-pending-dot{position:relative}.avatar.has-pending-dot::before{content:'';position:absolute;top:-2px;right:-2px;width:12px;height:12px;border-radius:50%;background:#ef4444;border:2px solid #fff;z-index:2}.pending-status-btn{background:#fef3c7;color:#92400e;border-color:#fcd34d}.pending-status-btn:hover{background:#fde68a}.done-status-btn{background:#dcfce7;color:#166534;border-color:#bbf7d0}.done-status-btn:hover{background:#bbf7d0}
 .thumb{max-width:220px;max-height:160px;border:1px solid #e5e7eb;border-radius:8px;display:block;margin-top:8px;background:#f8fafc}.file-preview{margin-top:6px}.file-name{font-weight:700}.image-note{font-size:12px;color:#6b7280;margin-top:4px}
 .reply-editor{flex:0 0 auto;max-height:260px;overflow-y:auto;border-top:1px solid #e5e7eb;background:#f8fafc;padding:14px 18px}.reply-editor textarea{width:100%;min-height:92px;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font:14px/1.45 inherit;background:white}.reply-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.reply-toolbar button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.reply-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px}.reply-dropzone{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px dashed #93c5fd;border-radius:8px;background:#eff6ff;padding:8px 10px;color:#0f3b66}.reply-editor.dragover textarea{border-color:#2563eb;background:#eff6ff}.reply-dropzone.dragover,.reply-editor.dragover .reply-dropzone{background:#dbeafe;border-color:#2563eb}.reply-dropzone input[type=file]{background:white;max-width:360px}.reply-dropzone-text{font-size:13px;font-weight:700}.reply-hint,.selected-files{font-size:13px;color:#64748b}.common-phrases{border-top:1px solid #e5e7eb;background:#f8fafc;padding:10px 18px 14px}.common-phrase-title{font-size:13px;font-weight:800;color:#334155;margin-bottom:8px}.common-phrase-buttons{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch}.common-phrase-buttons form{margin:0}.common-phrase-buttons button{background:#e0ecff;color:#0f3b66;border-color:#b9d4ff}.phrase-manager form[action='/phrases/save']{border:1px dashed #cbd5e1;border-radius:10px;padding:12px;background:#fff}.phrase-manager textarea{width:100%;box-sizing:border-box;min-height:130px;resize:vertical}.phrase-manager.dragover form[action='/phrases/save']{border-color:#2563eb;background:#eff6ff}.phrase-manager.dragover textarea{border-color:#2563eb;background:#eff6ff}.phrase-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:start;margin-bottom:10px}.phrase-empty{color:#64748b;font-size:14px}.selected-files{margin-top:10px}.selected-summary{margin-bottom:8px}.file-preview-grid{display:flex;flex-wrap:wrap;gap:8px}.file-chip{display:flex;align-items:center;gap:8px;max-width:230px;border:1px solid #cbd5e1;border-radius:8px;background:white;padding:6px 8px;color:#334155}.file-chip img{width:54px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer}.file-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-chip-icon{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:#e2e8f0;color:#475569;font-weight:800}.preview-modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:#0f172acc;padding:24px}.preview-modal[hidden]{display:none}.preview-modal img{max-width:95vw;max-height:90vh;border-radius:8px;background:white;box-shadow:0 20px 50px #0008}.preview-modal-close{position:absolute;right:18px;top:14px;background:#fff;color:#0f172a;border:0;border-radius:999px;width:34px;height:34px;font-size:22px;line-height:1}.notice{border-radius:8px;padding:9px 12px;margin:0 0 10px}.notice.ok-bg{background:#dcfce7;color:#166534}.notice.bad-bg{background:#fee2e2;color:#991b1b}
 .translated-message,.plain-message{white-space:normal}.translated-text,.original-text,.plain-text{white-space:pre-wrap}.message-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}.toggle-original,.save-common-phrase{background:#f1f5f9;color:#334155;border-color:#cbd5e1;padding:5px 8px;font-size:12px}.save-common-phrase.saved{background:#dcfce7;color:#166534;border-color:#bbf7d0}.save-common-phrase.failed{background:#fee2e2;color:#991b1b;border-color:#fecaca}.translation-label{display:inline-block;color:#64748b;font-size:12px}
@@ -4855,7 +4856,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def reply_editor(self, order_id: int, target_lang: str, platform: str = "digiseller", email: str = "", product: str = "") -> str:
         editor_id = f"reply-{platform}-{order_id}"
-        stock_button = f"<button id='{editor_id}-stock-button' type='button' data-stock-url='/api/stock-draft'>&#34917;&#36135;</button>"
+        pending_buttons = (
+            f"<button id='{editor_id}-pending-button' type='button' class='pending-status-btn' data-order-id='{order_id}' data-platform='{h(platform)}'>&#24453;&#22788;&#29702;</button>"
+            f"<button id='{editor_id}-done-button' type='button' class='done-status-btn' data-order-id='{order_id}' data-platform='{h(platform)}'>&#24050;&#23436;&#25104;</button>"
+        )
         phrase_forms = []
         for phrase in load_common_phrases():
             text = str(phrase.get("text") or "")
@@ -4905,8 +4909,7 @@ class Handler(BaseHTTPRequestHandler):
           <input type="hidden" name="target_lang" value="{h(target_lang)}">
           <input type="hidden" name="email" value="{h(email)}">
           <input type="hidden" name="product" value="{h(product)}">
-          <input id="{editor_id}-stock-offer-id" type="hidden" name="stock_offer_id" value="">
-          <input id="{editor_id}-stock-item-id" type="hidden" name="stock_item_id" value="">
+
           <textarea id="{editor_id}-message" name="message" placeholder="&#22312;&#36825;&#37324;&#22238;&#22797;&#20250;&#21592;&#20449;&#24687;&#65292;&#21487;&#22635;&#20889;&#36134;&#21495;&#12289;&#23494;&#30721;&#12289;&#38142;&#25509;&#12289;&#20351;&#29992;&#35828;&#26126;&#31561;&#12290;"></textarea>
           <div class="reply-actions">
             <div id="{editor_id}-dropzone" class="reply-dropzone">
@@ -4914,7 +4917,7 @@ class Handler(BaseHTTPRequestHandler):
               <span class="reply-dropzone-text">&#25302;&#25341;&#22270;&#29255;/&#38468;&#20214;&#21040;&#36825;&#37324;&#65292;&#25110;&#28857;&#20987;&#36873;&#25321;&#25991;&#20214;</span>
             </div>
             <button type="submit">&#21457;&#36865;&#22238;&#22797;</button>
-            {stock_button}
+            {pending_buttons}
             <button id="{editor_id}-phrase-toggle" type="button" aria-expanded="false" aria-controls="{editor_id}-phrases">&#24120;&#29992;&#35821;</button>
             <span class="reply-hint">&#20013;&#25991;&#20250;&#33258;&#21160;&#32763;&#35793;&#20026; {h(lang_label(target_lang))} &#20877;&#21457;&#36865;&#12290;&#25903;&#25345;&#22270;&#29255;&#12289;&#38468;&#20214;&#12289;&#25991;&#26723;/&#25991;&#29486;&#65292;&#20063;&#21487;&#30452;&#25509; Ctrl+V &#31896;&#36148;&#21098;&#36148;&#26495;&#22270;&#29255;&#12290;</span>
           </div>
@@ -4930,9 +4933,8 @@ class Handler(BaseHTTPRequestHandler):
           const selected = document.getElementById('{editor_id}-selected');
           const phrases = document.getElementById('{editor_id}-phrases');
           const phraseToggle = document.getElementById('{editor_id}-phrase-toggle');
-          const stockButton = document.getElementById('{editor_id}-stock-button');
-          const stockOfferId = document.getElementById('{editor_id}-stock-offer-id');
-          const stockItemId = document.getElementById('{editor_id}-stock-item-id');
+          const pendingButton = document.getElementById('{editor_id}-pending-button');
+          const doneButton = document.getElementById('{editor_id}-done-button');
           let previewUrls = [];
           let selectedFiles = Array.from(input.files || []);
           const previewModal = document.createElement('div');
@@ -5060,30 +5062,42 @@ class Handler(BaseHTTPRequestHandler):
               textarea.focus();
             }});
           }});
-          if (stockButton) {{
-            stockButton.addEventListener('click', async () => {{
-              const originalText = stockButton.textContent;
-              stockButton.disabled = true;
-              stockButton.textContent = '读取中...';
-              try {{
-                const res = await fetch(stockButton.dataset.stockUrl || '/api/stock-draft', {{
-                  method: 'POST',
-                  body: new FormData(root),
-                  cache: 'no-store',
-                }});
-                const data = await res.json().catch(() => ({{}}));
-                if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${{res.status}}`);
-                textarea.value = data.message || '';
-                stockOfferId.value = data.offer_id || '';
-                stockItemId.value = data.stock_item_id || '';
-                textarea.focus();
-                stockButton.textContent = '库存已填，发送后删除';
-              }} catch (error) {{
-                alert(`补货读取失败：${{error.message || error}}`);
-                stockButton.textContent = originalText;
-              }} finally {{
-                stockButton.disabled = false;
-              }}
+          function getPendingOrders() {{
+            try {{ return JSON.parse(localStorage.getItem('pendingOrders') || '{{}}'); }} catch {{ return {{}}; }}
+          }}
+          function savePendingOrders(obj) {{
+            localStorage.setItem('pendingOrders', JSON.stringify(obj));
+          }}
+          function updatePendingDots() {{
+            const pending = getPendingOrders();
+            document.querySelectorAll('.conversation-item[data-order-id]').forEach(item => {{
+              const key = (item.dataset.platform || 'digiseller') + '-' + item.dataset.orderId;
+              const avatar = item.querySelector('.avatar');
+              if (!avatar) return;
+              avatar.classList.toggle('has-pending-dot', !!pending[key]);
+            }});
+          }}
+          updatePendingDots();
+          if (pendingButton) {{
+            pendingButton.addEventListener('click', () => {{
+              const orderId = pendingButton.dataset.orderId;
+              const platform = pendingButton.dataset.platform || 'digiseller';
+              const key = platform + '-' + orderId;
+              const pending = getPendingOrders();
+              pending[key] = true;
+              savePendingOrders(pending);
+              updatePendingDots();
+            }});
+          }}
+          if (doneButton) {{
+            doneButton.addEventListener('click', () => {{
+              const orderId = doneButton.dataset.orderId;
+              const platform = doneButton.dataset.platform || 'digiseller';
+              const key = platform + '-' + orderId;
+              const pending = getPendingOrders();
+              delete pending[key];
+              savePendingOrders(pending);
+              updatePendingDots();
             }});
           }}
           input.addEventListener('change', () => {{
@@ -7088,6 +7102,16 @@ class Handler(BaseHTTPRequestHandler):
           };
           window.addEventListener('popstate', () => location.reload());
           if (window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
+          (function applyPendingDots() {
+            try {
+              const pending = JSON.parse(localStorage.getItem('pendingOrders') || '{}');
+              document.querySelectorAll('.conversation-item[data-order-id]').forEach(item => {
+                const key = (item.dataset.platform || 'digiseller') + '-' + item.dataset.orderId;
+                const avatar = item.querySelector('.avatar');
+                if (avatar) avatar.classList.toggle('has-pending-dot', !!pending[key]);
+              });
+            } catch(e) {}
+          })();
           applyConversationFilters();
           setInterval(() => {
             if (!document.hidden && window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
