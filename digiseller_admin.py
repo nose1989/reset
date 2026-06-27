@@ -53,7 +53,7 @@ COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 DIGISELLER_STOCK_CACHE_FILE = APP_DIR / "digiseller_stock_cache.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.20-async-chat-panel"
+APP_VERSION = "v8.21-funpay-sync-products"
 GGSEL_INLINE_ATTACHMENT_MAX_BYTES = 128 * 1024
 GGSEL_TEXT_ATTACHMENT_TYPES = {
     "application/json",
@@ -2013,7 +2013,11 @@ class FunPayClient:
         return [item["node_id"] for item in self.active_offer_categories()]
 
     def active_offer_titles(self) -> dict[int, str]:
-        return self.offer_category_titles_from_page(self.account_profile_page())
+        return {
+            int(item.get("node_id") or 0): str(item.get("product_name") or "")
+            for item in self.active_offer_categories()
+            if int(item.get("node_id") or 0)
+        }
 
     def offer_category_titles_from_page(self, page: str) -> dict[int, str]:
         titles: dict[int, str] = {}
@@ -4389,6 +4393,56 @@ def clear_funpay_boost_failed_history() -> int:
         return len(failed_node_ids)
 
 
+def sync_funpay_boost_active_categories(categories: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    active_categories = categories if categories is not None else funpay_client.active_offer_categories()
+    synced_at = time.time()
+    synced_at_label = funpay_boost_time_label(synced_at)
+    added = 0
+    updated = 0
+    product_names: dict[int, str] = {}
+    with FUNPAY_BOOST_LOCK:
+        for category in active_categories:
+            node_id = int(category.get("node_id") or 0)
+            if not node_id:
+                continue
+            game_id = int(category.get("game_id") or 0)
+            product_name = str(category.get("product_name") or "").strip()
+            if product_name:
+                product_names[node_id] = product_name
+            existing = FUNPAY_BOOST_HISTORY.get(node_id)
+            item = existing.copy() if existing else {"node_id": node_id}
+            changed = existing is None
+            if existing is None:
+                added += 1
+                item.update(
+                    {
+                        "status": "synced",
+                        "message": "Active product synced",
+                        "last_checked_ts": synced_at,
+                        "last_checked_at": synced_at_label,
+                    }
+                )
+            if product_name and item.get("product_name") != product_name:
+                item["product_name"] = product_name
+                changed = True
+            if game_id and item.get("game_id") != game_id:
+                item["game_id"] = game_id
+                changed = True
+            if changed:
+                FUNPAY_BOOST_HISTORY[node_id] = item
+                if existing is not None:
+                    updated += 1
+        if added or updated:
+            save_funpay_boost_history_locked()
+    return {
+        "total": len(active_categories),
+        "added": added,
+        "updated": updated,
+        "synced_at": synced_at_label,
+        "product_names": product_names,
+    }
+
+
 def update_funpay_boost_status(**values: Any) -> None:
     with FUNPAY_BOOST_LOCK:
         FUNPAY_BOOST_STATUS.update(values)
@@ -5336,6 +5390,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_save_common_phrase()
             if path == "/api/funpay-boost-toggle":
                 return self.api_funpay_boost_toggle()
+            if path == "/api/funpay-boost-sync":
+                return self.api_funpay_boost_sync()
             if path == "/api/funpay-boost-clear-errors":
                 return self.api_funpay_boost_clear_errors()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
@@ -5473,14 +5529,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_html("Dashboard", body)
 
     def funpay_boost_page(self) -> None:
-        status = funpay_boost_snapshot()
-        rows = funpay_boost_history_rows()
+        sync_result: dict[str, Any] | None = None
+        sync_error = ""
         product_names: dict[int, str] = {}
         if funpay_client.configured():
             try:
-                product_names = funpay_client.active_offer_titles()
-            except Exception:
-                product_names = {}
+                sync_result = sync_funpay_boost_active_categories()
+                product_names = {
+                    int(node_id): product_name
+                    for node_id, product_name in sync_result.get("product_names", {}).items()
+                    if int(node_id)
+                }
+            except Exception as exc:
+                sync_error = str(exc)
+        status = funpay_boost_snapshot()
+        rows = funpay_boost_history_rows()
         if rows:
             row_html = []
             for row in rows:
@@ -5553,12 +5616,25 @@ class Handler(BaseHTTPRequestHandler):
 
         enabled = "开启" if status.get("enabled") else "关闭"
         running = "运行中" if status.get("running") else "空闲"
+        if sync_error:
+            sync_summary = f"<span class='bad'>同步失败：{h(sync_error)}</span>"
+        elif sync_result:
+            sync_summary = (
+                f"<span class='ok'>已同步 FunPay 当前 {h(sync_result.get('total') or 0)} 个商品分类；"
+                f"新增 {h(sync_result.get('added') or 0)} 个，更新 {h(sync_result.get('updated') or 0)} 个。</span>"
+            )
+        elif funpay_client.configured():
+            sync_summary = "<span class='muted'>尚未同步。</span>"
+        else:
+            sync_summary = "<span class='muted'>未配置 FUNPAY_GOLDEN_KEY，不能同步。</span>"
         body = f"""
         <div class='card'>
           <h2>FunPay Boost 冷却记录</h2>
           <p class='muted'>这里集中记录每个 FunPay 商品分类的上次提升时间，以及从该时间推算出的冷却剩余时间。</p>
           <p>自动 Boost：<b>{h(enabled)}</b> · 当前状态：<b>{h(running)}</b> · 上次检查：{h(status.get('last_run') or '-')} · 下次12小时检查：{h(status.get('next_run') or '-')}</p>
           <p>冷却中：<b>{h(status.get('cooling_count') or 0)}</b> · 已提升记录：<b>{h(status.get('boosted_count') or 0)}</b> · 错误记录：<b class='bad'>{h(status.get('failed_count') or 0)}</b></p>
+          <p>商品同步：{sync_summary}</p>
+          <p><button id='funpay-boost-sync-products' type='button'>立即同步商品分类</button> <span id='funpay-boost-sync-message' class='muted'></span></p>
           <p>错误：<span class='bad'>{h(status.get('last_error') or '-')}</span></p>
         </div>
         <div class='card'>
@@ -5595,6 +5671,24 @@ class Handler(BaseHTTPRequestHandler):
           }}
           tick();
           setInterval(tick, 1000);
+          const syncButton = document.getElementById('funpay-boost-sync-products');
+          const syncMessage = document.getElementById('funpay-boost-sync-message');
+          if (syncButton) syncButton.addEventListener('click', async () => {{
+            syncButton.disabled = true;
+            if (syncMessage) syncMessage.textContent = '正在同步...';
+            try {{
+              const res = await fetch('/api/funpay-boost-sync', {{method: 'POST'}});
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || '同步失败');
+              const sync = data.sync || {{}};
+              if (syncMessage) syncMessage.textContent = `同步完成：当前 ${{sync.total || 0}} 个分类，新增 ${{sync.added || 0}} 个，更新 ${{sync.updated || 0}} 个。`;
+              window.location.reload();
+            }} catch (error) {{
+              if (syncMessage) syncMessage.textContent = String(error.message || error);
+            }} finally {{
+              syncButton.disabled = false;
+            }}
+          }});
         }})();
         </script>
         """
@@ -7430,6 +7524,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_funpay_boost_history(self) -> None:
         self.send_json({"status": funpay_boost_snapshot(), "rows": funpay_boost_history_rows()})
+
+    def api_funpay_boost_sync(self) -> None:
+        try:
+            sync_result = sync_funpay_boost_active_categories()
+        except Exception as exc:
+            return self.send_json({"error": str(exc), "status": funpay_boost_snapshot()}, 400)
+        self.send_json(
+            {
+                "sync": sync_result,
+                "status": funpay_boost_snapshot(),
+                "rows": funpay_boost_history_rows(),
+            }
+        )
 
     def api_funpay_boost_clear_errors(self) -> None:
         cleared = clear_funpay_boost_failed_history()
