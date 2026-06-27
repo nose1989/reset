@@ -53,7 +53,7 @@ COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
 DIGISELLER_STOCK_CACHE_FILE = APP_DIR / "digiseller_stock_cache.json"
 API_BASE = "https://api.digiseller.com/api"
-APP_VERSION = "v8.21-funpay-sync-products"
+APP_VERSION = "v8.22-funpay-confirm-reminders"
 GGSEL_INLINE_ATTACHMENT_MAX_BYTES = 128 * 1024
 GGSEL_TEXT_ATTACHMENT_TYPES = {
     "application/json",
@@ -2325,6 +2325,112 @@ class FunPayClient:
         rows.sort(key=lambda item: sort_time(item.get("date_pay")), reverse=True)
         return rows
 
+    def order_confirmed_message(self, text: str) -> bool:
+        lower = clean_text(text).lower()
+        if not lower:
+            return False
+        return bool(
+            re.search(r"\b(order|purchase|delivery|receipt)\b.*\b(confirmed|completed|closed|finished)\b", lower)
+            or re.search(r"\b(confirmed|completed|closed|finished)\b.*\b(order|purchase|delivery|receipt)\b", lower)
+            or re.search(r"\bbuyer\b.*\bconfirmed\b", lower)
+        )
+
+    def confirm_receipt_reminder_message(self, order_ids: list[str]) -> str:
+        unique_order_ids: list[str] = []
+        seen: set[str] = set()
+        for order_id in order_ids:
+            if order_id and order_id not in seen:
+                seen.add(order_id)
+                unique_order_ids.append(order_id)
+        if not unique_order_ids:
+            return FUNPAY_CONFIRM_RECEIPT_REMINDER
+        if len(unique_order_ids) == 1:
+            order_text = f"order #{unique_order_ids[0]}"
+        else:
+            order_text = "orders " + ", ".join(f"#{order_id}" for order_id in unique_order_ids)
+        return (
+            f"Hello! If you have received {order_text} and everything is working, "
+            'please click "Confirm receipt" on FunPay. Thank you!'
+        )
+
+    def confirm_receipt_reminder_sent(self, text: str) -> bool:
+        lower = clean_text(text).lower()
+        return "confirm receipt" in lower and "funpay" in lower
+
+    def pending_confirm_receipt_orders(self, chat_days: int = RECENT_CHAT_DAYS, limit: int = 50) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen_orders: set[str] = set()
+        try:
+            order_dates = self.recent_order_dates(limit=limit)
+        except Exception:
+            order_dates = {}
+        for chat in self.chats(limit=limit):
+            if not is_recent_time(chat.get("last_date"), chat_days):
+                continue
+            node_id = int(chat.get("node_id") or 0)
+            if not node_id:
+                continue
+            page = self.chat_page(node_id)
+            product = self.chat_product_from_page(page) or chat.get("message") or "FunPay chat"
+            messages = self.chat_messages_from_page(node_id, page)
+            for index, message in enumerate(messages):
+                text = clean_text(message.get("message"))
+                order_id = self.paid_order_id_from_message(text)
+                if not order_id or "has paid for" not in text.lower() or order_id in seen_orders:
+                    continue
+                later_messages = messages[index + 1 :]
+                confirmed = any(self.order_confirmed_message(clean_text(item.get("message"))) for item in later_messages)
+                reminded = any(
+                    int(item.get("seller") or 0) == 1 and self.confirm_receipt_reminder_sent(clean_text(item.get("message")))
+                    for item in later_messages
+                )
+                if confirmed or reminded:
+                    continue
+                seen_orders.add(order_id)
+                paid_at = order_dates.get(order_id) or self.message_sort_date(message.get("date_written"), message.get("date_written"))
+                rows.append(
+                    {
+                        "node_id": node_id,
+                        "order_id": order_id,
+                        "buyer": chat.get("name") or f"FunPay-{node_id}",
+                        "product": product,
+                        "paid_at": paid_at or message.get("date_written") or chat.get("last_date"),
+                        "last_chat_at": chat.get("last_date"),
+                    }
+                )
+        rows.sort(key=lambda item: sort_time(item.get("paid_at")), reverse=True)
+        return rows
+
+    def send_confirm_receipt_reminders(self, chat_days: int = RECENT_CHAT_DAYS, limit: int = 50) -> dict[str, Any]:
+        pending_orders = self.pending_confirm_receipt_orders(chat_days=chat_days, limit=limit)
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        for item in pending_orders:
+            node_id = int(item.get("node_id") or 0)
+            if node_id:
+                grouped.setdefault(node_id, []).append(item)
+        results: list[dict[str, Any]] = []
+        for index, (node_id, items) in enumerate(grouped.items()):
+            order_ids = [str(item.get("order_id") or "") for item in items if item.get("order_id")]
+            message = self.confirm_receipt_reminder_message(order_ids)
+            try:
+                self.send_chat_message(node_id, message, [])
+                status = "sent"
+                result_message = "English confirmation reminder sent"
+            except Exception as exc:
+                status = "failed"
+                result_message = str(exc)
+            for item in items:
+                results.append({**item, "status": status, "message": result_message})
+            if index < len(grouped) - 1:
+                time.sleep(0.5)
+        return {
+            "status": "completed",
+            "checked": len(pending_orders),
+            "sent": sum(1 for item in results if item.get("status") == "sent"),
+            "failed": sum(1 for item in results if item.get("status") == "failed"),
+            "results": results,
+        }
+
     def chat_messages_from_page(self, node_id: int, page: str) -> list[dict[str, Any]]:
         app_data = self.app_data(page)
         my_user_id = int(app_data.get("userId") or 0)
@@ -2475,6 +2581,10 @@ CHAT_KEEPALIVE_BROWSER_STATUS: dict[str, Any] = {
 }
 FUNPAY_BOOST_INTERVAL_SECONDS = 12 * 3600
 FUNPAY_BOOST_HISTORY_FILE = APP_DIR / "funpay_boost_history.json"
+FUNPAY_CONFIRM_RECEIPT_REMINDER = (
+    'Hello! If you have received your order and everything is working, '
+    'please click "Confirm receipt" on FunPay. Thank you!'
+)
 FUNPAY_BOOST_STATUS: dict[str, Any] = {
     "enabled": False,
     "running": False,
@@ -5392,6 +5502,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_funpay_boost_toggle()
             if path == "/api/funpay-boost-sync":
                 return self.api_funpay_boost_sync()
+            if path == "/api/funpay-confirm-receipt-reminders":
+                return self.api_funpay_confirm_receipt_reminders()
             if path == "/api/funpay-boost-clear-errors":
                 return self.api_funpay_boost_clear_errors()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
@@ -5638,6 +5750,15 @@ class Handler(BaseHTTPRequestHandler):
           <p>错误：<span class='bad'>{h(status.get('last_error') or '-')}</span></p>
         </div>
         <div class='card'>
+          <h3>FunPay 确认收货提醒</h3>
+          <p class='muted'>查找聊天中已经付款但还没有确认收货的 FunPay 买家，并发送英文提醒：{h(FUNPAY_CONFIRM_RECEIPT_REMINDER)}</p>
+          <p><button id='funpay-confirm-receipt-button' type='button'>确认收货提醒</button> <span id='funpay-confirm-receipt-message' class='muted'></span></p>
+          <table>
+            <thead><tr><th>聊天</th><th>订单</th><th>买家</th><th>商品</th><th>付款时间</th><th>状态</th><th>结果</th></tr></thead>
+            <tbody id='funpay-confirm-receipt-results'><tr><td colspan='7' class='muted'>点击按钮后会查找并发送提醒。</td></tr></tbody>
+          </table>
+        </div>
+        <div class='card'>
           <h3>本次检测结果</h3>
           <p class='{last_result_class}'>{last_result_summary}</p>
           <table>
@@ -5687,6 +5808,42 @@ class Handler(BaseHTTPRequestHandler):
               if (syncMessage) syncMessage.textContent = String(error.message || error);
             }} finally {{
               syncButton.disabled = false;
+            }}
+          }});
+          const confirmButton = document.getElementById('funpay-confirm-receipt-button');
+          const confirmMessage = document.getElementById('funpay-confirm-receipt-message');
+          const confirmResults = document.getElementById('funpay-confirm-receipt-results');
+          function htmlEscape(value) {{
+            return String(value || '').replace(/[&<>"']/g, (char) => ({{'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}}[char]));
+          }}
+          if (confirmButton) confirmButton.addEventListener('click', async () => {{
+            if (!confirm('将查找已付款但未确认收货的 FunPay 买家，并发送英文提醒。继续？')) return;
+            confirmButton.disabled = true;
+            if (confirmMessage) confirmMessage.textContent = '正在查找并发送...';
+            if (confirmResults) confirmResults.innerHTML = "<tr><td colspan='7' class='muted'>正在处理...</td></tr>";
+            try {{
+              const res = await fetch('/api/funpay-confirm-receipt-reminders', {{method: 'POST'}});
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || '发送失败');
+              const rows = Array.isArray(data.results) ? data.results : [];
+              if (confirmMessage) confirmMessage.textContent = `完成：检查 ${{data.checked || 0}} 个待确认订单，已发送 ${{data.sent || 0}} 个，失败 ${{data.failed || 0}} 个。`;
+              if (!confirmResults) return;
+              if (!rows.length) {{
+                confirmResults.innerHTML = "<tr><td colspan='7' class='muted'>没有找到需要提醒的 FunPay 订单。</td></tr>";
+                return;
+              }}
+              confirmResults.innerHTML = rows.map((item) => {{
+                const nodeId = htmlEscape(item.node_id || '');
+                const href = `/chats?platform=funpay&order_id=${{encodeURIComponent(item.node_id || '')}}&email=${{encodeURIComponent(item.buyer || '')}}&product=${{encodeURIComponent(item.product || 'FunPay chat')}}`;
+                const status = htmlEscape(item.status || '-');
+                const cls = status === 'sent' ? 'ok' : status === 'failed' ? 'bad' : 'muted';
+                return `<tr><td><a href="${{href}}">#${{nodeId}}</a></td><td>${{htmlEscape(item.order_id || '-')}}</td><td>${{htmlEscape(item.buyer || '-')}}</td><td>${{htmlEscape(item.product || '-')}}</td><td>${{htmlEscape(item.paid_at || '-')}}</td><td class="${{cls}}">${{status}}</td><td>${{htmlEscape(item.message || '-')}}</td></tr>`;
+              }}).join('');
+            }} catch (error) {{
+              if (confirmMessage) confirmMessage.textContent = String(error.message || error);
+              if (confirmResults) confirmResults.innerHTML = `<tr><td colspan='7' class='bad'>${{htmlEscape(error.message || error)}}</td></tr>`;
+            }} finally {{
+              confirmButton.disabled = false;
             }}
           }});
         }})();
@@ -7537,6 +7694,13 @@ class Handler(BaseHTTPRequestHandler):
                 "rows": funpay_boost_history_rows(),
             }
         )
+
+    def api_funpay_confirm_receipt_reminders(self) -> None:
+        try:
+            result = funpay_client.send_confirm_receipt_reminders()
+        except Exception as exc:
+            return self.send_json({"error": str(exc)}, 400)
+        self.send_json(result)
 
     def api_funpay_boost_clear_errors(self) -> None:
         cleared = clear_funpay_boost_failed_history()
