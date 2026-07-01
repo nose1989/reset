@@ -5477,6 +5477,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_chat_panel()
             if path == "/api/chat-debug":
                 return self.api_chat_debug()
+            if path == "/api/m/conversations":
+                return self.api_m_conversations()
+            if path == "/api/m/messages":
+                return self.api_m_messages()
             if path.startswith("/downloads/"):
                 return self.serve_download(path)
             if path.startswith("/phrase-files/"):
@@ -5512,11 +5516,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_funpay_boost_sync()
             if path == "/api/funpay-boost-clear-errors":
                 return self.api_funpay_boost_clear_errors()
+            if path == "/api/m/send":
+                return self.api_m_send()
+            if path == "/api/m/translate":
+                return self.api_m_translate()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
         except Exception as exc:
             if path == "/chats/send":
                 return self.send_json({"ok": False, "error": str(exc)}, 500)
+            if path.startswith("/api/m/"):
+                return self.send_mobile_json({"ok": False, "error": str(exc)}, 500)
             self.send_html("Error", f"<div class='card bad'>Error</div><pre class='card code'>{h(exc)}</pre>", 500)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/m/"):
+            return self.mobile_cors_preflight()
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -6808,6 +6826,249 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": False, "error": "text is required"}, 400)
         created, phrase_id = save_text_common_phrase(text)
         self.send_json({"ok": True, "created": created, "id": phrase_id})
+
+    # ---- Mobile SPA data API -------------------------------------------------
+    # These endpoints only return raw JSON data for the independent mobile
+    # frontend under mobile/. They never render the PC admin UI and carry no
+    # platform-source labels for display (the platform field is used solely to
+    # route follow-up requests, and the mobile client never shows it).
+    def _mobile_cors(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def send_mobile_json(self, data: dict[str, Any], status: int = 200) -> None:
+        raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self._mobile_cors()
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def mobile_cors_preflight(self) -> None:
+        self.send_response(204)
+        self._mobile_cors()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    @staticmethod
+    def _mobile_initial(name: str) -> str:
+        text = clean_text(name)
+        return (text[:1] or "#").upper()
+
+    @staticmethod
+    def _mobile_time_label(when: str) -> str:
+        text = clean_text(when)
+        if len(text) >= 16 and "-" in text[:10]:
+            return text[11:16]
+        return text
+
+    @staticmethod
+    def _mobile_display_name(name: Any, conv_id: int = 0) -> str:
+        """Strip platform-identifying fallback names so no source marker leaks."""
+        text = clean_text(name)
+        if not text:
+            return ""
+        lowered = text.lower()
+        if lowered in {f"funpay-{conv_id}", f"ggsel-{conv_id}", f"order-{conv_id}", f"digiseller-{conv_id}"}:
+            return ""
+        if re.match(r"^(funpay|ggsel|digiseller)[-\s]", text, re.IGNORECASE):
+            return ""
+        return text
+
+    def api_m_conversations(self) -> None:
+        entries: list[tuple[float, dict[str, Any]]] = []
+        errors: list[str] = []
+        try:
+            for chat in client.chats(page_size=100):
+                if not is_recent_time(chat.get("last_date"), RECENT_CHAT_DAYS):
+                    continue
+                order_id = int(chat.get("id_i") or 0)
+                if not order_id:
+                    continue
+                email = str(chat.get("email") or "")
+                name = (email.split("@", 1)[0] if email else "") or f"#{order_id}"
+                when = str(chat.get("last_date") or "")
+                entries.append((sort_time(when), {
+                    "platform": "digiseller", "id": order_id,
+                    "name": name, "email": email,
+                    "preview": short(chat.get("product"), 80),
+                    "product": clean_text(chat.get("product")),
+                    "time": when, "time_label": self._mobile_time_label(when),
+                    "unread": int(chat.get("cnt_new") or 0),
+                    "initial": self._mobile_initial(name),
+                }))
+        except Exception as exc:
+            errors.append(str(exc))
+        try:
+            if ggsel_client.configured():
+                data = ggsel_client.chats(page_size=50)
+                for chat in list(data.get("items") or data.get("chats") or []):
+                    if not is_recent_time(ggsel_chat_last_date(chat), RECENT_CHAT_DAYS):
+                        continue
+                    order_id = ggsel_chat_order_id(chat)
+                    if not order_id:
+                        continue
+                    product = ggsel_order_product_name(order_id, chat.get("product") or "")
+                    email = ggsel_order_buyer_email(order_id, chat.get("email") or "")
+                    name = (email.split("@", 1)[0] if email else "") or f"#{order_id}"
+                    when = str(ggsel_chat_last_date(chat) or "")
+                    entries.append((sort_time(when), {
+                        "platform": "ggsel", "id": order_id,
+                        "name": name, "email": email,
+                        "preview": short(product, 80), "product": clean_text(product),
+                        "time": when, "time_label": self._mobile_time_label(when),
+                        "unread": int(chat.get("cnt_new") or 0),
+                        "initial": self._mobile_initial(name),
+                    }))
+        except Exception as exc:
+            errors.append(str(exc))
+        try:
+            if funpay_client.configured():
+                for index, chat in enumerate(funpay_client.chats(limit=50)):
+                    if not is_recent_time(chat.get("last_date"), RECENT_CHAT_DAYS):
+                        continue
+                    node_id = int(chat.get("node_id") or 0)
+                    if not node_id:
+                        continue
+                    name = self._mobile_display_name(chat.get("name"), node_id) or "会员"
+                    product = clean_text(chat.get("product") or chat.get("message") or "")
+                    when = str(chat.get("last_date") or "")
+                    sort_key = sort_time(chat.get("last_sort_date")) or sort_time(when) or (-1000000.0 - index)
+                    entries.append((sort_key, {
+                        "platform": "funpay", "id": node_id,
+                        "name": name, "email": name,
+                        "preview": short(product or chat.get("message"), 80),
+                        "product": product,
+                        "time": when, "time_label": self._mobile_time_label(when),
+                        "unread": int(chat.get("cnt_new") or 0),
+                        "initial": self._mobile_initial(name),
+                    }))
+        except Exception as exc:
+            errors.append(str(exc))
+        entries.sort(key=lambda item: item[0], reverse=True)
+        conversations = [item for _, item in entries][:50]
+        unread_total = sum(int(c.get("unread") or 0) for c in conversations)
+        self.send_mobile_json({"ok": True, "conversations": conversations, "unread_total": unread_total, "errors": errors})
+
+    @staticmethod
+    def _mobile_attachment(msg: dict[str, Any]) -> dict[str, Any]:
+        text = clean_text(msg.get("message") or msg.get("text") or "")
+        filename = clean_text(msg.get("filename") or text)
+        is_image = msg.get("is_img") == 1 or looks_like_image_name(filename)
+        url = clean_text(msg.get("url") or "")
+        preview = clean_text(msg.get("preview") or "")
+        if is_image and not preview and msg.get("id"):
+            preview = "https://graph.digiseller.ru/img_deb.ashx?f=" + urllib.parse.quote(f"{msg.get('id')}/{filename}") + "&w=360"
+        return {"filename": filename or "file", "url": url or preview, "preview": preview, "is_image": bool(is_image)}
+
+    def api_m_messages(self) -> None:
+        platform = self.q("platform", "digiseller").strip() or "digiseller"
+        conv_id = int(self.q("id", "0") or 0)
+        if not conv_id:
+            return self.send_mobile_json({"ok": False, "error": "id is required"}, 400)
+        try:
+            if platform == "funpay":
+                raw = funpay_client.chat_messages(conv_id)
+                product = funpay_client.chat_product(conv_id) or ""
+                derived_name = next((clean_text(m.get("author")) for m in reversed(raw) if m.get("seller") != 1 and m.get("author")), "")
+                name = self._mobile_display_name(self.q("name", ""), conv_id) or self._mobile_display_name(derived_name, conv_id)
+            elif platform == "ggsel":
+                raw = ggsel_client.chat_messages(conv_id)
+                if raw:
+                    safe_mark_ggsel_chat_read(conv_id)
+                product = ggsel_order_product_name(conv_id, self.q("product", ""))
+                email = ggsel_order_buyer_email(conv_id, "")
+                name = self._mobile_display_name(self.q("name", ""), conv_id) or (email.split("@", 1)[0] if email else "")
+            else:
+                platform = "digiseller"
+                raw = client.all_chat_messages(conv_id)
+                if raw:
+                    safe_mark_chat_read(conv_id)
+                email = self.q("email", "")
+                product = self.q("product", "")
+                name = self._mobile_display_name(self.q("name", ""), conv_id) or (email.split("@", 1)[0] if email else "")
+        except Exception as exc:
+            return self.send_mobile_json({"ok": False, "error": str(exc)}, 502)
+        target_lang = detect_buyer_language(raw)
+        messages = []
+        for idx, msg in enumerate(raw, 1):
+            is_seller = msg.get("seller") == 1
+            text = clean_text(msg.get("message") or msg.get("text") or "")
+            entry: dict[str, Any] = {
+                "id": str(msg.get("id") or f"{platform}-{conv_id}-{idx}"),
+                "direction": "out" if is_seller else "in",
+                "author": clean_text(msg.get("author") or ""),
+                "date": clean_text(msg.get("date_written") or ""),
+                "text": text,
+                "translate": False,
+                "translated": "",
+                "lang": "",
+            }
+            if is_attachment_message(msg):
+                entry["attachment"] = self._mobile_attachment(msg)
+            elif not is_seller and should_translate_text(text) and heuristic_language(text) not in {"zh", "zh-CN"}:
+                entry["translate"] = True
+                cached = cached_translation(text, "zh-CN")
+                if cached:
+                    entry["translated"] = cached[0]
+                    entry["lang"] = lang_label(cached[1])
+            messages.append(entry)
+        buyer_name = name or "会员"
+        self.send_mobile_json({
+            "ok": True, "platform": platform, "id": conv_id,
+            "name": buyer_name, "product": clean_text(product),
+            "target_lang": target_lang, "messages": messages,
+        })
+
+    def api_m_translate(self) -> None:
+        payload = self.read_json_body()
+        raw_messages = payload.get("messages")
+        if not isinstance(raw_messages, list):
+            return self.send_mobile_json({"ok": False, "error": "messages must be a list"}, 400)
+        pending = []
+        for item in raw_messages[:100]:
+            if not isinstance(item, dict):
+                continue
+            text = clean_text(item.get("text"))
+            if not text:
+                continue
+            pending.append({"id": str(item.get("id") or ""), "text": text})
+
+        def translate_item(item: dict[str, str]) -> dict[str, str]:
+            translated, source_lang = google_translate(item["text"], "zh-CN")
+            return {"id": item["id"], "text": item["text"], "translated": translated, "source_lang": source_lang, "label": lang_label(source_lang)}
+
+        results: list[dict[str, str]] = []
+        if pending:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(pending))) as executor:
+                results = list(executor.map(translate_item, pending))
+        self.send_mobile_json({"ok": True, "results": results})
+
+    def api_m_send(self) -> None:
+        payload = self.read_json_body()
+        platform = clean_text(payload.get("platform") or "digiseller") or "digiseller"
+        conv_id = int(payload.get("id") or 0)
+        message = clean_text(payload.get("message"))
+        target_lang = clean_text(payload.get("target_lang")) or "en"
+        if not conv_id:
+            return self.send_mobile_json({"ok": False, "error": "id is required"}, 400)
+        if not message:
+            return self.send_mobile_json({"ok": False, "error": "message is required"}, 400)
+        if should_translate_outgoing_message(message, target_lang):
+            message, _ = google_translate(message, target_lang, "zh-CN")
+        try:
+            if platform == "ggsel":
+                ggsel_client.send_chat_message(conv_id, message, [])
+            elif platform == "funpay":
+                funpay_client.send_chat_message(conv_id, message, [])
+            else:
+                client.send_chat_message(conv_id, message, [])
+        except Exception as exc:
+            return self.send_mobile_json({"ok": False, "error": str(exc)}, 502)
+        self.send_mobile_json({"ok": True, "platform": platform, "id": conv_id, "sent_text": message})
 
     def chats(self) -> None:
         chat_error = ""
