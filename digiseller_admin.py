@@ -549,6 +549,76 @@ def cached_translation(text: str, target_lang: str, source_lang: str = "auto") -
     return TRANSLATE_CACHE.get((source_lang, target_lang, value))
 
 
+# Local-only record of the original Chinese we typed for each outgoing message,
+# keyed by the (translated) text that was actually sent to the platform. This is
+# never sent anywhere — it only lets our own clients (PC page + mobile app) show
+# the original Chinese under our sent bubbles so we remember what we said. Unlike
+# the translation cache it does not expire.
+SENT_ORIGINALS_FILE = APP_DIR / "sent_originals.json"
+SENT_ORIGINALS: dict[str, str] = {}
+SENT_ORIGINALS_LOCK = threading.Lock()
+SENT_ORIGINALS_LOADED = False
+
+
+def _sent_original_key(translated: str) -> str:
+    return " ".join(clean_text(translated).split())
+
+
+def load_sent_originals() -> None:
+    global SENT_ORIGINALS_LOADED
+    if SENT_ORIGINALS_LOADED:
+        return
+    with SENT_ORIGINALS_LOCK:
+        if SENT_ORIGINALS_LOADED:
+            return
+        if SENT_ORIGINALS_FILE.exists():
+            try:
+                data = json.loads(SENT_ORIGINALS_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for key, value in data.items():
+                        if isinstance(key, str) and isinstance(value, str):
+                            SENT_ORIGINALS[key] = value
+            except Exception:
+                pass
+        SENT_ORIGINALS_LOADED = True
+
+
+def record_sent_original(translated: str, original: str) -> None:
+    """Remember that `original` (Chinese) was sent to the platform as `translated`."""
+    key = _sent_original_key(translated)
+    orig = clean_text(original)
+    if not key or not orig or key == _sent_original_key(orig):
+        return
+    load_sent_originals()
+    with SENT_ORIGINALS_LOCK:
+        if SENT_ORIGINALS.get(key) == orig:
+            return
+        SENT_ORIGINALS[key] = orig
+        try:
+            SENT_ORIGINALS_FILE.write_text(
+                json.dumps(SENT_ORIGINALS, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+
+def sent_original_for(translated: str) -> str:
+    """Return the original Chinese we typed for a sent (translated) message, if any."""
+    key = _sent_original_key(translated)
+    if not key:
+        return ""
+    load_sent_originals()
+    return SENT_ORIGINALS.get(key, "")
+
+
+def sent_original_html(translated: str) -> str:
+    """A small local-only line showing the original Chinese under a sent bubble."""
+    original = sent_original_for(translated)
+    if not original:
+        return ""
+    return f"<div class='chat-original' title='原文（仅本机可见，未发送给对方）'>{h(original)}</div>"
+
+
 LANG_LABELS = {
     "zh": "中文",
     "zh-CN": "中文",
@@ -2543,7 +2613,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 
 .messages-layout{height:calc(100vh - 116px)}
 .conversation-list-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 14px 12px;box-shadow:0 1px 0 #eef2f7}
-.conversation-list-title{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:10px}.conversation-list-title h2{margin:0;font-size:28px;line-height:1}.conversation-counts{font-size:12px;color:#64748b;text-align:right;white-space:nowrap}.conversation-search{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;padding:9px 10px;margin-bottom:10px;background:#f8fafc}.conversation-filters{display:flex;gap:8px;flex-wrap:wrap}.conversation-filter{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;cursor:pointer}.conversation-filter.active{background:#1f7acb;color:#fff;border-color:#1f7acb}.conversation-item[hidden]{display:none}.conversation-empty-filter{display:none;padding:28px 16px;color:#64748b;text-align:center}.conversation-empty-filter.visible{display:block}.conversation-section{padding:14px 14px 7px;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:#f8fafc;border-bottom:1px solid #eef2f7}.conversation-section[hidden]{display:none}.chat-bubble{word-break:break-word}.reply-editor{border-top:1px solid #e5e7eb;background:#fbfdff}.reply-editor textarea{min-height:84px}.pending-send .chat-bubble{opacity:.75}.pending-send.send-failed .chat-bubble{background:#fee2e2;color:#991b1b}
+.conversation-list-title{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:10px}.conversation-list-title h2{margin:0;font-size:28px;line-height:1}.conversation-counts{font-size:12px;color:#64748b;text-align:right;white-space:nowrap}.conversation-search{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;padding:9px 10px;margin-bottom:10px;background:#f8fafc}.conversation-filters{display:flex;gap:8px;flex-wrap:wrap}.conversation-filter{border:1px solid #cbd5e1;background:#fff;color:#334155;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;cursor:pointer}.conversation-filter.active{background:#1f7acb;color:#fff;border-color:#1f7acb}.conversation-item[hidden]{display:none}.conversation-empty-filter{display:none;padding:28px 16px;color:#64748b;text-align:center}.conversation-empty-filter.visible{display:block}.conversation-section{padding:14px 14px 7px;color:#64748b;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.04em;background:#f8fafc;border-bottom:1px solid #eef2f7}.conversation-section[hidden]{display:none}.chat-bubble{word-break:break-word}.reply-editor{border-top:1px solid #e5e7eb;background:#fbfdff}.reply-editor textarea{min-height:84px}.pending-send .chat-bubble{opacity:.75}.pending-send.send-failed .chat-bubble{background:#fee2e2;color:#991b1b}.chat-original{margin-top:5px;font-size:12.5px;color:#94a3b8;line-height:1.4;white-space:pre-wrap;word-break:break-word}
 
 .platform-badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:900;background:#e0f2fe;color:#075985}.platform-badge.ggsel{background:#fef3c7;color:#92400e}.platform-badge.funpay{background:#dcfce7;color:#166534}.sales-source{white-space:nowrap}
 .sales-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sales-toolbar input{max-width:90px}.sales-toolbar .sales-search{flex:1 1 260px;max-width:420px}.sales-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}.sales-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px}.sales-stat b{display:block;font-size:20px;margin-bottom:4px}.sales-table .order-link{font-weight:800}.sales-table .chat-action{display:inline-block;background:#1f7acb;color:#fff;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800}.sales-table tbody tr[hidden]{display:none}.sales-product{max-width:360px}.sales-empty-filter{display:none;padding:24px;text-align:center;color:#64748b}.sales-empty-filter.visible{display:block}
@@ -5579,7 +5649,9 @@ class Handler(BaseHTTPRequestHandler):
         if not message and not uploads:
             raise RuntimeError("Type a message or choose at least one file")
         if message and should_translate_outgoing_message(message, target_lang):
+            original_message = message
             message, _ = google_translate(message, target_lang, "zh-CN")
+            record_sent_original(message, original_message)
         stock_sent = bool(stock_offer_id and stock_item_id)
         sent_flag = "&stock_sent=1" if stock_sent else ""
 
@@ -6594,7 +6666,7 @@ class Handler(BaseHTTPRequestHandler):
                 rows.append(
                     f"<div class='chat-row {cls}'>"
                     f"<div class='chat-meta'><span class='chat-author'>{h(author)} <span class='muted'>{msg_no}{msg_id}</span></span><span>{read_receipt}{h(msg.get('date_written'))}</span></div>"
-                    f"<div class='chat-bubble'>{text_html}</div></div>"
+                    f"<div class='chat-bubble'>{text_html}</div>{sent_original_html(text) if is_seller else ''}</div>"
                 )
             if not rows:
                 rows.append("<div class='empty-state'>No order messages yet. Send a reply below to start the order chat.</div>")
@@ -6655,7 +6727,7 @@ class Handler(BaseHTTPRequestHandler):
             rows.append(
                 f"<div class='chat-row {cls}'>"
                 f"<div class='chat-meta'><span class='chat-author'>{h(author)} <span class='muted'>{msg_no}{msg_id}</span></span><span>{h(msg.get('date_written'))}</span></div>"
-                f"<div class='chat-bubble'>{text_html}</div></div>"
+                f"<div class='chat-bubble'>{text_html}</div>{sent_original_html(text) if is_seller else ''}</div>"
             )
         if not rows:
             rows.append("<div class='empty-state'>No guest messages loaded</div>")
@@ -6691,7 +6763,7 @@ class Handler(BaseHTTPRequestHandler):
             rows.append(
                 f"<div class='chat-row {cls}'>"
                 f"<div class='chat-meta'><span class='chat-author'>{h(author)} <span class='muted'>{msg_no}{msg_id}</span></span><span>{h(msg.get('date_written'))}</span></div>"
-                f"<div class='chat-bubble'>{text_html}</div></div>"
+                f"<div class='chat-bubble'>{text_html}</div>{sent_original_html(text) if is_seller else ''}</div>"
             )
         if not rows:
             rows.append("<div class='empty-state'>No GGSEL messages loaded</div>")
@@ -6727,7 +6799,7 @@ class Handler(BaseHTTPRequestHandler):
             rows.append(
                 f"<div class='chat-row {cls}'>"
                 f"<div class='chat-meta'><span class='chat-author'>{h(author)} <span class='muted'>{msg_no}{msg_id}</span></span><span>{h(msg.get('date_written'))}</span></div>"
-                f"<div class='chat-bubble'>{text_html}</div></div>"
+                f"<div class='chat-bubble'>{text_html}</div>{sent_original_html(text) if is_seller else ''}</div>"
             )
         if not rows:
             rows.append("<div class='empty-state'>No FunPay messages loaded</div>")
@@ -7034,6 +7106,10 @@ class Handler(BaseHTTPRequestHandler):
                 if cached:
                     entry["translated"] = cached[0]
                     entry["lang"] = lang_label(cached[1])
+            elif is_seller:
+                original = sent_original_for(text)
+                if original:
+                    entry["original"] = original
             messages.append(entry)
         buyer_name = name or "会员"
         self.send_mobile_json({
@@ -7077,7 +7153,9 @@ class Handler(BaseHTTPRequestHandler):
         if not message:
             return self.send_mobile_json({"ok": False, "error": "message is required"}, 400)
         if should_translate_outgoing_message(message, target_lang):
+            original_message = message
             message, _ = google_translate(message, target_lang, "zh-CN")
+            record_sent_original(message, original_message)
         try:
             if platform == "ggsel":
                 ggsel_client.send_chat_message(conv_id, message, [])
