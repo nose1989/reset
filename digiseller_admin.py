@@ -3778,6 +3778,45 @@ def load_common_phrases() -> list[dict[str, Any]]:
     return phrases
 
 
+def translate_common_phrases_to_chinese() -> tuple[int, int]:
+    """One-off: rewrite every stored common phrase's text into Chinese (zh-CN).
+
+    Phrases are stored in the language we type and re-translated to the buyer on
+    send, so normalizing existing phrases to Chinese makes the defaults Chinese.
+    Ids and files are preserved; empty texts and text already in Chinese are left
+    unchanged. Every user key in the file is processed. Returns
+    (translated_count, total_phrases_with_text).
+    """
+    if not COMMON_PHRASES_FILE.exists():
+        return 0, 0
+    data = json.loads(COMMON_PHRASES_FILE.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return 0, 0
+    translated = 0
+    total = 0
+    for values in data.values():
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            total += 1
+            if heuristic_language(text) in {"zh", "zh-CN"}:
+                continue
+            zh, _ = google_translate(text, "zh-CN")
+            zh = (zh or "").strip()
+            if zh and zh != text:
+                item["text"] = zh
+                translated += 1
+    tmp = COMMON_PHRASES_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(COMMON_PHRASES_FILE)
+    return translated, total
+
+
 def save_common_phrases(phrases: list[dict[str, Any]]) -> None:
     data: dict[str, list[dict[str, Any]]] = {}
     if COMMON_PHRASES_FILE.exists():
@@ -8136,6 +8175,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in {"translate-phrases", "phrases-to-chinese"}:
+        count, total = translate_common_phrases_to_chinese()
+        print(f"Common phrases translated to Chinese: {count} changed of {total} with text.")
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "watch":
         interval = 15
         if "--interval" in sys.argv:
