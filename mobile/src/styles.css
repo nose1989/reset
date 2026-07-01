@@ -284,16 +284,6 @@ body {
 .bubble-text {
   white-space: pre-wrap;
 }
-.bubble-original {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.35);
-  font-size: 12.5px;
-  line-height: 1.4;
-  color: rgba(255, 255, 255, 0.88);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
 .bubble-actions {
   display: flex;
   align-items: center;
