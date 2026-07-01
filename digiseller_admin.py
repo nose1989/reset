@@ -585,8 +585,8 @@ PRODUCT_BRANDS = [
 ]
 CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 FUNPAY_CHAT_BASE = "https://funpay.com"
-RECENT_ORDER_DAYS = 2
-RECENT_CHAT_DAYS = 2
+RECENT_ORDER_DAYS = 30
+RECENT_CHAT_DAYS = 30
 
 
 def lang_label(lang: str) -> str:
