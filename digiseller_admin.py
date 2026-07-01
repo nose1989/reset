@@ -5429,14 +5429,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.serve_logo()
             if path.startswith("/assets/"):
                 return self.serve_asset(path)
-            if path == "/m":
-                self.send_response(301)
-                self.send_header("Location", "/m/")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            if path.startswith("/m/"):
-                return self.serve_mobile(path)
             if path == "/sales":
                 return self.sales()
             if path == "/chats":
@@ -8009,44 +8001,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
         self.send_header("Cache-Control", "public, max-age=86400")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def serve_mobile(self, path: str) -> None:
-        """Serve the built mobile SPA (mobile/dist) under /m so the whole app
-        runs from this single backend process (no separate dev server needed)."""
-        dist = (APP_DIR / "mobile" / "dist").resolve()
-        index = dist / "index.html"
-        if not index.is_file():
-            self.send_response(503)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            body = (
-                "<h1>Mobile build not found</h1>"
-                "<p>Run <code>cd mobile &amp;&amp; npm install &amp;&amp; npm run build</code> "
-                "then reload this page.</p>"
-            ).encode("utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        rel = urllib.parse.unquote(strip_path_prefix(path, "/m/")).lstrip("/")
-        if rel and ".." not in rel.split("/") and "\\" not in rel:
-            candidate = (dist / rel).resolve()
-            if str(candidate).startswith(str(dist)) and candidate.is_file():
-                data = candidate.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", mimetypes.guess_type(candidate.name)[0] or "application/octet-stream")
-                cache = "public, max-age=31536000, immutable" if rel.startswith("static/") else "no-store"
-                self.send_header("Cache-Control", cache)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-                return
-        data = index.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
