@@ -8,9 +8,16 @@ platform-source labels, icons, or names appear anywhere in the UI.
 
 ## Architecture
 
+Two independent servers on two different ports:
+
 ```
-mobile/ (React + Vite SPA)  --HTTP-->  digiseller_admin.py  (/api/m/* JSON API)
+PC admin      digiseller_admin.py            :8765   (pages + /api/m/* JSON API)
+Mobile        mobile/serve.py (serves dist)   :8080   (proxies /api,/assets -> :8765)
 ```
+
+The mobile server serves the pre-built static files and proxies data requests to
+the PC backend, so the mobile app is always same-origin (no CORS) yet runs as its
+own process on its own port.
 
 Backend endpoints consumed (added to `digiseller_admin.py`, data-only, CORS on):
 
@@ -22,43 +29,43 @@ Backend endpoints consumed (added to `digiseller_admin.py`, data-only, CORS on):
 The `platform` field is used only to route follow-up requests; it is never
 displayed.
 
-## Normal use — one process (recommended)
+## Run — two independent ports (recommended)
 
-The backend serves the built mobile app at **`/m`**, so you only run one thing:
-
-```bash
-# once (and again whenever mobile code changes)
-cd mobile && npm install && npm run build
-
-# then just run the backend as usual
-cd .. && python3 digiseller_admin.py
-```
-
-Open **http://127.0.0.1:8765/m/** (or your phone at
-`http://<pc-lan-ip>:8765/m/`). No second server, no proxy, no CORS.
-
-After you pull new code, rebuild once with `npm run build` and refresh the page.
-If you open `/m/` without a build, the backend shows a reminder to run the build.
-
-## Develop with hot reload (optional)
-
-For live editing without rebuilding, run the Vite dev server alongside the
-backend:
+`dist/` is committed, so **after pulling code you never run a build**. Start the
+two servers (each in its own terminal):
 
 ```bash
-# terminal 1
+# terminal 1 — PC admin
 python3 digiseller_admin.py            # http://127.0.0.1:8765
 
-# terminal 2
-cd mobile && npm run dev               # http://localhost:5173/m/
+# terminal 2 — mobile (own port, no npm needed)
+python3 mobile/serve.py                # http://127.0.0.1:8080
 ```
 
-Edits hot-reload automatically — no need to re-run anything per change. The dev
-server proxies `/api` and `/assets` to the backend. Point it at a different
-backend with:
+Open **http://127.0.0.1:8080/** (or your phone at `http://<pc-lan-ip>:8080/`).
+Configure with env vars:
 
 ```bash
-DIGISELLER_ADMIN_ORIGIN=http://127.0.0.1:9000 npm run dev
+MOBILE_PORT=9000 DIGISELLER_ADMIN_ORIGIN=http://127.0.0.1:8765 python3 mobile/serve.py
+```
+
+## Develop with hot reload (optional, needs Node)
+
+Only when editing mobile source and you want live reload without committing a
+build:
+
+```bash
+cd mobile && npm install               # once
+npm run dev                            # http://localhost:5173
+```
+
+Edits hot-reload automatically. The dev server proxies `/api` and `/assets` to
+the backend (`DIGISELLER_ADMIN_ORIGIN` to point elsewhere). After finishing,
+rebuild and commit the updated `dist/` so the plain `serve.py` flow stays
+current:
+
+```bash
+npm run build
 ```
 
 ## Cross-origin deployment (optional)
