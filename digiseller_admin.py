@@ -3323,7 +3323,8 @@ def unread_summary() -> dict[str, Any]:
     ggsel_buyer: list[dict[str, Any]] = []
     if ggsel_client.configured():
         try:
-            ggsel_rows = ggsel_client.chats(page_size=50, only_unread=True).get("items") or []
+            ggsel_data = ggsel_client.chats(page_size=50, only_unread=True)
+            ggsel_rows = ggsel_data.get("items") or ggsel_data.get("chats") or []
             ggsel_buyer = [
                 c
                 for c in ggsel_rows
@@ -6706,7 +6707,8 @@ class Handler(BaseHTTPRequestHandler):
             guest_error = str(exc)
         ggsel_error = ""
         try:
-            ggsel_chats = list((ggsel_client.chats(page_size=50).get("items") or []) if ggsel_client.configured() else [])
+            ggsel_data = ggsel_client.chats(page_size=50) if ggsel_client.configured() else {}
+            ggsel_chats = list(ggsel_data.get("items") or ggsel_data.get("chats") or [])
         except Exception as exc:
             ggsel_chats = []
             ggsel_error = str(exc)
@@ -7260,7 +7262,8 @@ class Handler(BaseHTTPRequestHandler):
         ggsel_buyer: list[dict[str, Any]] = []
         if ggsel_client.configured():
             try:
-                ggsel_rows = ggsel_client.chats(page_size=50, only_unread=True).get("items") or []
+                ggsel_data = ggsel_client.chats(page_size=50, only_unread=True)
+                ggsel_rows = ggsel_data.get("items") or ggsel_data.get("chats") or []
                 ggsel_buyer = [
                     c
                     for c in ggsel_rows
