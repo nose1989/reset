@@ -148,6 +148,11 @@ export default function Conversation() {
                       {m.translate && !m.translated ? "翻译中…" : m.text}
                     </div>
                   )}
+                  {isOut && m.original && (
+                    <div className="bubble-original" title="原文（仅本机可见，未发送给对方）">
+                      {m.original}
+                    </div>
+                  )}
                 </div>
                 {m.date && <div className="msg-time">{m.date}</div>}
               </div>
