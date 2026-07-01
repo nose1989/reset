@@ -51,10 +51,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method: str) -> None:
         path = urllib.parse.urlparse(self.path).path
-        if path.startswith(PROXY_PREFIXES):
-            self._proxy(method)
-        else:
-            self._serve_static(path)
+        try:
+            if path.startswith(PROXY_PREFIXES):
+                self._proxy(method)
+            else:
+                self._serve_static(path)
+        except (BrokenPipeError, ConnectionResetError):
+            # Client navigated away / closed the tab before we finished writing.
+            # Harmless — just drop this request instead of dumping a traceback.
+            return
 
     def _proxy(self, method: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)
