@@ -9,11 +9,21 @@ const backend = process.env.DIGISELLER_ADMIN_ORIGIN || "http://127.0.0.1:8765";
 
 export default defineConfig({
   plugins: [react()],
+  // Emit the SPA's own assets under /static so they never collide with the
+  // backend's /assets (brand logos) when both are served from one origin.
+  build: {
+    assetsDir: "static",
+  },
   server: {
     host: true,
     port: 5173,
     proxy: {
       "/api": {
+        target: backend,
+        changeOrigin: true,
+      },
+      // brand logos referenced by relative paths (e.g. /assets/brand-logos/*)
+      "/assets": {
         target: backend,
         changeOrigin: true,
       },
