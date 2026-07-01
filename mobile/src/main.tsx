@@ -5,11 +5,14 @@ import ConversationList from "./pages/ConversationList";
 import Conversation from "./pages/Conversation";
 import "./styles.css";
 
-const router = createBrowserRouter([
-  { path: "/", element: <ConversationList /> },
-  { path: "/c/:platform/:id", element: <Conversation /> },
-  { path: "*", element: <Navigate to="/" replace /> },
-]);
+const router = createBrowserRouter(
+  [
+    { path: "/", element: <ConversationList /> },
+    { path: "/c/:platform/:id", element: <Conversation /> },
+    { path: "*", element: <Navigate to="/" replace /> },
+  ],
+  { basename: "/m" },
+);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

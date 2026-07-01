@@ -9,6 +9,9 @@ const backend = process.env.DIGISELLER_ADMIN_ORIGIN || "http://127.0.0.1:8765";
 
 export default defineConfig({
   plugins: [react()],
+  // Served under /m by the backend (single-process deployment). All asset URLs
+  // and the router are prefixed accordingly.
+  base: "/m/",
   // Emit the SPA's own assets under /static so they never collide with the
   // backend's /assets (brand logos) when both are served from one origin.
   build: {
