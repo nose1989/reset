@@ -1,7 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchConversations, resolveBackendUrl } from "../api";
 import type { Avatar, Conversation } from "../types";
+
+// Kept outside the component so it survives unmount when navigating into a
+// conversation and back. Lets us return to the list without re-fetching (no
+// flicker/refresh) and restore the exact scroll position we left from.
+const listCache: {
+  items: Conversation[];
+  unreadTotal: number;
+  loaded: boolean;
+  scrollTop: number;
+} = { items: [], unreadTotal: 0, loaded: false, scrollTop: 0 };
 
 function ConvAvatar({ avatar, initial }: { avatar?: Avatar; initial: string }) {
   const [imgOk, setImgOk] = useState(true);
@@ -34,9 +44,10 @@ function ConvAvatar({ avatar, initial }: { avatar?: Avatar; initial: string }) {
 
 export default function ConversationList() {
   const navigate = useNavigate();
-  const [items, setItems] = useState<Conversation[]>([]);
-  const [unreadTotal, setUnreadTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const listRef = useRef<HTMLUListElement>(null);
+  const [items, setItems] = useState<Conversation[]>(listCache.items);
+  const [unreadTotal, setUnreadTotal] = useState(listCache.unreadTotal);
+  const [loading, setLoading] = useState(!listCache.loaded);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -46,6 +57,9 @@ export default function ConversationList() {
       if (!data.ok) throw new Error(data.error || "加载失败");
       setItems(data.conversations);
       setUnreadTotal(data.unread_total);
+      listCache.items = data.conversations;
+      listCache.unreadTotal = data.unread_total;
+      listCache.loaded = true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -53,11 +67,23 @@ export default function ConversationList() {
     }
   }, []);
 
+  // Only fetch on first visit. On return from a conversation we reuse the cache
+  // so the list is not refreshed.
   useEffect(() => {
-    load();
+    if (!listCache.loaded) load();
   }, [load]);
 
+  // Restore the scroll position we had when leaving for a conversation.
+  useLayoutEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = listCache.scrollTop;
+  }, []);
+
+  const rememberScroll = () => {
+    if (listRef.current) listCache.scrollTop = listRef.current.scrollTop;
+  };
+
   const open = (c: Conversation) => {
+    rememberScroll();
     const query = new URLSearchParams({
       name: c.name,
       product: c.product,
@@ -92,7 +118,7 @@ export default function ConversationList() {
       ) : items.length === 0 && !error ? (
         <div className="empty">暂无会话</div>
       ) : (
-        <ul className="conv-list">
+        <ul className="conv-list" ref={listRef} onScroll={rememberScroll}>
           {items.map((c) => (
             <li
               key={`${c.platform}:${c.id}`}
