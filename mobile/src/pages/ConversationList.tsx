@@ -13,6 +13,22 @@ const listCache: {
   scrollTop: number;
 } = { items: [], unreadTotal: 0, loaded: false, scrollTop: 0 };
 
+// Called when a conversation is opened: clear its unread badge in the cached
+// list so returning to the list (which reuses the cache, no refetch) no longer
+// shows the red dot for the chat we just read. The backend already marks the
+// chat read when its messages are fetched.
+export function markCachedConversationRead(platform: string, id: number) {
+  let removed = 0;
+  listCache.items = listCache.items.map((c) => {
+    if (c.platform === platform && c.id === id && c.unread > 0) {
+      removed = c.unread;
+      return { ...c, unread: 0 };
+    }
+    return c;
+  });
+  if (removed) listCache.unreadTotal = Math.max(0, listCache.unreadTotal - removed);
+}
+
 function ConvAvatar({ avatar, initial }: { avatar?: Avatar; initial: string }) {
   const [imgOk, setImgOk] = useState(true);
   if (avatar?.kind === "brand" && avatar.logo && imgOk) {

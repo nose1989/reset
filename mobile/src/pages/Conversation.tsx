@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { fetchMessages, sendReply, translateMessages } from "../api";
+import { markCachedConversationRead } from "./ConversationList";
 import type { Message } from "../types";
 
 export default function Conversation() {
@@ -67,6 +68,12 @@ export default function Conversation() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Opening a chat marks it read on the backend, so drop its unread badge from
+  // the cached list too — returning to the list won't show a stale red dot.
+  useEffect(() => {
+    markCachedConversationRead(platform, convId);
+  }, [platform, convId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
