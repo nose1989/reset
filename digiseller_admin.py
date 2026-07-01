@@ -6878,6 +6878,22 @@ class Handler(BaseHTTPRequestHandler):
             return ""
         return text
 
+    @staticmethod
+    def _mobile_avatar(product: Any, fallback: str) -> dict[str, Any]:
+        """Structured avatar for the mobile list: brand logo image when the
+        product matches a known brand, otherwise a generic mark or initial."""
+        brand = product_brand(product)
+        if brand:
+            name, mark, logo, background, _ = brand
+            return {"kind": "brand", "logo": logo, "background": background, "mark": mark, "name": name}
+        product_text = clean_text(product)
+        if product_text:
+            words = re.findall(r"[A-Za-z0-9]+", product_text)
+            label = words[0] if words else short(product_text, 8)
+            mark = label[:2].upper() or fallback
+            return {"kind": "generic", "mark": mark, "label": short(label, 8)}
+        return {"kind": "initial", "initial": fallback}
+
     def api_m_conversations(self) -> None:
         entries: list[tuple[float, dict[str, Any]]] = []
         errors: list[str] = []
@@ -6899,6 +6915,7 @@ class Handler(BaseHTTPRequestHandler):
                     "time": when, "time_label": self._mobile_time_label(when),
                     "unread": int(chat.get("cnt_new") or 0),
                     "initial": self._mobile_initial(name),
+                    "avatar": self._mobile_avatar(chat.get("product"), self._mobile_initial(name)),
                 }))
         except Exception as exc:
             errors.append(str(exc))
@@ -6922,6 +6939,7 @@ class Handler(BaseHTTPRequestHandler):
                         "time": when, "time_label": self._mobile_time_label(when),
                         "unread": int(chat.get("cnt_new") or 0),
                         "initial": self._mobile_initial(name),
+                        "avatar": self._mobile_avatar(product, self._mobile_initial(name)),
                     }))
         except Exception as exc:
             errors.append(str(exc))
@@ -6945,6 +6963,7 @@ class Handler(BaseHTTPRequestHandler):
                         "time": when, "time_label": self._mobile_time_label(when),
                         "unread": int(chat.get("cnt_new") or 0),
                         "initial": self._mobile_initial(name),
+                        "avatar": self._mobile_avatar(product, self._mobile_initial(name)),
                     }))
         except Exception as exc:
             errors.append(str(exc))

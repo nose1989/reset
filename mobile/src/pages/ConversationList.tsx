@@ -1,7 +1,36 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchConversations } from "../api";
-import type { Conversation } from "../types";
+import { fetchConversations, resolveBackendUrl } from "../api";
+import type { Avatar, Conversation } from "../types";
+
+function ConvAvatar({ avatar, initial }: { avatar?: Avatar; initial: string }) {
+  const [imgOk, setImgOk] = useState(true);
+  if (avatar?.kind === "brand" && avatar.logo && imgOk) {
+    return (
+      <div
+        className="avatar brand-avatar"
+        style={{ background: avatar.background || "#111827" }}
+      >
+        <img
+          className="brand-logo"
+          src={resolveBackendUrl(avatar.logo)}
+          alt={avatar.name || ""}
+          loading="lazy"
+          onError={() => setImgOk(false)}
+        />
+      </div>
+    );
+  }
+  if (avatar?.kind === "brand" || avatar?.kind === "generic") {
+    return (
+      <div className="avatar generic-avatar">
+        <span className="avatar-mark">{avatar.mark || initial}</span>
+        {avatar.label && <span className="avatar-label">{avatar.label}</span>}
+      </div>
+    );
+  }
+  return <div className="avatar">{initial}</div>;
+}
 
 export default function ConversationList() {
   const navigate = useNavigate();
@@ -70,14 +99,20 @@ export default function ConversationList() {
               className="conv-item"
               onClick={() => open(c)}
             >
-              <div className="avatar">{c.initial}</div>
+              <div className="avatar-wrap">
+                <ConvAvatar avatar={c.avatar} initial={c.initial} />
+                {c.unread > 0 && (
+                  <span className="unread-dot">
+                    {c.unread > 99 ? "99+" : c.unread}
+                  </span>
+                )}
+              </div>
               <div className="conv-main">
                 <div className="conv-name">{c.name}</div>
                 <div className="conv-preview">{c.preview}</div>
               </div>
               <div className="conv-side">
                 <div className="conv-time">{c.time_label}</div>
-                {c.unread > 0 && <div className="badge">{c.unread}</div>}
               </div>
             </li>
           ))}

@@ -10,6 +10,13 @@ import type {
 // production deployment set VITE_API_BASE to the backend origin.
 const API_BASE = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
 
+// Resolve a possibly backend-relative URL (e.g. a "/assets/..." brand logo)
+// against the backend origin. Absolute URLs are returned unchanged.
+export function resolveBackendUrl(url: string): string {
+  if (!url) return url;
+  return url.startsWith("/") ? `${API_BASE}${url}` : url;
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -134,6 +134,12 @@ body {
 .conv-item:active {
   background: #eef6ff;
 }
+.avatar-wrap {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+}
 .avatar {
   width: 48px;
   height: 48px;
@@ -145,6 +151,56 @@ body {
   color: #fff;
   font-weight: 800;
   font-size: 18px;
+  overflow: hidden;
+}
+.brand-avatar {
+  border: 1px solid #cbd5e1;
+  padding: 5px;
+  box-sizing: border-box;
+}
+.brand-logo {
+  display: block;
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+}
+.generic-avatar {
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #111827;
+  line-height: 1;
+}
+.avatar-mark {
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+}
+.avatar-label {
+  max-width: 42px;
+  font-size: 8px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.unread-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 0 0 2px #fff;
 }
 .conv-main {
   min-width: 0;

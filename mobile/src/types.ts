@@ -1,3 +1,13 @@
+export interface Avatar {
+  kind: "brand" | "generic" | "initial";
+  logo?: string;
+  background?: string;
+  mark?: string;
+  name?: string;
+  label?: string;
+  initial?: string;
+}
+
 export interface Conversation {
   platform: string;
   id: number;
@@ -9,6 +19,7 @@ export interface Conversation {
   time_label: string;
   unread: number;
   initial: string;
+  avatar?: Avatar;
 }
 
 export interface ConversationsResponse {
