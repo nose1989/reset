@@ -1,8 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { fetchMessages, sendReply, translateMessages } from "../api";
-import { markCachedConversationRead } from "./ConversationList";
+import { getCachedUnread, markCachedConversationRead } from "./ConversationList";
 import type { Message } from "../types";
+
+// Per-conversation cache of the loaded (and translated) messages. Survives
+// navigating back to the list and reopening. Reused instead of re-fetching when
+// the list reports the conversation has no new messages (unread === 0).
+type CachedConversation = {
+  messages: Message[];
+  name: string;
+  product: string;
+  targetLang: string;
+};
+const messageCache: Record<string, CachedConversation> = {};
 
 export default function Conversation() {
   const { platform = "", id = "0" } = useParams();
@@ -10,11 +21,24 @@ export default function Conversation() {
   const [search] = useSearchParams();
   const navigate = useNavigate();
 
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [name, setName] = useState(search.get("name") || "会员");
-  const [product, setProduct] = useState(search.get("product") || "");
-  const [targetLang, setTargetLang] = useState("en");
-  const [loading, setLoading] = useState(true);
+  const cacheKey = `${platform}:${convId}`;
+  // Reuse cached messages only when the list says there are no new messages.
+  const cached = messageCache[cacheKey];
+  const canUseCache = cached != null && getCachedUnread(platform, convId) === 0;
+
+  const [messages, setMessages] = useState<Message[]>(
+    canUseCache ? cached.messages : [],
+  );
+  const [name, setName] = useState(
+    canUseCache ? cached.name : search.get("name") || "会员",
+  );
+  const [product, setProduct] = useState(
+    canUseCache ? cached.product : search.get("product") || "",
+  );
+  const [targetLang, setTargetLang] = useState(
+    canUseCache ? cached.targetLang : "en",
+  );
+  const [loading, setLoading] = useState(!canUseCache);
   const [error, setError] = useState("");
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
@@ -66,8 +90,23 @@ export default function Conversation() {
   }, [platform, convId, search, runTranslations]);
 
   useEffect(() => {
+    // No new messages for this chat → reuse the cached thread, skip the request.
+    if (canUseCache) {
+      runTranslations(messages);
+      return;
+    }
     load();
-  }, [load]);
+    // Only decide once per opened conversation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey]);
+
+  // Keep the per-conversation cache in sync with what is currently displayed
+  // (including translations that arrive after load), so the next open can reuse it.
+  useEffect(() => {
+    if (!loading) {
+      messageCache[cacheKey] = { messages, name, product, targetLang };
+    }
+  }, [cacheKey, messages, name, product, targetLang, loading]);
 
   // Opening a chat marks it read on the backend, so drop its unread badge from
   // the cached list too — returning to the list won't show a stale red dot.

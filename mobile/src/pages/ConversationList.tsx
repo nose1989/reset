@@ -13,6 +13,15 @@ const listCache: {
   scrollTop: number;
 } = { items: [], unreadTotal: 0, loaded: false, scrollTop: 0 };
 
+// Unread count for a conversation as last known by the cached list. Returns
+// null when the list has not been loaded or the conversation is not in it, so
+// callers can fall back to fetching. `0` means "no new messages".
+export function getCachedUnread(platform: string, id: number): number | null {
+  if (!listCache.loaded) return null;
+  const item = listCache.items.find((c) => c.platform === platform && c.id === id);
+  return item ? item.unread : null;
+}
+
 // Called when a conversation is opened: clear its unread badge in the cached
 // list so returning to the list (which reuses the cache, no refetch) no longer
 // shows the red dot for the chat we just read. The backend already marks the
