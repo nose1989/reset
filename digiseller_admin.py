@@ -2547,7 +2547,111 @@ body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;marg
 
 .platform-badge{display:inline-block;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:900;background:#e0f2fe;color:#075985}.platform-badge.ggsel{background:#fef3c7;color:#92400e}.platform-badge.funpay{background:#dcfce7;color:#166534}.sales-source{white-space:nowrap}
 .sales-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.sales-toolbar input{max-width:90px}.sales-toolbar .sales-search{flex:1 1 260px;max-width:420px}.sales-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}.sales-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px}.sales-stat b{display:block;font-size:20px;margin-bottom:4px}.sales-table .order-link{font-weight:800}.sales-table .chat-action{display:inline-block;background:#1f7acb;color:#fff;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800}.sales-table tbody tr[hidden]{display:none}.sales-product{max-width:360px}.sales-empty-filter{display:none;padding:24px;text-align:center;color:#64748b}.sales-empty-filter.visible{display:block}
+.pjax-bar{position:fixed;top:0;left:0;height:3px;width:0;background:#1f7acb;box-shadow:0 0 8px #1f7acb99;z-index:9999;opacity:0;pointer-events:none}.pjax-bar.active{width:88%;opacity:1;transition:width 8s cubic-bezier(.1,.7,.1,1)}#pjax-root{transition:opacity .12s}#pjax-root.pjax-loading{opacity:.55;pointer-events:none}
 </style>
+"""
+
+
+# Client-side partial navigation (pjax). Clicking a top-nav link or submitting a
+# GET form only swaps the #pjax-root content instead of reloading the whole page,
+# so the shared shell (nav, online keepalive, alert poller) keeps running and
+# heavy pages like Sales/Messages feel instant instead of doing a full refresh.
+# Page scripts that start intervals or set window-level handlers register a
+# teardown via window.pjaxOnCleanup so nothing leaks between navigations.
+PJAX_SCRIPT = """
+<script>
+(() => {
+  if (window.__pjaxReady || !window.history || !window.fetch || !window.DOMParser) return;
+  window.__pjaxReady = true;
+  const PATHS = new Set(['/', '/sales', '/chats', '/chat', '/unread', '/admin-messages', '/phrases', '/coding-prompts', '/product', '/stock', '/ggsel', '/ggsel-views', '/funpay-boost', '/unique-code']);
+  window.__pjaxCleanups = window.__pjaxCleanups || [];
+  window.pjaxOnCleanup = (fn) => { if (typeof fn === 'function') window.__pjaxCleanups.push(fn); };
+  function runCleanups() {
+    const fns = window.__pjaxCleanups.splice(0);
+    fns.forEach((fn) => { try { fn(); } catch (e) {} });
+  }
+  const bar = document.createElement('div');
+  bar.className = 'pjax-bar';
+  document.body.appendChild(bar);
+  function pjaxable(href) {
+    try {
+      const url = new URL(href, location.href);
+      return url.origin === location.origin && PATHS.has(url.pathname);
+    } catch (e) {
+      return false;
+    }
+  }
+  function runScripts(container) {
+    container.querySelectorAll('script').forEach((oldScript) => {
+      const script = document.createElement('script');
+      for (const attr of oldScript.attributes) script.setAttribute(attr.name, attr.value);
+      script.textContent = oldScript.textContent;
+      oldScript.replaceWith(script);
+    });
+  }
+  let seq = 0;
+  async function load(url, push) {
+    const root = document.getElementById('pjax-root');
+    if (!root) { location.href = url; return; }
+    const mySeq = ++seq;
+    bar.classList.add('active');
+    root.classList.add('pjax-loading');
+    try {
+      const res = await fetch(url, {headers: {'X-Pjax': '1'}, cache: 'no-store'});
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      if (mySeq !== seq) return;
+      const doc = new DOMParser().parseFromString(text, 'text/html');
+      const next = doc.getElementById('pjax-root');
+      if (!next) { location.href = url; return; }
+      runCleanups();
+      root.innerHTML = next.innerHTML;
+      if (doc.title) document.title = doc.title;
+      runScripts(root);
+      if (window.loadDigisellerTranslations) window.loadDigisellerTranslations(root);
+      if (push !== false) history.pushState({pjax: true}, '', url);
+      window.scrollTo(0, 0);
+    } catch (e) {
+      location.href = url;
+    } finally {
+      if (mySeq === seq) {
+        bar.classList.remove('active');
+        root.classList.remove('pjax-loading');
+      }
+    }
+  }
+  document.addEventListener('click', (event) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const link = event.target.closest('a');
+    if (!link) return;
+    const target = link.getAttribute('target');
+    if ((target && target !== '_self') || link.hasAttribute('download') || link.dataset.noPjax === '1') return;
+    if (!pjaxable(link.href)) return;
+    if (new URL(link.href, location.href).href === location.href) { event.preventDefault(); return; }
+    event.preventDefault();
+    load(link.href, true);
+  });
+  document.addEventListener('submit', (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || form.dataset.noPjax === '1') return;
+    if ((form.getAttribute('method') || 'get').toLowerCase() !== 'get') return;
+    if (!form.closest('#pjax-root')) return;
+    let url;
+    try {
+      url = new URL(form.getAttribute('action') || location.href, location.href);
+    } catch (e) {
+      return;
+    }
+    if (!pjaxable(url.href)) return;
+    url.search = new URLSearchParams(new FormData(form)).toString();
+    event.preventDefault();
+    load(url.href, true);
+  });
+  window.addEventListener('popstate', () => {
+    if (pjaxable(location.href)) load(location.href, false);
+  });
+})();
+</script>
 """
 
 
@@ -3021,8 +3125,9 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
       }
       btn.addEventListener('click', toggle);
       if (clearErrorsBtn) clearErrorsBtn.addEventListener('click', clearErrors);
-      setInterval(loadStatus, 15000);
+      const boostStatusTimer = setInterval(loadStatus, 15000);
       loadStatus();
+      if (window.pjaxOnCleanup) window.pjaxOnCleanup(() => clearInterval(boostStatusTimer));
     })();
     </script>
     """
@@ -3111,7 +3216,8 @@ def layout(title: str, body: str, *, include_funpay_boost: bool = False) -> byte
     window.loadDigisellerTranslations(document);
     </script>
     """
-    html_doc = f"<!doctype html><html><head><meta charset='utf-8'><title>{h(title)}</title><link rel='icon' type='image/png' href='/favicon.ico'><link rel='apple-touch-icon' href='/assets/shinchan-logo.png'>{STYLE}</head><body>{nav}{alert_ui}{funpay_boost_ui if include_funpay_boost else ''}{translation_ui}<div class='wrap'>{body}</div></body></html>"
+    pjax_root = f"<div id='pjax-root'>{funpay_boost_ui if include_funpay_boost else ''}<div class='wrap'>{body}</div></div>"
+    html_doc = f"<!doctype html><html><head><meta charset='utf-8'><title>{h(title)}</title><link rel='icon' type='image/png' href='/favicon.ico'><link rel='apple-touch-icon' href='/assets/shinchan-logo.png'>{STYLE}</head><body>{nav}{alert_ui}{translation_ui}{PJAX_SCRIPT}{pjax_root}</body></html>"
     return html_doc.encode("utf-8")
 
 
@@ -5682,7 +5788,8 @@ class Handler(BaseHTTPRequestHandler):
             }});
           }}
           tick();
-          setInterval(tick, 1000);
+          const cooldownTimer = setInterval(tick, 1000);
+          if (window.pjaxOnCleanup) window.pjaxOnCleanup(() => clearInterval(cooldownTimer));
           const syncButton = document.getElementById('funpay-boost-sync-products');
           const syncMessage = document.getElementById('funpay-boost-sync-message');
           if (syncButton) syncButton.addEventListener('click', async () => {{
@@ -7207,7 +7314,6 @@ class Handler(BaseHTTPRequestHandler):
             refreshingActiveOrder = true;
             loadPanel(active, {silent: true}).finally(() => { refreshingActiveOrder = false; });
           };
-          window.addEventListener('popstate', () => location.reload());
           if (window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
           (function applyPendingDots() {
             try {
@@ -7220,9 +7326,13 @@ class Handler(BaseHTTPRequestHandler):
             } catch(e) {}
           })();
           applyConversationFilters();
-          setInterval(() => {
+          const unreadPollTimer = setInterval(() => {
             if (!document.hidden && window.refreshDigisellerUnread) window.refreshDigisellerUnread(true);
           }, 15000);
+          if (window.pjaxOnCleanup) window.pjaxOnCleanup(() => {
+            clearInterval(unreadPollTimer);
+            window.handleDigisellerUnreadData = null;
+          });
         })();
         </script>
         """
