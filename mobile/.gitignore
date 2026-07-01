@@ -1,5 +1,7 @@
 node_modules
-dist
+# NOTE: dist/ is intentionally committed so the backend can serve /m right after
+# a git pull, with no build step required. Rebuild with `npm run build` after
+# changing mobile source, and commit the updated dist/.
 dist-ssr
 *.local
 .vite
