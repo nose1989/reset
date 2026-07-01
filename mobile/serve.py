@@ -31,6 +31,9 @@ BACKEND = (os.environ.get("DIGISELLER_ADMIN_ORIGIN") or "http://127.0.0.1:8765")
 PORT = int(os.environ.get("MOBILE_PORT") or 8080)
 HOST = os.environ.get("MOBILE_HOST") or "0.0.0.0"
 PROXY_PREFIXES = ("/api/", "/assets/")
+# Talk to the backend directly, ignoring any system/env HTTP proxy. Without this,
+# urllib may route even 127.0.0.1 through a configured proxy/VPN and fail (502).
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "content-length",
@@ -51,10 +54,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method: str) -> None:
         path = urllib.parse.urlparse(self.path).path
-        if path.startswith(PROXY_PREFIXES):
-            self._proxy(method)
-        else:
-            self._serve_static(path)
+        try:
+            if path.startswith(PROXY_PREFIXES):
+                self._proxy(method)
+            else:
+                self._serve_static(path)
+        except (BrokenPipeError, ConnectionResetError):
+            # Client navigated away / closed the tab before we finished writing.
+            # Harmless — just drop this request instead of dumping a traceback.
+            return
 
     def _proxy(self, method: str) -> None:
         length = int(self.headers.get("Content-Length") or 0)
@@ -65,7 +73,7 @@ class Handler(BaseHTTPRequestHandler):
         if ctype:
             req.add_header("Content-Type", ctype)
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with OPENER.open(req, timeout=60) as resp:
                 data = resp.read()
                 status = resp.status
                 headers = resp.headers
