@@ -3342,10 +3342,10 @@ def unique_code_label(state: Any) -> str:
 def unique_code_label_zh(state: Any) -> str:
     labels = {
         1: "未核验",
-        2: "已发货，等待买家确认",
-        3: "发货已确认",
+        2: "已核验",
+        3: "已核验",
         4: "发货被驳回",
-        5: "已核验，尚未发货",
+        5: "已核验",
     }
     try:
         return labels.get(int(state), str(state or "未知"))
