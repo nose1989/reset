@@ -1848,6 +1848,28 @@ class GgselClient:
     def seller_office_delete_product(self, offer_id: int, product_id: int) -> None:
         self.seller_office_delete(f"/api_seller_office/v1/offers/{offer_id}/products/{product_id}")
 
+    def seller_office_order(self, order_id: int) -> dict[str, Any]:
+        data = self.seller_office_get(f"/api_seller_office/v1/orders/{int(order_id)}")
+        order = data.get("data") if isinstance(data, dict) else None
+        return order if isinstance(order, dict) else {}
+
+    def order_delivery_status(self, order_id: int) -> str:
+        """Current fulfillment state of a seller-office order: 'pending' / 'delivered'."""
+        return clean_text(self.seller_office_order(order_id).get("delivery_status"))
+
+    def set_order_delivered(self, order_id: int, delivered: bool) -> str:
+        """Mirror the seller-panel "Product delivered" toggle. Returns the resulting status."""
+        action = "delivered" if delivered else "pending"
+        self.seller_office_request(
+            "POST",
+            f"/api_seller_office/v1/orders/batch/actions/deliveries/{action}",
+            json_body={"order_ids": [int(order_id)]},
+        )
+        try:
+            return self.order_delivery_status(order_id) or action
+        except Exception:
+            return action
+
 
 class FunPayClient:
     def __init__(self) -> None:
@@ -5715,6 +5737,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_funpay_boost_clear_errors()
             if path == "/api/m/send":
                 return self.api_m_send()
+            if path == "/api/m/deliver":
+                return self.api_m_deliver()
             if path == "/api/m/translate":
                 return self.api_m_translate()
             return self.send_html("Not found", "<div class='card bad'>Not found</div>", 404)
@@ -7247,12 +7271,24 @@ class Handler(BaseHTTPRequestHandler):
         buyer_name = name or "会员"
         options = self._mobile_order_options(platform, conv_id)
         verify = digiseller_order_verify_status(conv_id) if platform == "digiseller" else {"needs": False}
+        delivery = self._mobile_delivery_status(platform, conv_id)
         self.send_mobile_json({
             "ok": True, "platform": platform, "id": conv_id,
             "name": buyer_name, "product": clean_text(product),
             "target_lang": target_lang, "messages": messages,
-            "options": options, "verify": verify,
+            "options": options, "verify": verify, "delivery": delivery,
         })
+
+    def _mobile_delivery_status(self, platform: str, order_id: int) -> dict[str, Any]:
+        """Delivery toggle info for a conversation. Only GGSEL seller-office orders
+        support the "Product delivered" switch; other platforms report unsupported."""
+        if platform != "ggsel" or not ggsel_client.seller_office_configured():
+            return {"supported": False}
+        try:
+            status = ggsel_client.order_delivery_status(order_id)
+        except Exception:
+            return {"supported": True, "status": "", "delivered": False}
+        return {"supported": True, "status": status, "delivered": status == "delivered"}
 
     def _mobile_order_options(self, platform: str, order_id: int) -> list[dict[str, str]]:
         """Buyer-selected purchase options for a conversation, translated to zh."""
@@ -7321,6 +7357,26 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return self.send_mobile_json({"ok": False, "error": str(exc)}, 502)
         self.send_mobile_json({"ok": True, "platform": platform, "id": conv_id, "sent_text": message})
+
+    def api_m_deliver(self) -> None:
+        payload = self.read_json_body()
+        platform = clean_text(payload.get("platform"))
+        conv_id = int(payload.get("id") or 0)
+        delivered = bool(payload.get("delivered"))
+        if platform != "ggsel":
+            return self.send_mobile_json({"ok": False, "error": "仅 GGSEL 订单支持标记发货"}, 400)
+        if not conv_id:
+            return self.send_mobile_json({"ok": False, "error": "id is required"}, 400)
+        if not ggsel_client.seller_office_configured():
+            return self.send_mobile_json({"ok": False, "error": "GGSEL_SELLER_COOKIE 未配置，无法标记发货"}, 400)
+        try:
+            status = ggsel_client.set_order_delivered(conv_id, delivered)
+        except Exception as exc:
+            return self.send_mobile_json({"ok": False, "error": str(exc)}, 502)
+        self.send_mobile_json({
+            "ok": True, "platform": platform, "id": conv_id,
+            "status": status, "delivered": status == "delivered",
+        })
 
     def api_m_verify_code(self) -> None:
         code = self.q("code", "").strip()

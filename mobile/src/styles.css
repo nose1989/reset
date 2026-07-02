@@ -347,6 +347,65 @@ body {
   white-space: pre-wrap;
 }
 
+/* ---- delivery toggle ---- */
+.delivery-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 14px;
+}
+.delivery-bar.is-delivered {
+  background: #ecfdf3;
+  border-bottom-color: #c7ecd5;
+}
+.delivery-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.delivery-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #334155;
+}
+.delivery-state {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92600a;
+}
+.is-delivered .delivery-state {
+  background: #d1fae5;
+  color: #047857;
+}
+.delivery-btn {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 16px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.delivery-btn.undo {
+  background: #fff;
+  color: #047857;
+  border: 1px solid #86efac;
+}
+.delivery-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ---- verify code ---- */
 .verify-box {
   flex: 0 0 auto;

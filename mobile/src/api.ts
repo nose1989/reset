@@ -1,5 +1,6 @@
 import type {
   ConversationsResponse,
+  DeliverResponse,
   MessagesResponse,
   SendResponse,
   TranslateResponse,
@@ -78,4 +79,20 @@ export function sendReply(params: {
   target_lang: string;
 }): Promise<SendResponse> {
   return postJson<SendResponse>("/api/m/send", params);
+}
+
+// Mark a GGSEL order as delivered (or back to pending), mirroring the seller
+// panel's "Product delivered" toggle. Keep the JSON body on non-2xx so the
+// backend's error message can be surfaced to the user.
+export async function setDelivered(params: {
+  platform: string;
+  id: number;
+  delivered: boolean;
+}): Promise<DeliverResponse> {
+  const res = await fetch(`${API_BASE}/api/m/deliver`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return (await res.json()) as DeliverResponse;
 }

@@ -3,12 +3,18 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   fetchMessages,
   sendReply,
+  setDelivered,
   translateMessages,
   verifyCode,
 } from "../api";
 import { getCachedUnread, markCachedConversationRead } from "./ConversationList";
 import { decodeConvId } from "../convId";
-import type { Message, OrderOption, VerifyStatus } from "../types";
+import type {
+  DeliveryStatus,
+  Message,
+  OrderOption,
+  VerifyStatus,
+} from "../types";
 
 // Per-conversation cache of the loaded (and translated) messages. Survives
 // navigating back to the list and reopening. Reused instead of re-fetching when
@@ -19,7 +25,10 @@ type CachedConversation = {
   product: string;
   targetLang: string;
   options: OrderOption[];
+  delivery: DeliveryStatus;
 };
+
+const NO_DELIVERY: DeliveryStatus = { supported: false };
 const messageCache: Record<string, CachedConversation> = {};
 
 export default function Conversation() {
@@ -53,6 +62,10 @@ export default function Conversation() {
   const [options, setOptions] = useState<OrderOption[]>(
     canUseCache ? cached.options : [],
   );
+  const [delivery, setDelivery] = useState<DeliveryStatus>(
+    canUseCache ? cached.delivery : NO_DELIVERY,
+  );
+  const [delivering, setDelivering] = useState(false);
   const [showOptions, setShowOptions] = useState(true);
   const [loading, setLoading] = useState(!canUseCache);
   const [error, setError] = useState("");
@@ -125,6 +138,7 @@ export default function Conversation() {
       // Order options can come back empty on a transient/cold backend fetch.
       // Don't blank out options we already have in that case.
       if (data.options && data.options.length > 0) setOptions(data.options);
+      setDelivery(data.delivery || NO_DELIVERY);
       setVerify(data.verify || { needs: false });
       runTranslations(data.messages);
     } catch (e) {
@@ -149,9 +163,16 @@ export default function Conversation() {
   // (including translations that arrive after load), so the next open can reuse it.
   useEffect(() => {
     if (!loading) {
-      messageCache[cacheKey] = { messages, name, product, targetLang, options };
+      messageCache[cacheKey] = {
+        messages,
+        name,
+        product,
+        targetLang,
+        options,
+        delivery,
+      };
     }
-  }, [cacheKey, messages, name, product, targetLang, options, loading]);
+  }, [cacheKey, messages, name, product, targetLang, options, delivery, loading]);
 
   // Opening a chat marks it read on the backend, so drop its unread badge from
   // the cached list too — returning to the list won't show a stale red dot.
@@ -189,6 +210,27 @@ export default function Conversation() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSending(false);
+    }
+  };
+
+  const toggleDelivered = async () => {
+    if (delivering) return;
+    const next = !delivery.delivered;
+    setDelivering(true);
+    setError("");
+    try {
+      const data = await setDelivered({ platform, id: convId, delivered: next });
+      if (!data.ok) throw new Error(data.error || "操作失败");
+      setDelivery({
+        supported: true,
+        status: data.status,
+        delivered: !!data.delivered,
+      });
+      showToast(data.delivered ? "已标记发货" : "已改回待发货");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDelivering(false);
     }
   };
 
@@ -246,6 +288,28 @@ export default function Conversation() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {delivery.supported && (
+        <div className={`delivery-bar ${delivery.delivered ? "is-delivered" : ""}`}>
+          <div className="delivery-info">
+            <span className="delivery-title">发货状态</span>
+            <span className="delivery-state">
+              {delivery.delivered ? "已发货" : "待发货"}
+            </span>
+          </div>
+          <button
+            className={`delivery-btn ${delivery.delivered ? "undo" : ""}`}
+            onClick={toggleDelivered}
+            disabled={delivering}
+          >
+            {delivering
+              ? "处理中…"
+              : delivery.delivered
+                ? "改回待发货"
+                : "标记已发货"}
+          </button>
         </div>
       )}
 

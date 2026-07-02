@@ -60,6 +60,12 @@ export interface VerifyStatus {
   verified?: boolean;
 }
 
+export interface DeliveryStatus {
+  supported: boolean;
+  status?: string;
+  delivered?: boolean;
+}
+
 export interface MessagesResponse {
   ok: boolean;
   platform: string;
@@ -70,6 +76,16 @@ export interface MessagesResponse {
   messages: Message[];
   options?: OrderOption[];
   verify?: VerifyStatus;
+  delivery?: DeliveryStatus;
+  error?: string;
+}
+
+export interface DeliverResponse {
+  ok: boolean;
+  platform?: string;
+  id?: number;
+  status?: string;
+  delivered?: boolean;
   error?: string;
 }
 
