@@ -1854,7 +1854,7 @@ class GgselClient:
         return order if isinstance(order, dict) else {}
 
     def order_delivery_status(self, order_id: int) -> str:
-        """Current fulfillment state of a seller-office order: 'pending' / 'delivered'."""
+        """Current fulfillment state of a seller-office order: 'pending' / 'shipped'."""
         return clean_text(self.seller_office_order(order_id).get("delivery_status"))
 
     def set_order_delivered(self, order_id: int, delivered: bool) -> str:
@@ -1865,10 +1865,12 @@ class GgselClient:
             f"/api_seller_office/v1/orders/batch/actions/deliveries/{action}",
             json_body={"order_ids": [int(order_id)]},
         )
+        # The delivered action reports back as "shipped"; keep it as the fallback
+        # so the resolved boolean stays correct if the follow-up read fails.
         try:
-            return self.order_delivery_status(order_id) or action
+            return self.order_delivery_status(order_id) or ("shipped" if delivered else "pending")
         except Exception:
-            return action
+            return "shipped" if delivered else "pending"
 
 
 class FunPayClient:
@@ -3553,6 +3555,12 @@ def ggsel_chat_order_id(chat: dict[str, Any]) -> int:
 
 def ggsel_chat_last_date(chat: dict[str, Any]) -> Any:
     return chat.get("last_message") or chat.get("date")
+
+
+def ggsel_delivery_is_delivered(status: Any) -> bool:
+    """A seller-office order counts as delivered once its delivery_status leaves
+    'pending' (the delivered action reports back as 'shipped')."""
+    return clean_text(status).lower() not in ("", "pending")
 
 
 def unread_summary() -> dict[str, Any]:
@@ -7288,7 +7296,7 @@ class Handler(BaseHTTPRequestHandler):
             status = ggsel_client.order_delivery_status(order_id)
         except Exception:
             return {"supported": True, "status": "", "delivered": False}
-        return {"supported": True, "status": status, "delivered": status == "delivered"}
+        return {"supported": True, "status": status, "delivered": ggsel_delivery_is_delivered(status)}
 
     def _mobile_order_options(self, platform: str, order_id: int) -> list[dict[str, str]]:
         """Buyer-selected purchase options for a conversation, translated to zh."""
@@ -7375,7 +7383,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_mobile_json({"ok": False, "error": str(exc)}, 502)
         self.send_mobile_json({
             "ok": True, "platform": platform, "id": conv_id,
-            "status": status, "delivered": status == "delivered",
+            "status": status, "delivered": ggsel_delivery_is_delivered(status),
         })
 
     def api_m_verify_code(self) -> None:
