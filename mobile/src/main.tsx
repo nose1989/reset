@@ -20,7 +20,7 @@ startNewMessageWatcher();
 
 const router = createBrowserRouter([
   { path: "/", element: <ConversationList /> },
-  { path: "/c/:platform/:id", element: <Conversation /> },
+  { path: "/c/:cid", element: <Conversation /> },
   { path: "*", element: <Navigate to="/" replace /> },
 ]);
 

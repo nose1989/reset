@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { fetchMessages, sendReply, translateMessages } from "../api";
 import { getCachedUnread, markCachedConversationRead } from "./ConversationList";
+import { decodeConvId } from "../convId";
 import type { Message, OrderOption } from "../types";
 
 // Per-conversation cache of the loaded (and translated) messages. Survives
@@ -17,9 +18,14 @@ type CachedConversation = {
 const messageCache: Record<string, CachedConversation> = {};
 
 export default function Conversation() {
-  const { platform = "", id = "0" } = useParams();
+  const { cid = "" } = useParams();
+  const { platform, id } = decodeConvId(cid);
   const convId = Number(id);
-  const [search] = useSearchParams();
+  const hints = (useLocation().state || {}) as {
+    name?: string;
+    product?: string;
+    email?: string;
+  };
   const navigate = useNavigate();
 
   const cacheKey = `${platform}:${convId}`;
@@ -31,10 +37,10 @@ export default function Conversation() {
     canUseCache ? cached.messages : [],
   );
   const [name, setName] = useState(
-    canUseCache ? cached.name : search.get("name") || "会员",
+    canUseCache ? cached.name : hints.name || "会员",
   );
   const [product, setProduct] = useState(
-    canUseCache ? cached.product : search.get("product") || "",
+    canUseCache ? cached.product : hints.product || "",
   );
   const [targetLang, setTargetLang] = useState(
     canUseCache ? cached.targetLang : "en",
@@ -77,9 +83,9 @@ export default function Conversation() {
       const data = await fetchMessages({
         platform,
         id: convId,
-        name: search.get("name") || undefined,
-        product: search.get("product") || undefined,
-        email: search.get("email") || undefined,
+        name: hints.name || undefined,
+        product: hints.product || undefined,
+        email: hints.email || undefined,
       });
       if (!data.ok) throw new Error(data.error || "加载失败");
       setMessages(data.messages);
@@ -95,7 +101,7 @@ export default function Conversation() {
     } finally {
       setLoading(false);
     }
-  }, [platform, convId, search, runTranslations]);
+  }, [platform, convId, hints, runTranslations]);
 
   useEffect(() => {
     // No new messages for this chat → reuse the cached thread, skip the request.

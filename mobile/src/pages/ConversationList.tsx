@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { useNavigate } from "react-router-dom";
 import { fetchConversations, resolveBackendUrl } from "../api";
 import type { Avatar, Conversation } from "../types";
+import { encodeConvId } from "../convId";
 
 // Kept outside the component so it survives unmount when navigating into a
 // conversation and back. Lets us return to the list without re-fetching (no
@@ -131,12 +132,9 @@ export default function ConversationList() {
 
   const open = (c: Conversation) => {
     rememberScroll();
-    const query = new URLSearchParams({
-      name: c.name,
-      product: c.product,
-      email: c.email,
+    navigate(`/c/${encodeConvId(c.platform, c.id)}`, {
+      state: { name: c.name, product: c.product, email: c.email },
     });
-    navigate(`/c/${c.platform}/${c.id}?${query.toString()}`);
   };
 
   return (
