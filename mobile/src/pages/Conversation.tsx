@@ -56,6 +56,19 @@ export default function Conversation() {
   const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
 
   const bottomRef = useRef<HTMLDivElement>(null);
+  const msgsRef = useRef<HTMLDivElement>(null);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+
+  const updateScrollDown = useCallback(() => {
+    const el = msgsRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowScrollDown(distanceFromBottom > 200);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, []);
 
   const runTranslations = useCallback(async (list: Message[]) => {
     const pending = list.filter((m) => m.translate && !m.translated && m.text);
@@ -130,7 +143,8 @@ export default function Conversation() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [messages]);
+    updateScrollDown();
+  }, [messages, updateScrollDown]);
 
   const submit = async () => {
     const text = reply.trim();
@@ -194,7 +208,7 @@ export default function Conversation() {
         </div>
       )}
 
-      <div className="msgs">
+      <div className="msgs" ref={msgsRef} onScroll={updateScrollDown}>
         {loading ? (
           <div className="empty">加载中…</div>
         ) : messages.length === 0 ? (
@@ -239,6 +253,16 @@ export default function Conversation() {
         )}
         <div ref={bottomRef} />
       </div>
+
+      {showScrollDown && (
+        <button
+          className="scroll-down-btn"
+          onClick={scrollToBottom}
+          aria-label="滚动到底部"
+        >
+          ↓
+        </button>
+      )}
 
       <div className="composer">
         <textarea

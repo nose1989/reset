@@ -27,6 +27,7 @@ body {
 }
 
 .app {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100dvh;
@@ -428,6 +429,29 @@ body {
   color: inherit;
   text-decoration: underline;
   font-weight: 700;
+}
+
+/* ---- scroll to bottom ---- */
+.scroll-down-btn {
+  position: absolute;
+  right: 16px;
+  bottom: calc(74px + env(safe-area-inset-bottom));
+  z-index: 40;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--brand);
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: toast-in 0.18s ease-out;
 }
 
 /* ---- composer ---- */
