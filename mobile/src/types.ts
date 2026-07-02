@@ -49,6 +49,11 @@ export interface Message {
   attachment?: Attachment;
 }
 
+export interface OrderOption {
+  name: string;
+  value: string;
+}
+
 export interface MessagesResponse {
   ok: boolean;
   platform: string;
@@ -57,6 +62,7 @@ export interface MessagesResponse {
   product: string;
   target_lang: string;
   messages: Message[];
+  options?: OrderOption[];
   error?: string;
 }
 

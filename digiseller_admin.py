@@ -7177,11 +7177,32 @@ class Handler(BaseHTTPRequestHandler):
                 entry["text"] = seller_bubble_text(text)
             messages.append(entry)
         buyer_name = name or "会员"
+        options = self._mobile_order_options(platform, conv_id)
         self.send_mobile_json({
             "ok": True, "platform": platform, "id": conv_id,
             "name": buyer_name, "product": clean_text(product),
             "target_lang": target_lang, "messages": messages,
+            "options": options,
         })
+
+    def _mobile_order_options(self, platform: str, order_id: int) -> list[dict[str, str]]:
+        """Buyer-selected purchase options for a conversation, translated to zh."""
+        try:
+            if platform == "ggsel":
+                raw = purchase_options_from_info(cached_ggsel_order_info(order_id))
+            elif platform == "funpay":
+                raw = []
+            else:
+                raw = purchase_options_from_info(cached_purchase_info(order_id))
+        except Exception:
+            raw = []
+        options: list[dict[str, str]] = []
+        for name, value in raw:
+            options.append({
+                "name": translate_option_text(name),
+                "value": translate_option_text(value),
+            })
+        return options
 
     def api_m_translate(self) -> None:
         payload = self.read_json_body()

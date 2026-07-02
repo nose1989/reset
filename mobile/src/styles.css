@@ -241,6 +241,64 @@ body {
   font-weight: 700;
 }
 
+/* ---- order options ---- */
+.order-options {
+  flex: 0 0 auto;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+}
+.order-options-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #f8fbff;
+  border: 0;
+  border-bottom: 1px solid #eef2f7;
+  cursor: pointer;
+}
+.order-options-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f3b66;
+}
+.order-options-toggle {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--brand);
+}
+.order-options-body {
+  max-height: 40vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 6px 14px 10px;
+}
+.order-option {
+  display: flex;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed #eef2f7;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.order-option:last-child {
+  border-bottom: 0;
+}
+.order-option-name {
+  flex: 0 0 38%;
+  color: #64748b;
+  font-weight: 700;
+  word-break: break-word;
+}
+.order-option-value {
+  flex: 1 1 auto;
+  color: var(--text);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
 /* ---- messages ---- */
 .msgs {
   flex: 1 1 auto;

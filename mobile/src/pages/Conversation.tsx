@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { fetchMessages, sendReply, translateMessages } from "../api";
 import { getCachedUnread, markCachedConversationRead } from "./ConversationList";
-import type { Message } from "../types";
+import type { Message, OrderOption } from "../types";
 
 // Per-conversation cache of the loaded (and translated) messages. Survives
 // navigating back to the list and reopening. Reused instead of re-fetching when
@@ -12,6 +12,7 @@ type CachedConversation = {
   name: string;
   product: string;
   targetLang: string;
+  options: OrderOption[];
 };
 const messageCache: Record<string, CachedConversation> = {};
 
@@ -38,6 +39,10 @@ export default function Conversation() {
   const [targetLang, setTargetLang] = useState(
     canUseCache ? cached.targetLang : "en",
   );
+  const [options, setOptions] = useState<OrderOption[]>(
+    canUseCache ? cached.options : [],
+  );
+  const [showOptions, setShowOptions] = useState(true);
   const [loading, setLoading] = useState(!canUseCache);
   const [error, setError] = useState("");
   const [reply, setReply] = useState("");
@@ -81,6 +86,7 @@ export default function Conversation() {
       if (data.name) setName(data.name);
       setProduct(data.product);
       setTargetLang(data.target_lang || "en");
+      setOptions(data.options || []);
       runTranslations(data.messages);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -104,9 +110,9 @@ export default function Conversation() {
   // (including translations that arrive after load), so the next open can reuse it.
   useEffect(() => {
     if (!loading) {
-      messageCache[cacheKey] = { messages, name, product, targetLang };
+      messageCache[cacheKey] = { messages, name, product, targetLang, options };
     }
-  }, [cacheKey, messages, name, product, targetLang, loading]);
+  }, [cacheKey, messages, name, product, targetLang, options, loading]);
 
   // Opening a chat marks it read on the backend, so drop its unread badge from
   // the cached list too — returning to the list won't show a stale red dot.
@@ -156,6 +162,29 @@ export default function Conversation() {
       </header>
 
       {error && <div className="banner error">{error}</div>}
+
+      {options.length > 0 && (
+        <div className="order-options">
+          <button
+            className="order-options-head"
+            onClick={() => setShowOptions((v) => !v)}
+            aria-expanded={showOptions}
+          >
+            <span className="order-options-title">购买选项（{options.length}）</span>
+            <span className="order-options-toggle">{showOptions ? "收起" : "展开"}</span>
+          </button>
+          {showOptions && (
+            <div className="order-options-body">
+              {options.map((o, i) => (
+                <div className="order-option" key={`${o.name}-${i}`}>
+                  <span className="order-option-name">{o.name}</span>
+                  <span className="order-option-value">{o.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="msgs">
         {loading ? (
