@@ -8,12 +8,7 @@ import {
 } from "../api";
 import { getCachedUnread, markCachedConversationRead } from "./ConversationList";
 import { decodeConvId } from "../convId";
-import type {
-  Message,
-  OrderOption,
-  VerifyCodeItem,
-  VerifyStatus,
-} from "../types";
+import type { Message, OrderOption, VerifyStatus } from "../types";
 
 // Per-conversation cache of the loaded (and translated) messages. Survives
 // navigating back to the list and reopening. Reused instead of re-fetching when
@@ -68,7 +63,8 @@ export default function Conversation() {
   const [code, setCode] = useState("");
   const [verifying, setVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState("");
-  const [verifyResult, setVerifyResult] = useState<VerifyCodeItem | null>(null);
+  const [toast, setToast] = useState("");
+  const toastTimer = useRef<number | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const msgsRef = useRef<HTMLDivElement>(null);
@@ -83,6 +79,12 @@ export default function Conversation() {
 
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, []);
+
+  const showToast = useCallback((text: string) => {
+    setToast(text);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(""), 2000);
   }, []);
 
   const runTranslations = useCallback(async (list: Message[]) => {
@@ -162,6 +164,12 @@ export default function Conversation() {
     updateScrollDown();
   }, [messages, updateScrollDown]);
 
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    };
+  }, []);
+
   const submit = async () => {
     const text = reply.trim();
     if (!text || sending) return;
@@ -189,11 +197,10 @@ export default function Conversation() {
     if (!value || verifying) return;
     setVerifying(true);
     setVerifyError("");
-    setVerifyResult(null);
     try {
       const data = await verifyCode(value);
       if (!data.ok || !data.item) throw new Error(data.error || "验证失败");
-      setVerifyResult(data.item);
+      showToast("验证成功");
     } catch (e) {
       setVerifyError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -203,6 +210,7 @@ export default function Conversation() {
 
   return (
     <div className="app">
+      {toast && <div className="toast">{toast}</div>}
       <header className="topbar">
         <button className="icon-btn" onClick={() => navigate("/")} aria-label="返回">
           ‹
@@ -271,36 +279,6 @@ export default function Conversation() {
             </button>
           </div>
           {verifyError && <div className="verify-error">{verifyError}</div>}
-          {verifyResult && (
-            <div className="verify-result">
-              <div className="verify-row">
-                <span>状态</span>
-                <span>{verifyResult.state_label || "-"}</span>
-              </div>
-              <div className="verify-row">
-                <span>订单</span>
-                <span>{verifyResult.invoice || "-"}</span>
-              </div>
-              <div className="verify-row">
-                <span>商品</span>
-                <span>{verifyResult.product_name || "-"}</span>
-              </div>
-              <div className="verify-row">
-                <span>金额</span>
-                <span>
-                  {[verifyResult.amount, verifyResult.currency]
-                    .filter(Boolean)
-                    .join(" ") || "-"}
-                </span>
-              </div>
-              {verifyResult.email && (
-                <div className="verify-row">
-                  <span>买家</span>
-                  <span>{verifyResult.email}</span>
-                </div>
-              )}
-            </div>
-          )}
         </div>
       )}
 
