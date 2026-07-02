@@ -1347,6 +1347,27 @@ class GgselClient:
         data = self.get("/debates/v2/chats", params)
         return data if isinstance(data, dict) else {"items": data}
 
+    def all_chats(self, only_unread: bool = False, page_size: int = 100, max_pages: int = 20) -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        seen_ids: set[Any] = set()
+        for page in range(1, max_pages + 1):
+            data = self.chats(page_size=page_size, page=page, only_unread=only_unread)
+            items = [item for item in (data.get("items") or data.get("chats") or []) if isinstance(item, dict)]
+            if not items:
+                break
+            added = 0
+            for item in items:
+                key = item.get("id_i")
+                if key is not None and key in seen_ids:
+                    continue
+                if key is not None:
+                    seen_ids.add(key)
+                collected.append(item)
+                added += 1
+            if len(items) < page_size or added == 0:
+                break
+        return collected
+
     def mark_chat_read(self, order_id: int) -> None:
         self.post("/debates/v2/seen", params={"id_i": order_id})
 
@@ -7040,8 +7061,7 @@ class Handler(BaseHTTPRequestHandler):
             errors.append(str(exc))
         try:
             if ggsel_client.configured():
-                data = ggsel_client.chats(page_size=50)
-                for chat in list(data.get("items") or data.get("chats") or []):
+                for chat in ggsel_client.all_chats():
                     if not is_recent_time(ggsel_chat_last_date(chat), RECENT_CHAT_DAYS):
                         continue
                     order_id = ggsel_chat_order_id(chat)
@@ -7087,7 +7107,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             errors.append(str(exc))
         entries.sort(key=lambda item: item[0], reverse=True)
-        conversations = [item for _, item in entries][:50]
+        conversations = [item for _, item in entries]
         unread_total = sum(int(c.get("unread") or 0) for c in conversations)
         self.send_mobile_json({"ok": True, "conversations": conversations, "unread_total": unread_total, "errors": errors})
 
@@ -7228,8 +7248,7 @@ class Handler(BaseHTTPRequestHandler):
             guest_error = str(exc)
         ggsel_error = ""
         try:
-            ggsel_data = ggsel_client.chats(page_size=50) if ggsel_client.configured() else {}
-            ggsel_chats = list(ggsel_data.get("items") or ggsel_data.get("chats") or [])
+            ggsel_chats = ggsel_client.all_chats() if ggsel_client.configured() else []
         except Exception as exc:
             ggsel_chats = []
             ggsel_error = str(exc)
