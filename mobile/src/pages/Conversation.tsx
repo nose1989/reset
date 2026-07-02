@@ -86,7 +86,9 @@ export default function Conversation() {
       if (data.name) setName(data.name);
       setProduct(data.product);
       setTargetLang(data.target_lang || "en");
-      setOptions(data.options || []);
+      // Order options can come back empty on a transient/cold backend fetch.
+      // Don't blank out options we already have in that case.
+      if (data.options && data.options.length > 0) setOptions(data.options);
       runTranslations(data.messages);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
