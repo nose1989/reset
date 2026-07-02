@@ -347,6 +347,99 @@ body {
   white-space: pre-wrap;
 }
 
+/* ---- verify code ---- */
+.verify-box {
+  flex: 0 0 auto;
+  background: #fff8ed;
+  border-bottom: 1px solid #f2e2c4;
+  padding: 10px 14px 12px;
+}
+.verify-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.verify-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #92600a;
+}
+.verify-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: #92600a;
+  background: #fdecc8;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.verify-form {
+  display: flex;
+  gap: 8px;
+}
+.verify-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid #e2c996;
+  border-radius: 10px;
+  padding: 9px 12px;
+  font: 15px/1.4 inherit;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  background: #fff;
+}
+.verify-btn {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 10px;
+  padding: 0 18px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.verify-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.verify-error {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #b91c1c;
+}
+.verify-result {
+  margin-top: 10px;
+  background: #fff;
+  border: 1px solid #f2e2c4;
+  border-radius: 10px;
+  padding: 4px 12px;
+}
+.verify-row {
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px dashed #f2e2c4;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.verify-row:last-child {
+  border-bottom: 0;
+}
+.verify-row > span:first-child {
+  flex: 0 0 56px;
+  color: #92600a;
+  font-weight: 700;
+}
+.verify-row > span:last-child {
+  flex: 1 1 auto;
+  color: var(--text);
+  word-break: break-word;
+}
+
 /* ---- messages ---- */
 .msgs {
   flex: 1 1 auto;

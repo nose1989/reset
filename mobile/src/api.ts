@@ -3,6 +3,7 @@ import type {
   MessagesResponse,
   SendResponse,
   TranslateResponse,
+  VerifyCodeResponse,
 } from "./types";
 
 // Base URL of the PC admin backend. Empty by default so requests hit the same
@@ -52,6 +53,16 @@ export function fetchMessages(params: {
   if (params.product) query.set("product", params.product);
   if (params.email) query.set("email", params.email);
   return getJson<MessagesResponse>(`/api/m/messages?${query.toString()}`);
+}
+
+export async function verifyCode(code: string): Promise<VerifyCodeResponse> {
+  // Unlike getJson, keep the JSON body on non-2xx so the backend's error
+  // message (invalid format / not found) can be shown to the user.
+  const res = await fetch(
+    `${API_BASE}/api/m/verify_code?code=${encodeURIComponent(code)}`,
+    { cache: "no-store" },
+  );
+  return (await res.json()) as VerifyCodeResponse;
 }
 
 export function translateMessages(

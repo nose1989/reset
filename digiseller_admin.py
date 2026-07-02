@@ -2521,6 +2521,7 @@ funpay_client = FunPayClient()
 UNREAD_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 SALES_ORDER_BADGE_CACHE: dict[str, Any] = {"time": 0.0, "data": None}
 PURCHASE_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
+DIGISELLER_PRODUCT_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
 GGSEL_ORDER_INFO_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
 GGSEL_PRODUCT_TITLE_CACHE: dict[str, tuple[float, str]] = {}
 ONLINE_KEEPALIVE_STATUS: dict[str, Any] = {
@@ -3338,6 +3339,20 @@ def unique_code_label(state: Any) -> str:
         return str(state or "unknown")
 
 
+def unique_code_label_zh(state: Any) -> str:
+    labels = {
+        1: "未核验",
+        2: "已发货，等待买家确认",
+        3: "发货已确认",
+        4: "发货被驳回",
+        5: "已核验，尚未发货",
+    }
+    try:
+        return labels.get(int(state), str(state or "未知"))
+    except (TypeError, ValueError):
+        return str(state or "未知")
+
+
 def bool_value(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -4006,6 +4021,48 @@ def cached_purchase_info(order_id: int) -> dict[str, Any]:
         info = {}
     PURCHASE_INFO_CACHE[order_id] = (now, info)
     return info
+
+
+def cached_digiseller_product(product_id: int) -> dict[str, Any]:
+    if not product_id:
+        return {}
+    now = time.time()
+    cached = DIGISELLER_PRODUCT_CACHE.get(product_id)
+    if cached and now - cached[0] < 3600:
+        return cached[1]
+    product: dict[str, Any] = {}
+    try:
+        data = client.product(int(product_id))
+        product = data.get("product", data) if isinstance(data, dict) else {}
+    except Exception:
+        product = {}
+    if not isinstance(product, dict):
+        product = {}
+    DIGISELLER_PRODUCT_CACHE[product_id] = (now, product)
+    return product
+
+
+def digiseller_order_verify_status(order_id: int) -> dict[str, Any]:
+    """Whether a Digiseller order is manual-delivery (buyer must give a 16-digit
+    unique code before we deliver) and, if known, the current code state."""
+    if not order_id:
+        return {"needs": False}
+    try:
+        info = cached_purchase_info(order_id)
+    except Exception:
+        return {"needs": False}
+    needs = False
+    item_id = info.get("item_id")
+    if item_id:
+        try:
+            _, css_class = delivery_mode(cached_digiseller_product(int(item_id)))
+            needs = css_class == "bad"
+        except Exception:
+            needs = False
+    state = info.get("unique_code_state")
+    if isinstance(state, dict) and state.get("state") is not None:
+        return {"needs": True, "state": unique_code_label_zh(state.get("state"))}
+    return {"needs": needs}
 
 
 def order_options_block_html(options: list[tuple[str, str]]) -> str:
@@ -5610,6 +5667,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_m_conversations()
             if path == "/api/m/messages":
                 return self.api_m_messages()
+            if path == "/api/m/verify_code":
+                return self.api_m_verify_code()
             if path.startswith("/downloads/"):
                 return self.serve_download(path)
             if path.startswith("/phrase-files/"):
@@ -7178,11 +7237,12 @@ class Handler(BaseHTTPRequestHandler):
             messages.append(entry)
         buyer_name = name or "会员"
         options = self._mobile_order_options(platform, conv_id)
+        verify = digiseller_order_verify_status(conv_id) if platform == "digiseller" else {"needs": False}
         self.send_mobile_json({
             "ok": True, "platform": platform, "id": conv_id,
             "name": buyer_name, "product": clean_text(product),
             "target_lang": target_lang, "messages": messages,
-            "options": options,
+            "options": options, "verify": verify,
         })
 
     def _mobile_order_options(self, platform: str, order_id: int) -> list[dict[str, str]]:
@@ -7252,6 +7312,18 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return self.send_mobile_json({"ok": False, "error": str(exc)}, 502)
         self.send_mobile_json({"ok": True, "platform": platform, "id": conv_id, "sent_text": message})
+
+    def api_m_verify_code(self) -> None:
+        code = self.q("code", "").strip()
+        if not valid_unique_code(code):
+            return self.send_mobile_json({"ok": False, "error": "验证码必须是 16 位字母或数字"}, 400)
+        try:
+            item = unique_code_lookup(code)
+        except Exception as exc:
+            return self.send_mobile_json({"ok": False, "error": str(exc)}, 404)
+        result = {k: v for k, v in item.items() if k != "raw"}
+        result["state_label"] = unique_code_label_zh(item.get("state"))
+        self.send_mobile_json({"ok": True, "item": result})
 
     def chats(self) -> None:
         chat_error = ""

@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { fetchMessages, sendReply, translateMessages } from "../api";
+import {
+  fetchMessages,
+  sendReply,
+  translateMessages,
+  verifyCode,
+} from "../api";
 import { getCachedUnread, markCachedConversationRead } from "./ConversationList";
 import { decodeConvId } from "../convId";
-import type { Message, OrderOption } from "../types";
+import type {
+  Message,
+  OrderOption,
+  VerifyCodeItem,
+  VerifyStatus,
+} from "../types";
 
 // Per-conversation cache of the loaded (and translated) messages. Survives
 // navigating back to the list and reopening. Reused instead of re-fetching when
@@ -54,6 +64,11 @@ export default function Conversation() {
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
   const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
+  const [verify, setVerify] = useState<VerifyStatus>({ needs: false });
+  const [code, setCode] = useState("");
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState("");
+  const [verifyResult, setVerifyResult] = useState<VerifyCodeItem | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const msgsRef = useRef<HTMLDivElement>(null);
@@ -108,6 +123,7 @@ export default function Conversation() {
       // Order options can come back empty on a transient/cold backend fetch.
       // Don't blank out options we already have in that case.
       if (data.options && data.options.length > 0) setOptions(data.options);
+      setVerify(data.verify || { needs: false });
       runTranslations(data.messages);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -168,6 +184,23 @@ export default function Conversation() {
     }
   };
 
+  const submitCode = async () => {
+    const value = code.trim();
+    if (!value || verifying) return;
+    setVerifying(true);
+    setVerifyError("");
+    setVerifyResult(null);
+    try {
+      const data = await verifyCode(value);
+      if (!data.ok || !data.item) throw new Error(data.error || "验证失败");
+      setVerifyResult(data.item);
+    } catch (e) {
+      setVerifyError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setVerifying(false);
+    }
+  };
+
   return (
     <div className="app">
       <header className="topbar">
@@ -203,6 +236,69 @@ export default function Conversation() {
                   <span className="order-option-value">{o.value}</span>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {verify.needs && (
+        <div className="verify-box">
+          <div className="verify-head">
+            <span className="verify-title">手动发货 · 需买家 16 位验证码</span>
+            {verify.state && <span className="verify-state">{verify.state}</span>}
+          </div>
+          <div className="verify-form">
+            <input
+              className="verify-input"
+              value={code}
+              onChange={(e) =>
+                setCode(
+                  e.target.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 16),
+                )
+              }
+              placeholder="粘贴买家提供的 16 位码"
+              maxLength={16}
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            <button
+              className="verify-btn"
+              onClick={submitCode}
+              disabled={verifying || code.trim().length !== 16}
+            >
+              {verifying ? "验证中…" : "验证"}
+            </button>
+          </div>
+          {verifyError && <div className="verify-error">{verifyError}</div>}
+          {verifyResult && (
+            <div className="verify-result">
+              <div className="verify-row">
+                <span>状态</span>
+                <span>{verifyResult.state_label || "-"}</span>
+              </div>
+              <div className="verify-row">
+                <span>订单</span>
+                <span>{verifyResult.invoice || "-"}</span>
+              </div>
+              <div className="verify-row">
+                <span>商品</span>
+                <span>{verifyResult.product_name || "-"}</span>
+              </div>
+              <div className="verify-row">
+                <span>金额</span>
+                <span>
+                  {[verifyResult.amount, verifyResult.currency]
+                    .filter(Boolean)
+                    .join(" ") || "-"}
+                </span>
+              </div>
+              {verifyResult.email && (
+                <div className="verify-row">
+                  <span>买家</span>
+                  <span>{verifyResult.email}</span>
+                </div>
+              )}
             </div>
           )}
         </div>

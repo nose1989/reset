@@ -54,6 +54,11 @@ export interface OrderOption {
   value: string;
 }
 
+export interface VerifyStatus {
+  needs: boolean;
+  state?: string;
+}
+
 export interface MessagesResponse {
   ok: boolean;
   platform: string;
@@ -63,6 +68,26 @@ export interface MessagesResponse {
   target_lang: string;
   messages: Message[];
   options?: OrderOption[];
+  verify?: VerifyStatus;
+  error?: string;
+}
+
+export interface VerifyCodeItem {
+  code: string;
+  invoice?: number | string;
+  product_name?: string;
+  product_id?: number | string;
+  amount?: number | string;
+  currency?: string;
+  date_pay?: string;
+  email?: string;
+  state?: number | string;
+  state_label?: string;
+}
+
+export interface VerifyCodeResponse {
+  ok: boolean;
+  item?: VerifyCodeItem;
   error?: string;
 }
 
