@@ -255,30 +255,34 @@ export default function Conversation() {
             <span className="verify-title">手动发货 · 需买家 16 位验证码</span>
             {verify.state && <span className="verify-state">{verify.state}</span>}
           </div>
-          <div className="verify-form">
-            <input
-              className="verify-input"
-              value={code}
-              onChange={(e) =>
-                setCode(
-                  e.target.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 16),
-                )
-              }
-              placeholder="粘贴买家提供的 16 位码"
-              maxLength={16}
-              autoCapitalize="characters"
-              autoCorrect="off"
-              spellCheck={false}
-            />
-            <button
-              className="verify-btn"
-              onClick={submitCode}
-              disabled={verifying || code.trim().length !== 16}
-            >
-              {verifying ? "验证中…" : "验证"}
-            </button>
-          </div>
-          {verifyError && <div className="verify-error">{verifyError}</div>}
+          {!verify.verified && (
+            <>
+              <div className="verify-form">
+                <input
+                  className="verify-input"
+                  value={code}
+                  onChange={(e) =>
+                    setCode(
+                      e.target.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 16),
+                    )
+                  }
+                  placeholder="粘贴买家提供的 16 位码"
+                  maxLength={16}
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+                <button
+                  className="verify-btn"
+                  onClick={submitCode}
+                  disabled={verifying || code.trim().length !== 16}
+                >
+                  {verifying ? "验证中…" : "验证"}
+                </button>
+              </div>
+              {verifyError && <div className="verify-error">{verifyError}</div>}
+            </>
+          )}
         </div>
       )}
 

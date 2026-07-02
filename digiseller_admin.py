@@ -4061,8 +4061,17 @@ def digiseller_order_verify_status(order_id: int) -> dict[str, Any]:
             needs = False
     state = info.get("unique_code_state")
     if isinstance(state, dict) and state.get("state") is not None:
-        return {"needs": True, "state": unique_code_label_zh(state.get("state"))}
-    return {"needs": needs}
+        try:
+            code_state = int(state.get("state"))
+        except (TypeError, ValueError):
+            code_state = 0
+        verified = code_state in (2, 3, 5)
+        return {
+            "needs": True,
+            "state": unique_code_label_zh(code_state),
+            "verified": verified,
+        }
+    return {"needs": needs, "verified": False}
 
 
 def order_options_block_html(options: list[tuple[str, str]]) -> str:

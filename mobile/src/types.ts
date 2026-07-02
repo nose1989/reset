@@ -57,6 +57,7 @@ export interface OrderOption {
 export interface VerifyStatus {
   needs: boolean;
   state?: string;
+  verified?: boolean;
 }
 
 export interface MessagesResponse {
