@@ -1256,8 +1256,9 @@ class GgselClient:
         self.api_base = os.getenv("GGSEL_API_BASE", "https://seller.ggsel.com/api_sellers/api").strip().rstrip("/")
         self.seller_cookie = os.getenv("GGSEL_SELLER_COOKIE", os.getenv("GGSEL_COOKIE", "")).strip()
         self.seller_office_base = os.getenv("GGSEL_SELLER_OFFICE_BASE", "https://seller.ggsel.com").strip().rstrip("/")
-        default_seller_office_api_base = self.seller_office_base if self.seller_office_base.endswith("/api") else self.seller_office_base + "/api"
-        self.seller_office_api_base = os.getenv("GGSEL_SELLER_OFFICE_API_BASE", default_seller_office_api_base).strip().rstrip("/")
+        # Seller-office routes live under <origin>/api/v1/... behind the seller
+        # panel proxy, so the API base is just the origin (paths already carry /api).
+        self.seller_office_api_base = os.getenv("GGSEL_SELLER_OFFICE_API_BASE", self.seller_office_base).strip().rstrip("/")
         self.http = httpx.Client(timeout=35, headers={"Accept": "application/json", "User-Agent": "Digiseller Local Admin"})
         self._token: str | None = None
         self.valid_thru: str | None = None
@@ -1849,7 +1850,7 @@ class GgselClient:
         self.seller_office_delete(f"/api_seller_office/v1/offers/{offer_id}/products/{product_id}")
 
     def seller_office_order(self, order_id: int) -> dict[str, Any]:
-        data = self.seller_office_get(f"/api_seller_office/v1/orders/{int(order_id)}")
+        data = self.seller_office_get(f"/api/v1/orders/{int(order_id)}")
         order = data.get("data") if isinstance(data, dict) else None
         return order if isinstance(order, dict) else {}
 
@@ -1862,7 +1863,7 @@ class GgselClient:
         action = "delivered" if delivered else "pending"
         self.seller_office_request(
             "POST",
-            f"/api_seller_office/v1/orders/batch/actions/deliveries/{action}",
+            f"/api/v1/orders/batch/actions/deliveries/{action}",
             json_body={"order_ids": [int(order_id)]},
         )
         # The delivered action reports back as "shipped"; keep it as the fallback
