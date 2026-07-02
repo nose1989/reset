@@ -7395,13 +7395,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"<div class='preview'>{h(short(name + ': ' + preview, 70))}</div></div>"
                 f"<div class='conversation-time' title='{h(sort_when)}'>{h(short_when)}{badge}</div></a>"
             ))
-        CHATS_LIST_LIMIT = 30
-        ordered_conversations = [html for _, html in sorted(order_items, key=lambda item: item[0], reverse=True)]
-        shown_conversations = ordered_conversations[:CHATS_LIST_LIMIT]
-        for html in ordered_conversations[CHATS_LIST_LIMIT:]:
-            if "conversation-item active" in html:
-                shown_conversations.append(html)
-        items.extend(shown_conversations)
+        items.extend(html for _, html in sorted(order_items, key=lambda item: item[0], reverse=True))
 
         if selected_kind == "order" and selected_order and selected_chat is None:
             fallback_email = self.q("email", f"order-{selected_order}")
