@@ -74,22 +74,44 @@ export default function ConversationList() {
   const [unreadTotal, setUnreadTotal] = useState(listCache.unreadTotal);
   const [loading, setLoading] = useState(!listCache.loaded);
   const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [toast, setToast] = useState("");
+  const toastTimer = useRef<number | null>(null);
 
-  const load = useCallback(async () => {
-    setError("");
-    try {
-      const data = await fetchConversations();
-      if (!data.ok) throw new Error(data.error || "加载失败");
-      setItems(data.conversations);
-      setUnreadTotal(data.unread_total);
-      listCache.items = data.conversations;
-      listCache.unreadTotal = data.unread_total;
-      listCache.loaded = true;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
+  const showToast = useCallback((text: string) => {
+    setToast(text);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(""), 2000);
+  }, []);
+
+  const load = useCallback(
+    async (notify = false) => {
+      setError("");
+      if (notify) setRefreshing(true);
+      try {
+        const data = await fetchConversations();
+        if (!data.ok) throw new Error(data.error || "加载失败");
+        setItems(data.conversations);
+        setUnreadTotal(data.unread_total);
+        listCache.items = data.conversations;
+        listCache.unreadTotal = data.unread_total;
+        listCache.loaded = true;
+        if (notify) showToast("数据加载完成");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        if (notify) showToast("加载失败");
+      } finally {
+        setLoading(false);
+        if (notify) setRefreshing(false);
+      }
+    },
+    [showToast],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    };
   }, []);
 
   // Only fetch on first visit. On return from a conversation we reuse the cache
@@ -124,10 +146,17 @@ export default function ConversationList() {
         <div className="topbar-meta">
           {unreadTotal > 0 ? `${unreadTotal} 未读` : `${items.length} 会话`}
         </div>
-        <button className="icon-btn" onClick={() => load()} aria-label="刷新">
-          ⟳
+        <button
+          className="icon-btn"
+          onClick={() => load(true)}
+          disabled={refreshing}
+          aria-label="刷新"
+        >
+          <span className={`refresh-icon${refreshing ? " spinning" : ""}`}>⟳</span>
         </button>
       </header>
+
+      {toast && <div className="toast">{toast}</div>}
 
       {error && (
         <div className="banner error">
