@@ -299,17 +299,15 @@ export default function Conversation() {
               {delivery.delivered ? "已发货" : "待发货"}
             </span>
           </div>
-          <button
-            className={`delivery-btn ${delivery.delivered ? "undo" : ""}`}
-            onClick={toggleDelivered}
-            disabled={delivering}
-          >
-            {delivering
-              ? "处理中…"
-              : delivery.delivered
-                ? "改回待发货"
-                : "标记已发货"}
-          </button>
+          {!delivery.delivered && (
+            <button
+              className="delivery-btn"
+              onClick={toggleDelivered}
+              disabled={delivering}
+            >
+              {delivering ? "处理中…" : "标记已发货"}
+            </button>
+          )}
         </div>
       )}
 
