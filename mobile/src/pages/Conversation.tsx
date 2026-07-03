@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
+  deletePhrase,
   fetchMessages,
+  fetchPhrases,
+  savePhrase,
   sendReply,
   setDelivered,
   translateMessages,
@@ -11,6 +14,7 @@ import { getCachedUnread, markCachedConversationRead } from "./ConversationList"
 import { decodeConvId } from "../convId";
 import { downscaleImage } from "../image";
 import type {
+  CommonPhrase,
   DeliveryStatus,
   Message,
   OrderOption,
@@ -72,6 +76,14 @@ export default function Conversation() {
   const [error, setError] = useState("");
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
+  const [phrases, setPhrases] = useState<CommonPhrase[]>([]);
+  const [showPhrases, setShowPhrases] = useState(false);
+  const [managePhrases, setManagePhrases] = useState(false);
+  const [newPhrase, setNewPhrase] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editPhrase, setEditPhrase] = useState("");
+  const [phraseBusy, setPhraseBusy] = useState(false);
+  const [sendingPhraseId, setSendingPhraseId] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -178,6 +190,22 @@ export default function Conversation() {
     }
   }, [cacheKey, messages, name, product, targetLang, options, delivery, loading]);
 
+  // Common phrases are shared across conversations, so load them once and refresh
+  // after any add/edit/delete.
+  const loadPhrases = useCallback(() => {
+    return fetchPhrases()
+      .then((data) => {
+        if (data.ok) setPhrases(data.phrases);
+      })
+      .catch(() => {
+        /* phrases are optional */
+      });
+  }, []);
+
+  useEffect(() => {
+    loadPhrases();
+  }, [loadPhrases]);
+
   // Opening a chat marks it read on the backend, so drop its unread badge from
   // the cached list too — returning to the list won't show a stale red dot.
   useEffect(() => {
@@ -236,6 +264,84 @@ export default function Conversation() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSending(false);
+    }
+  };
+
+  const addPhrase = async () => {
+    const text = newPhrase.trim();
+    if (!text || phraseBusy) return;
+    setPhraseBusy(true);
+    setError("");
+    try {
+      const data = await savePhrase({ text });
+      if (!data.ok) throw new Error(data.error || "保存失败");
+      setNewPhrase("");
+      await loadPhrases();
+      showToast("已添加");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPhraseBusy(false);
+    }
+  };
+
+  const saveEdit = async () => {
+    const text = editPhrase.trim();
+    if (!text || !editingId || phraseBusy) return;
+    setPhraseBusy(true);
+    setError("");
+    try {
+      const data = await savePhrase({ id: editingId, text });
+      if (!data.ok) throw new Error(data.error || "保存失败");
+      setEditingId(null);
+      setEditPhrase("");
+      await loadPhrases();
+      showToast("已保存");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPhraseBusy(false);
+    }
+  };
+
+  const removePhrase = async (phrase: CommonPhrase) => {
+    if (phraseBusy) return;
+    if (!window.confirm("确定删除这条常用语？")) return;
+    setPhraseBusy(true);
+    setError("");
+    try {
+      const data = await deletePhrase(phrase.id);
+      if (!data.ok) throw new Error(data.error || "删除失败");
+      if (editingId === phrase.id) setEditingId(null);
+      await loadPhrases();
+      showToast("已删除");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPhraseBusy(false);
+    }
+  };
+
+  const sendPhrase = async (phrase: CommonPhrase) => {
+    if (sendingPhraseId) return;
+    setSendingPhraseId(phrase.id);
+    setError("");
+    try {
+      const data = await sendReply({
+        platform,
+        id: convId,
+        message: phrase.text,
+        target_lang: targetLang,
+        phrase_id: phrase.id,
+      });
+      if (!data.ok) throw new Error(data.error || "发送失败");
+      setShowPhrases(false);
+      showToast("已发送");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSendingPhraseId(null);
     }
   };
 
@@ -429,6 +535,134 @@ export default function Conversation() {
         </button>
       )}
 
+      {showPhrases && (
+        <div className="phrase-panel">
+          <div className="phrase-panel-head">
+            <span className="phrase-panel-title">
+              {managePhrases ? "管理常用语" : "常用语（点击立即发送）"}
+            </span>
+            <div className="phrase-panel-actions">
+              <button
+                className="phrase-manage-toggle"
+                onClick={() => {
+                  setManagePhrases((v) => !v);
+                  setEditingId(null);
+                }}
+              >
+                {managePhrases ? "完成" : "管理"}
+              </button>
+              <button
+                className="phrase-panel-close"
+                onClick={() => setShowPhrases(false)}
+                aria-label="关闭"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          {managePhrases && (
+            <div className="phrase-add-row">
+              <textarea
+                className="phrase-add-input"
+                placeholder="输入新的常用语…"
+                value={newPhrase}
+                onChange={(e) => setNewPhrase(e.target.value)}
+                rows={2}
+              />
+              <button
+                className="phrase-add-btn"
+                onClick={addPhrase}
+                disabled={!newPhrase.trim() || phraseBusy}
+              >
+                添加
+              </button>
+            </div>
+          )}
+          <div className="phrase-panel-list">
+            {phrases.length === 0 && (
+              <div className="phrase-empty">
+                暂无常用语{managePhrases ? "，可在上方添加" : ""}
+              </div>
+            )}
+            {phrases.map((p) =>
+              managePhrases ? (
+                editingId === p.id ? (
+                  <div className="phrase-edit-row" key={p.id}>
+                    <textarea
+                      className="phrase-add-input"
+                      value={editPhrase}
+                      onChange={(e) => setEditPhrase(e.target.value)}
+                      rows={2}
+                    />
+                    <div className="phrase-edit-actions">
+                      <button
+                        className="phrase-add-btn"
+                        onClick={saveEdit}
+                        disabled={!editPhrase.trim() || phraseBusy}
+                      >
+                        保存
+                      </button>
+                      <button
+                        className="phrase-cancel-btn"
+                        onClick={() => {
+                          setEditingId(null);
+                          setEditPhrase("");
+                        }}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="phrase-manage-item" key={p.id}>
+                    <span className="phrase-chip-text">{p.text || "(附件)"}</span>
+                    {p.files.length > 0 && (
+                      <span className="phrase-chip-files">
+                        +{p.files.length} 附件
+                      </span>
+                    )}
+                    <div className="phrase-item-actions">
+                      <button
+                        className="phrase-edit-link"
+                        onClick={() => {
+                          setEditingId(p.id);
+                          setEditPhrase(p.text);
+                        }}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        className="phrase-del-link"
+                        onClick={() => removePhrase(p)}
+                        disabled={phraseBusy}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <button
+                  className="phrase-chip"
+                  key={p.id}
+                  onClick={() => sendPhrase(p)}
+                  disabled={sendingPhraseId === p.id}
+                >
+                  <span className="phrase-chip-text">
+                    {sendingPhraseId === p.id ? "发送中…" : p.text || "(附件)"}
+                  </span>
+                  {p.files.length > 0 && (
+                    <span className="phrase-chip-files">
+                      +{p.files.length} 附件
+                    </span>
+                  )}
+                </button>
+              ),
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="composer">
         {files.length > 0 && (
           <div className="attach-previews">
@@ -462,6 +696,14 @@ export default function Conversation() {
             aria-label="添加图片"
           >
             📷
+          </button>
+          <button
+            className="phrase-btn"
+            onClick={() => setShowPhrases((v) => !v)}
+            aria-label="常用语"
+            aria-expanded={showPhrases}
+          >
+            常用语
           </button>
           <textarea
             value={reply}

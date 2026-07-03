@@ -30,7 +30,7 @@ DIST = (Path(__file__).resolve().parent / "dist").resolve()
 BACKEND = (os.environ.get("DIGISELLER_ADMIN_ORIGIN") or "http://127.0.0.1:8765").rstrip("/")
 PORT = int(os.environ.get("MOBILE_PORT") or 8080)
 HOST = os.environ.get("MOBILE_HOST") or "0.0.0.0"
-PROXY_PREFIXES = ("/api/", "/assets/")
+PROXY_PREFIXES = ("/api/", "/assets/", "/phrase-files/")
 # Talk to the backend directly, ignoring any system/env HTTP proxy. Without this,
 # urllib may route even 127.0.0.1 through a configured proxy/VPN and fail (502).
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
