@@ -72,13 +72,39 @@ export function translateMessages(
   return postJson<TranslateResponse>("/api/m/translate", { messages });
 }
 
-export function sendReply(params: {
+// Send a reply. Text-only replies go as JSON; when images are attached the
+// whole reply (text + files) is sent as multipart/form-data. The JSON body is
+// kept even on non-2xx so the backend error message can be shown.
+export async function sendReply(params: {
   platform: string;
   id: number;
   message: string;
   target_lang: string;
+  files?: File[];
 }): Promise<SendResponse> {
-  return postJson<SendResponse>("/api/m/send", params);
+  const url = `${API_BASE}/api/m/send`;
+  let res: Response;
+  if (params.files && params.files.length > 0) {
+    const form = new FormData();
+    form.set("platform", params.platform);
+    form.set("id", String(params.id));
+    form.set("message", params.message);
+    form.set("target_lang", params.target_lang);
+    for (const file of params.files) form.append("files", file);
+    res = await fetch(url, { method: "POST", body: form });
+  } else {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        platform: params.platform,
+        id: params.id,
+        message: params.message,
+        target_lang: params.target_lang,
+      }),
+    });
+  }
+  return (await res.json()) as SendResponse;
 }
 
 // Mark a GGSEL order as delivered (or back to pending), mirroring the seller

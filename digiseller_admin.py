@@ -7407,29 +7407,42 @@ class Handler(BaseHTTPRequestHandler):
         self.send_mobile_json({"ok": True, "results": results})
 
     def api_m_send(self) -> None:
-        payload = self.read_json_body()
-        platform = clean_text(payload.get("platform") or "digiseller") or "digiseller"
-        conv_id = int(payload.get("id") or 0)
-        message = clean_text(payload.get("message"))
-        target_lang = clean_text(payload.get("target_lang")) or "en"
+        # Text-only replies come as JSON; replies with image attachments come as
+        # multipart/form-data (files under "files", other values as form fields).
+        uploads: list[UploadItem] = []
+        if self.headers.get("Content-Type", "").startswith("multipart/form-data"):
+            fields, uploads = self.read_form()
+            platform = clean_text(fields.get("platform") or "digiseller") or "digiseller"
+            conv_id = int(fields.get("id") or 0)
+            message = clean_text(fields.get("message"))
+            target_lang = clean_text(fields.get("target_lang")) or "en"
+        else:
+            payload = self.read_json_body()
+            platform = clean_text(payload.get("platform") or "digiseller") or "digiseller"
+            conv_id = int(payload.get("id") or 0)
+            message = clean_text(payload.get("message"))
+            target_lang = clean_text(payload.get("target_lang")) or "en"
         if not conv_id:
             return self.send_mobile_json({"ok": False, "error": "id is required"}, 400)
-        if not message:
+        if not message and not uploads:
             return self.send_mobile_json({"ok": False, "error": "message is required"}, 400)
-        if should_translate_outgoing_message(message, target_lang):
+        if message and should_translate_outgoing_message(message, target_lang):
             original_message = message
             message, _ = google_translate(message, target_lang, "zh-CN")
             record_sent_original(message, original_message)
         try:
             if platform == "ggsel":
-                ggsel_client.send_chat_message(conv_id, message, [])
+                ggsel_client.send_chat_message(conv_id, message, uploads)
             elif platform == "funpay":
-                funpay_client.send_chat_message(conv_id, message, [])
+                funpay_client.send_chat_message(conv_id, message, uploads)
             else:
-                client.send_chat_message(conv_id, message, [])
+                client.send_chat_message(conv_id, message, uploads)
         except Exception as exc:
             return self.send_mobile_json({"ok": False, "error": str(exc)}, 502)
-        self.send_mobile_json({"ok": True, "platform": platform, "id": conv_id, "sent_text": message})
+        self.send_mobile_json({
+            "ok": True, "platform": platform, "id": conv_id,
+            "sent_text": message, "files": len(uploads),
+        })
 
     def api_m_deliver(self) -> None:
         payload = self.read_json_body()

@@ -71,6 +71,9 @@ export default function Conversation() {
   const [error, setError] = useState("");
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
+  const [files, setFiles] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
   const [verify, setVerify] = useState<VerifyStatus>({ needs: false });
   const [code, setCode] = useState("");
@@ -180,6 +183,13 @@ export default function Conversation() {
     markCachedConversationRead(platform, convId);
   }, [platform, convId]);
 
+  // Object URLs for the attachment thumbnails; revoked when the selection changes.
+  useEffect(() => {
+    const urls = files.map((f) => URL.createObjectURL(f));
+    setPreviews(urls);
+    return () => urls.forEach((u) => URL.revokeObjectURL(u));
+  }, [files]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
     updateScrollDown();
@@ -191,9 +201,20 @@ export default function Conversation() {
     };
   }, []);
 
+  const onPickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files || []).filter((f) =>
+      f.type.startsWith("image/"),
+    );
+    if (picked.length) setFiles((prev) => [...prev, ...picked]);
+    e.target.value = "";
+  };
+
+  const removeFile = (idx: number) =>
+    setFiles((prev) => prev.filter((_, i) => i !== idx));
+
   const submit = async () => {
     const text = reply.trim();
-    if (!text || sending) return;
+    if ((!text && files.length === 0) || sending) return;
     setSending(true);
     setError("");
     try {
@@ -202,9 +223,11 @@ export default function Conversation() {
         id: convId,
         message: text,
         target_lang: targetLang,
+        files: files.length > 0 ? files : undefined,
       });
       if (!data.ok) throw new Error(data.error || "发送失败");
       setReply("");
+      setFiles([]);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -404,19 +427,53 @@ export default function Conversation() {
       )}
 
       <div className="composer">
-        <textarea
-          value={reply}
-          onChange={(e) => setReply(e.target.value)}
-          placeholder="输入回复…"
-          rows={1}
-        />
-        <button
-          className="send-btn"
-          onClick={submit}
-          disabled={sending || !reply.trim()}
-        >
-          {sending ? "…" : "发送"}
-        </button>
+        {files.length > 0 && (
+          <div className="attach-previews">
+            {files.map((f, i) => (
+              <div className="attach-thumb" key={`${f.name}-${f.size}-${i}`}>
+                {previews[i] && <img src={previews[i]} alt={f.name} />}
+                <button
+                  className="attach-remove"
+                  onClick={() => removeFile(i)}
+                  aria-label="移除图片"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="composer-row">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={onPickFiles}
+          />
+          <button
+            className="attach-btn"
+            onClick={() => fileRef.current?.click()}
+            disabled={sending}
+            aria-label="添加图片"
+          >
+            📷
+          </button>
+          <textarea
+            value={reply}
+            onChange={(e) => setReply(e.target.value)}
+            placeholder="输入回复…"
+            rows={1}
+          />
+          <button
+            className="send-btn"
+            onClick={submit}
+            disabled={sending || (!reply.trim() && files.length === 0)}
+          >
+            {sending ? "…" : "发送"}
+          </button>
+        </div>
       </div>
     </div>
   );
