@@ -267,6 +267,15 @@ export default function Conversation() {
     try {
       const data = await verifyCode(value);
       if (!data.ok || !data.item) throw new Error(data.error || "验证失败");
+      const codeState = Number(data.item.state);
+      const verified = [2, 3, 5].includes(codeState);
+      setVerify((prev) => ({
+        ...prev,
+        needs: true,
+        state: data.item?.state_label || prev.state,
+        verified,
+      }));
+      setCode("");
       showToast("验证成功");
     } catch (e) {
       setVerifyError(e instanceof Error ? e.message : String(e));
