@@ -5839,6 +5839,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_funpay_boost_clear_errors()
             if path == "/api/m/send":
                 return self.api_m_send()
+            if path == "/api/m/phrases/save":
+                return self.api_m_phrase_save()
+            if path == "/api/m/phrases/delete":
+                return self.api_m_phrase_delete()
             if path == "/api/m/deliver":
                 return self.api_m_deliver()
             if path == "/api/m/translate":
@@ -7458,6 +7462,42 @@ class Handler(BaseHTTPRequestHandler):
                 "files": files,
             })
         self.send_mobile_json({"ok": True, "phrases": phrases})
+
+    def api_m_phrase_save(self) -> None:
+        # Add (no id) or edit (with id) a text phrase. Attachments are managed on
+        # the PC page; editing here keeps any existing files untouched.
+        payload = self.read_json_body()
+        phrase_id = str(payload.get("id") or "").strip()
+        text = clean_text(payload.get("text"))
+        if not text:
+            return self.send_mobile_json({"ok": False, "error": "内容不能为空"}, 400)
+        phrases = load_common_phrases()
+        if phrase_id:
+            found = False
+            for phrase in phrases:
+                if phrase["id"] == phrase_id:
+                    phrase["text"] = text
+                    found = True
+                    break
+            if not found:
+                return self.send_mobile_json({"ok": False, "error": "常用语不存在"}, 404)
+        else:
+            phrase_id = new_phrase_id(text)
+            phrases.append({"id": phrase_id, "text": text, "files": []})
+        save_common_phrases(phrases)
+        self.send_mobile_json({"ok": True, "id": phrase_id})
+
+    def api_m_phrase_delete(self) -> None:
+        payload = self.read_json_body()
+        phrase_id = str(payload.get("id") or "").strip()
+        if not phrase_id:
+            return self.send_mobile_json({"ok": False, "error": "id is required"}, 400)
+        for phrase in load_common_phrases():
+            if phrase["id"] == phrase_id:
+                remove_phrase_files(phrase)
+        phrases = [phrase for phrase in load_common_phrases() if phrase["id"] != phrase_id]
+        save_common_phrases(phrases)
+        self.send_mobile_json({"ok": True})
 
     def api_m_send(self) -> None:
         # Text-only replies come as JSON; replies with image attachments come as

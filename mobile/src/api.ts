@@ -2,6 +2,8 @@ import type {
   ConversationsResponse,
   DeliverResponse,
   MessagesResponse,
+  PhraseDeleteResponse,
+  PhraseSaveResponse,
   PhrasesResponse,
   SendResponse,
   TranslateResponse,
@@ -69,6 +71,29 @@ export async function verifyCode(code: string): Promise<VerifyCodeResponse> {
 
 export function fetchPhrases(): Promise<PhrasesResponse> {
   return getJson<PhrasesResponse>("/api/m/phrases");
+}
+
+// Add (no id) or edit (with id) a text common phrase. Attachments are managed
+// on the PC page; editing here only touches the text.
+export async function savePhrase(params: {
+  id?: string;
+  text: string;
+}): Promise<PhraseSaveResponse> {
+  const res = await fetch(`${API_BASE}/api/m/phrases/save`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return (await res.json()) as PhraseSaveResponse;
+}
+
+export async function deletePhrase(id: string): Promise<PhraseDeleteResponse> {
+  const res = await fetch(`${API_BASE}/api/m/phrases/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  return (await res.json()) as PhraseDeleteResponse;
 }
 
 export function translateMessages(

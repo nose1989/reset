@@ -72,6 +72,17 @@ export interface PhrasesResponse {
   error?: string;
 }
 
+export interface PhraseSaveResponse {
+  ok: boolean;
+  id?: string;
+  error?: string;
+}
+
+export interface PhraseDeleteResponse {
+  ok: boolean;
+  error?: string;
+}
+
 export interface VerifyStatus {
   needs: boolean;
   state?: string;
