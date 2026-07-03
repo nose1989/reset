@@ -611,13 +611,6 @@ def sent_original_for(translated: str) -> str:
     return SENT_ORIGINALS.get(key, "")
 
 
-def seller_bubble_text(translated: str) -> str:
-    """Text to show in my own sent bubble on my client: the original Chinese I
-    typed, falling back to the sent text when no original was recorded. The buyer
-    still receives the translated `translated` text — only my client shows Chinese."""
-    return sent_original_for(translated) or translated
-
-
 LANG_LABELS = {
     "zh": "中文",
     "zh-CN": "中文",
@@ -805,6 +798,17 @@ def translate_incoming_html(text: str, message_id: Any, should_translate: bool =
         f"</div>"
     )
 
+
+def seller_bubble_html(text: str, message_id: Any) -> str:
+    """Render my own sent bubble. Show the Chinese I typed when we recorded it;
+    otherwise translate foreign-language seller text (e.g. FunPay auto-replies
+    and notifications) to Chinese so I can read it."""
+    original = sent_original_for(text)
+    if original:
+        return message_text_html(original, allow_save=True)
+    if should_translate_text(text) and heuristic_language(text) not in {"zh", "zh-CN"}:
+        return translate_incoming_html(text, message_id, should_translate=True)
+    return message_text_html(text, allow_save=True)
 
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
@@ -2032,12 +2036,24 @@ class FunPayClient:
         return attrs
 
     def first_text(self, html_text: str, class_name: str) -> str:
-        match = re.search(
-            rf'<[^>]*class="[^"]*\b{re.escape(class_name)}\b[^"]*"[^>]*>(.*?)</[^>]+>',
+        open_match = re.search(
+            rf'<([A-Za-z0-9]+)\b[^>]*class="[^"]*\b{re.escape(class_name)}\b[^"]*"[^>]*?(/?)>',
             html_text,
-            re.S | re.I,
+            re.I,
         )
-        return clean_text(match.group(1) if match else "")
+        if not open_match or open_match.group(2):
+            return ""
+        tag = open_match.group(1)
+        inner_start = open_match.end()
+        depth = 1
+        for match in re.finditer(rf'<(/?){re.escape(tag)}\b[^>]*?(/?)>', html_text[inner_start:], re.I):
+            if match.group(1):
+                depth -= 1
+                if depth == 0:
+                    return clean_text(html_text[inner_start : inner_start + match.start()])
+            elif not match.group(2):
+                depth += 1
+        return clean_text(html_text[inner_start:])
 
     def chat_page(self, node_id: int | None = None) -> str:
         params = {"node": str(node_id)} if node_id else None
@@ -6908,7 +6924,7 @@ class Handler(BaseHTTPRequestHandler):
                     if is_attachment_message(msg):
                         text_html = attachment_html(msg)
                     elif is_seller:
-                        text_html = message_text_html(seller_bubble_text(text), allow_save=True)
+                        text_html = seller_bubble_html(text, msg.get("id"))
                     else:
                         text_html = translate_incoming_html(text, msg.get("id"), should_translate=True)
                 except Exception as exc:
@@ -6974,7 +6990,7 @@ class Handler(BaseHTTPRequestHandler):
             if is_attachment_message(msg):
                 text_html = attachment_html(msg, allow_guess_preview=True)
             elif is_seller:
-                text_html = message_text_html(seller_bubble_text(text), allow_save=True)
+                text_html = seller_bubble_html(text, msg.get("id"))
             else:
                 text_html = translate_incoming_html(text, msg.get("id"), should_translate=True)
             msg_no = f"#{idx}/{total_messages}"
@@ -7010,7 +7026,7 @@ class Handler(BaseHTTPRequestHandler):
                 if is_attachment_message(msg):
                     text_html = attachment_html(msg, allow_guess_preview=True)
                 elif is_seller:
-                    text_html = message_text_html(seller_bubble_text(text), allow_save=True)
+                    text_html = seller_bubble_html(text, msg.get("id"))
                 else:
                     text_html = translate_incoming_html(text, msg.get("id"), should_translate=True)
             except Exception as exc:
@@ -7049,7 +7065,7 @@ class Handler(BaseHTTPRequestHandler):
             text = clean_text(msg.get("message"))
             try:
                 if is_seller:
-                    text_html = message_text_html(seller_bubble_text(text), allow_save=True)
+                    text_html = seller_bubble_html(text, msg.get("id"))
                 else:
                     text_html = translate_incoming_html(text, msg.get("id"), should_translate=True)
             except Exception as exc:
@@ -7370,7 +7386,15 @@ class Handler(BaseHTTPRequestHandler):
                     entry["translated"] = cached[0]
                     entry["lang"] = lang_label(cached[1])
             elif is_seller:
-                entry["text"] = seller_bubble_text(text)
+                original_zh = sent_original_for(text)
+                if original_zh:
+                    entry["text"] = original_zh
+                elif should_translate_text(text) and heuristic_language(text) not in {"zh", "zh-CN"}:
+                    entry["translate"] = True
+                    cached = cached_translation(text, "zh-CN")
+                    if cached:
+                        entry["translated"] = cached[0]
+                        entry["lang"] = lang_label(cached[1])
             messages.append(entry)
         buyer_name = name or "会员"
         options = self._mobile_order_options(platform, conv_id)

@@ -75,7 +75,6 @@ export default function Conversation() {
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
   const [verify, setVerify] = useState<VerifyStatus>({ needs: false });
   const [code, setCode] = useState("");
   const [verifying, setVerifying] = useState(false);
@@ -382,7 +381,6 @@ export default function Conversation() {
           messages.map((m) => {
             const isOut = m.direction === "out";
             const hasTranslation = m.translate && !!m.translated;
-            const original = showOriginal[m.id];
             return (
               <div key={m.id} className={`row ${isOut ? "out" : "in"}`}>
                 <div className="bubble">
@@ -390,20 +388,12 @@ export default function Conversation() {
                     <Attachment att={m.attachment} text={m.text} />
                   ) : hasTranslation ? (
                     <>
-                      <div className="bubble-text">
-                        {original ? m.text : m.translated}
-                      </div>
-                      <div className="bubble-actions">
-                        <button
-                          className="mini-btn"
-                          onClick={() =>
-                            setShowOriginal((s) => ({ ...s, [m.id]: !original }))
-                          }
-                        >
-                          {original ? "显示中文" : "查看原文"}
-                        </button>
-                        {m.lang && <span className="tag">{m.lang} → 中</span>}
-                      </div>
+                      <div className="bubble-text">{m.translated}</div>
+                      {m.lang && (
+                        <div className="bubble-actions">
+                          <span className="tag">{m.lang} → 中</span>
+                        </div>
+                      )}
                     </>
                   ) : (
                     <div className="bubble-text">
