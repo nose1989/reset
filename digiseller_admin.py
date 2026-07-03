@@ -1524,7 +1524,7 @@ class GgselClient:
     def seller_office_send_conversation_payload(self, conversation_id: str, payload: dict[str, str]) -> Any:
         return self.seller_office_request(
             "POST",
-            f"/api_seller_office/v1/conversations/{urllib.parse.quote(conversation_id, safe='')}/messages",
+            f"/api/v1/conversations/{urllib.parse.quote(conversation_id, safe='')}/messages",
             json_body=payload,
         )
 
@@ -1553,7 +1553,7 @@ class GgselClient:
         raise RuntimeError(f"GGSEL seller office conversation was not found for order {order_id}")
 
     def seller_office_conversation_rows(self, params: dict[str, Any]) -> list[dict[str, Any]]:
-        data = self.seller_office_get("/api_seller_office/v1/conversations", params)
+        data = self.seller_office_get("/api/v1/conversations", params)
         rows = data.get("data") if isinstance(data, dict) else []
         if not isinstance(rows, list):
             raise RuntimeError(f"GGSEL seller office conversation search returned invalid data: {data}")
@@ -1737,10 +1737,12 @@ class GgselClient:
             raise RuntimeError(f"GGSEL seller office HTTP {r.status_code}: {short(r.text, 400)}")
         if not r.content:
             return {}
-        content_type = r.headers.get("content-type", "")
-        if "json" not in content_type.lower():
+        # The seller-office proxy sometimes labels JSON bodies as text/plain, so
+        # parse by body rather than trusting the Content-Type header.
+        try:
+            return r.json()
+        except ValueError:
             raise RuntimeError(f"GGSEL seller office returned non-JSON from {path}: {short(r.text, 400)}")
-        return r.json()
 
     def seller_office_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return self.seller_office_request("GET", path, params=params)
@@ -1753,7 +1755,7 @@ class GgselClient:
         }
         if offer_ids:
             params["offer_ids[]"] = offer_ids
-        data = self.seller_office_get("/api_seller_office/v1/dashboard", params)
+        data = self.seller_office_get("/api/v1/dashboard", params)
         dashboard = data.get("data") if isinstance(data, dict) else data
         return dashboard if isinstance(dashboard, dict) else {}
 
@@ -1847,7 +1849,7 @@ class GgselClient:
         return data if isinstance(data, dict) else {}
 
     def seller_office_delete_product(self, offer_id: int, product_id: int) -> None:
-        self.seller_office_delete(f"/api_seller_office/v1/offers/{offer_id}/products/{product_id}")
+        self.seller_office_delete(f"/api/v1/offers/{offer_id}/products/{product_id}")
 
     def seller_office_order(self, order_id: int) -> dict[str, Any]:
         data = self.seller_office_get(f"/api/v1/orders/{int(order_id)}")
@@ -6298,7 +6300,7 @@ class Handler(BaseHTTPRequestHandler):
         <form class='card'>
           <h2>GGSEL 浏览统计</h2>
           <p>Config: {status}</p>
-          <p class='muted'>使用 GGSEL 卖家后台 dashboard 接口：<code>/api_seller_office/v1/dashboard</code>。接口返回的是商品页访问量 <code>views</code>，不是 Products 列表里的销量。</p>
+          <p class='muted'>使用 GGSEL 卖家后台 dashboard 接口：<code>/api/v1/dashboard</code>。接口返回的是商品页访问量 <code>views</code>，不是 Products 列表里的销量。</p>
           <label>开始日期 <input type='date' name='date_start' value='{h(start_date.isoformat())}'></label>
           <label>结束日期 <input type='date' name='date_end' value='{h(end_date.isoformat())}'></label>
           <label>类型
