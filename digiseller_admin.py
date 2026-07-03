@@ -1887,6 +1887,9 @@ class FunPayClient:
             cookies={"golden_key": self.golden_key} if self.golden_key else {},
             follow_redirects=True,
         )
+        self._product_map: dict[str, str] = {}
+        self._product_map_ts = 0.0
+        self._product_map_lock = threading.Lock()
 
     def configured(self) -> bool:
         return bool(self.golden_key)
@@ -1896,12 +1899,16 @@ class FunPayClient:
             raise RuntimeError("FUNPAY_GOLDEN_KEY is missing. Put it in .env")
 
     def auth_expired(self, response: httpx.Response) -> bool:
-        text = response.text[:4000]
-        return (
-            "account/login" in str(response.url)
-            or "Log In / FunPay" in text
-            or bool(re.search(r'name=["\']login["\']', text, re.I) and re.search(r'name=["\']password["\']', text, re.I))
-        )
+        text = response.text
+        if "account/login" in str(response.url):
+            return True
+        if "Log In / FunPay" in text:
+            return True
+        if re.search(r'name=["\']login["\']', text, re.I) and re.search(r'name=["\']password["\']', text, re.I):
+            return True
+        if "account/login" in text and "account/logout" not in text:
+            return True
+        return False
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> httpx.Response:
         self.ensure_configured()
@@ -2007,10 +2014,49 @@ class FunPayClient:
 
     def chat_product_from_page(self, page: str) -> str:
         match = re.search(r'<a\b[^>]*href="https://funpay\.com/en/lots/offer\?id=\d+"[^>]*>(.*?)</a>', page, re.S | re.I)
-        return clean_text(match.group(1) if match else "")
+        product = clean_text(match.group(1) if match else "")
+        if product:
+            return product
+        text = clean_text(re.sub(r"<[^>]+>", " ", page))
+        paid = ""
+        for paid_match in re.finditer(r"has paid for order #\w+\s*\.\s*(.+?)\.\s+\S+\s*,\s*do not forget", text, re.I):
+            paid = paid_match.group(1).strip()
+        return clean_text(paid)
 
     def chat_product(self, node_id: int) -> str:
         return self.chat_product_from_page(self.chat_page(node_id))
+
+    def recent_products_by_user(self, limit: int = 100) -> dict[str, str]:
+        try:
+            page = self.get("/orders/trade").text
+        except Exception:
+            return {}
+        mapping: dict[str, str] = {}
+        for item in re.findall(r'<a\b[^>]*class="[^"]*\btc-item\b[^"]*"[^>]*>.*?</a>', page, re.S | re.I):
+            desc_match = re.search(r'class="[^"]*\border-desc\b[^"]*"[^>]*>\s*<div>(.*?)</div>', item, re.S | re.I)
+            product = clean_text(desc_match.group(1)) if desc_match else ""
+            name_match = re.search(r'class="[^"]*\bmedia-user-name\b[^"]*"[^>]*>(.*?)</div>', item, re.S | re.I)
+            name = clean_text(name_match.group(1)) if name_match else ""
+            key = name.lower()
+            if key and product and key not in mapping:
+                mapping[key] = product
+            if len(mapping) >= limit:
+                break
+        return mapping
+
+    def cached_products_by_user(self, ttl: int = 120) -> dict[str, str]:
+        now = time.time()
+        with self._product_map_lock:
+            if self._product_map and now - self._product_map_ts < ttl:
+                return dict(self._product_map)
+        mapping = self.recent_products_by_user()
+        if mapping:
+            with self._product_map_lock:
+                self._product_map = mapping
+                self._product_map_ts = now
+            return dict(mapping)
+        with self._product_map_lock:
+            return dict(self._product_map)
 
     def paid_order_id_from_message(self, text: Any) -> str:
         order_match = re.search(r"\border\s+#([A-Za-z0-9]+)", clean_text(text), re.I)
@@ -2472,16 +2518,30 @@ class FunPayClient:
             if not date_written and date_match:
                 date_written = clean_text(date_match.group(2))
             text = self.first_text(block, "chat-msg-text") or self.first_text(block, "chat-msg-body")
-            messages.append(
-                {
-                    "id": int(match.group(1)),
-                    "seller": seller,
-                    "author": author or "FunPay",
-                    "message": text,
-                    "date_written": date_written,
-                    "platform": "funpay",
-                }
-            )
+            entry: dict[str, Any] = {
+                "id": int(match.group(1)),
+                "seller": seller,
+                "author": author or "FunPay",
+                "message": text,
+                "date_written": date_written,
+                "platform": "funpay",
+            }
+            img_match = re.search(r'<img\b[^>]*\bclass="[^"]*\bchat-img\b[^"]*"[^>]*>', block, re.I)
+            if img_match:
+                src_match = re.search(r'src="([^"]+)"', img_match.group(0), re.I)
+                alt_match = re.search(r'alt="([^"]*)"', img_match.group(0), re.I)
+                link_match = re.search(r'<a\b[^>]*\bclass="[^"]*\bchat-img-link\b[^"]*"[^>]*\bhref="([^"]+)"', block, re.I)
+                thumb_url = clean_text(src_match.group(1)) if src_match else ""
+                full_url = clean_text(link_match.group(1)) if link_match else ""
+                image_name = clean_text(alt_match.group(1)) if alt_match else ""
+                if full_url or thumb_url:
+                    entry["url"] = full_url or thumb_url
+                    entry["preview"] = thumb_url or full_url
+                    entry["is_img"] = 1
+                    entry["filename"] = image_name or "image.png"
+                    if not text:
+                        entry["message"] = image_name or "image.png"
+            messages.append(entry)
         return messages
 
     def chat_messages(self, node_id: int) -> list[dict[str, Any]]:
@@ -7185,20 +7245,23 @@ class Handler(BaseHTTPRequestHandler):
             errors.append(str(exc))
         try:
             if funpay_client.configured():
+                products_by_user = funpay_client.cached_products_by_user()
                 for index, chat in enumerate(funpay_client.chats(limit=50)):
                     if not is_recent_time(chat.get("last_date"), RECENT_CHAT_DAYS):
                         continue
                     node_id = int(chat.get("node_id") or 0)
                     if not node_id:
                         continue
+                    raw_name = clean_text(chat.get("name") or "")
                     name = self._mobile_display_name(chat.get("name"), node_id) or "会员"
-                    product = clean_text(chat.get("product") or chat.get("message") or "")
+                    last_message = clean_text(chat.get("message") or "")
+                    product = products_by_user.get(raw_name.lower(), "")
                     when = str(chat.get("last_date") or "")
                     sort_key = sort_time(chat.get("last_sort_date")) or sort_time(when) or (-1000000.0 - index)
                     entries.append((sort_key, {
                         "platform": "funpay", "id": node_id,
                         "name": name, "email": name,
-                        "preview": short(product or chat.get("message"), 80),
+                        "preview": short(product or last_message, 80),
                         "product": product,
                         "time": when, "time_label": self._mobile_time_label(when),
                         "unread": int(chat.get("cnt_new") or 0),
@@ -7231,9 +7294,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if platform == "funpay":
                 raw = funpay_client.chat_messages(conv_id)
-                product = funpay_client.chat_product(conv_id) or ""
                 derived_name = next((clean_text(m.get("author")) for m in reversed(raw) if m.get("seller") != 1 and m.get("author")), "")
                 name = self._mobile_display_name(self.q("name", ""), conv_id) or self._mobile_display_name(derived_name, conv_id)
+                lookup_name = clean_text(self.q("name", "") or derived_name)
+                product = funpay_client.cached_products_by_user().get(lookup_name.lower(), "") or funpay_client.chat_product(conv_id) or ""
             elif platform == "ggsel":
                 raw = ggsel_client.chat_messages(conv_id)
                 if raw:
