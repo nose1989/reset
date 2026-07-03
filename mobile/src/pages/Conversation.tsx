@@ -9,6 +9,7 @@ import {
 } from "../api";
 import { getCachedUnread, markCachedConversationRead } from "./ConversationList";
 import { decodeConvId } from "../convId";
+import { downscaleImage } from "../image";
 import type {
   DeliveryStatus,
   Message,
@@ -201,12 +202,14 @@ export default function Conversation() {
     };
   }, []);
 
-  const onPickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const onPickFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(e.target.files || []).filter((f) =>
       f.type.startsWith("image/"),
     );
-    if (picked.length) setFiles((prev) => [...prev, ...picked]);
     e.target.value = "";
+    if (!picked.length) return;
+    const processed = await Promise.all(picked.map(downscaleImage));
+    setFiles((prev) => [...prev, ...processed]);
   };
 
   const removeFile = (idx: number) =>
