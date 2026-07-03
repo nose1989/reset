@@ -635,6 +635,73 @@ body {
 .attach-btn:disabled {
   opacity: 0.5;
 }
+.phrase-btn {
+  flex: 0 0 auto;
+  background: #eef2f7;
+  border: 1px solid #cbd5e1;
+  border-radius: 18px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  color: #0f3b66;
+  cursor: pointer;
+}
+.phrase-btn.is-active {
+  background: #dbeafe;
+  border-color: #2563eb;
+}
+.phrase-btn:disabled {
+  opacity: 0.5;
+}
+.phrase-panel {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  -webkit-overflow-scrolling: touch;
+}
+.phrase-panel-empty {
+  color: var(--muted, #64748b);
+  font-size: 13px;
+  padding: 6px 2px;
+}
+.phrase-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  background: #eaf3ff;
+  border: 1px solid #b9d4ff;
+  border-radius: 12px;
+  padding: 6px 10px;
+  color: #0f3b66;
+  font-size: 13px;
+  cursor: pointer;
+}
+.phrase-chip:disabled {
+  opacity: 0.6;
+}
+.phrase-chip-img {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  flex: 0 0 auto;
+}
+.phrase-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.phrase-chip-files {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #64748b;
+}
 .attach-previews {
   display: flex;
   flex-wrap: wrap;

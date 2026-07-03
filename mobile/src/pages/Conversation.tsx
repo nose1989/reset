@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   fetchMessages,
+  fetchPhrases,
+  resolveBackendUrl,
   sendReply,
   setDelivered,
   translateMessages,
@@ -11,6 +13,7 @@ import { getCachedUnread, markCachedConversationRead } from "./ConversationList"
 import { decodeConvId } from "../convId";
 import { downscaleImage } from "../image";
 import type {
+  CommonPhrase,
   DeliveryStatus,
   Message,
   OrderOption,
@@ -72,6 +75,9 @@ export default function Conversation() {
   const [error, setError] = useState("");
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
+  const [phrases, setPhrases] = useState<CommonPhrase[]>([]);
+  const [showPhrases, setShowPhrases] = useState(false);
+  const [sendingPhraseId, setSendingPhraseId] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -178,6 +184,21 @@ export default function Conversation() {
     }
   }, [cacheKey, messages, name, product, targetLang, options, delivery, loading]);
 
+  // Common phrases are shared across conversations; load once per open.
+  useEffect(() => {
+    let alive = true;
+    fetchPhrases()
+      .then((data) => {
+        if (alive && data.ok) setPhrases(data.phrases);
+      })
+      .catch(() => {
+        /* phrases are optional */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Opening a chat marks it read on the backend, so drop its unread badge from
   // the cached list too — returning to the list won't show a stale red dot.
   useEffect(() => {
@@ -236,6 +257,28 @@ export default function Conversation() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSending(false);
+    }
+  };
+
+  const sendPhrase = async (phrase: CommonPhrase) => {
+    if (sending || sendingPhraseId) return;
+    setSendingPhraseId(phrase.id);
+    setError("");
+    try {
+      const data = await sendReply({
+        platform,
+        id: convId,
+        message: "",
+        target_lang: targetLang,
+        phrase_id: phrase.id,
+      });
+      if (!data.ok) throw new Error(data.error || "发送失败");
+      setShowPhrases(false);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSendingPhraseId("");
     }
   };
 
@@ -430,6 +473,41 @@ export default function Conversation() {
       )}
 
       <div className="composer">
+        {showPhrases && (
+          <div className="phrase-panel">
+            {phrases.length === 0 ? (
+              <div className="phrase-panel-empty">还没有常用语</div>
+            ) : (
+              phrases.map((p) => {
+                const preview = p.files.find((f) => f.is_image && f.url);
+                const label = p.text || p.files[0]?.filename || "附件";
+                const busy = sendingPhraseId === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    className="phrase-chip"
+                    onClick={() => sendPhrase(p)}
+                    disabled={busy || !!sendingPhraseId}
+                    title={label}
+                  >
+                    {preview && (
+                      <img
+                        className="phrase-chip-img"
+                        src={resolveBackendUrl(preview.url)}
+                        alt=""
+                        loading="lazy"
+                      />
+                    )}
+                    <span className="phrase-chip-text">{busy ? "发送中…" : label}</span>
+                    {p.files.length > 0 && (
+                      <span className="phrase-chip-files">+{p.files.length}</span>
+                    )}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        )}
         {files.length > 0 && (
           <div className="attach-previews">
             {files.map((f, i) => (
@@ -462,6 +540,15 @@ export default function Conversation() {
             aria-label="添加图片"
           >
             📷
+          </button>
+          <button
+            className={`phrase-btn ${showPhrases ? "is-active" : ""}`}
+            onClick={() => setShowPhrases((v) => !v)}
+            disabled={sending}
+            aria-label="常用语"
+            aria-expanded={showPhrases}
+          >
+            常用语
           </button>
           <textarea
             value={reply}

@@ -54,6 +54,24 @@ export interface OrderOption {
   value: string;
 }
 
+export interface PhraseFile {
+  filename: string;
+  url: string;
+  is_image: boolean;
+}
+
+export interface CommonPhrase {
+  id: string;
+  text: string;
+  files: PhraseFile[];
+}
+
+export interface PhrasesResponse {
+  ok: boolean;
+  phrases: CommonPhrase[];
+  error?: string;
+}
+
 export interface VerifyStatus {
   needs: boolean;
   state?: string;

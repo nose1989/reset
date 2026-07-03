@@ -2,6 +2,7 @@ import type {
   ConversationsResponse,
   DeliverResponse,
   MessagesResponse,
+  PhrasesResponse,
   SendResponse,
   TranslateResponse,
   VerifyCodeResponse,
@@ -66,6 +67,10 @@ export async function verifyCode(code: string): Promise<VerifyCodeResponse> {
   return (await res.json()) as VerifyCodeResponse;
 }
 
+export function fetchPhrases(): Promise<PhrasesResponse> {
+  return getJson<PhrasesResponse>("/api/m/phrases");
+}
+
 export function translateMessages(
   messages: { id: string; text: string }[],
 ): Promise<TranslateResponse> {
@@ -81,6 +86,7 @@ export async function sendReply(params: {
   message: string;
   target_lang: string;
   files?: File[];
+  phrase_id?: string;
 }): Promise<SendResponse> {
   const url = `${API_BASE}/api/m/send`;
   let res: Response;
@@ -90,6 +96,7 @@ export async function sendReply(params: {
     form.set("id", String(params.id));
     form.set("message", params.message);
     form.set("target_lang", params.target_lang);
+    if (params.phrase_id) form.set("phrase_id", params.phrase_id);
     for (const file of params.files) form.append("files", file);
     res = await fetch(url, { method: "POST", body: form });
   } else {
@@ -101,6 +108,7 @@ export async function sendReply(params: {
         id: params.id,
         message: params.message,
         target_lang: params.target_lang,
+        ...(params.phrase_id ? { phrase_id: params.phrase_id } : {}),
       }),
     });
   }

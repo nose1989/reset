@@ -5798,6 +5798,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_m_conversations()
             if path == "/api/m/messages":
                 return self.api_m_messages()
+            if path == "/api/m/phrases":
+                return self.api_m_phrases()
             if path == "/api/m/verify_code":
                 return self.api_m_verify_code()
             if path.startswith("/downloads/"):
@@ -7437,6 +7439,26 @@ class Handler(BaseHTTPRequestHandler):
                 results = list(executor.map(translate_item, pending))
         self.send_mobile_json({"ok": True, "results": results})
 
+    def api_m_phrases(self) -> None:
+        phrases: list[dict[str, Any]] = []
+        for phrase in load_common_phrases():
+            files: list[dict[str, Any]] = []
+            for file in phrase.get("files") or []:
+                if not isinstance(file, dict):
+                    continue
+                filename, _, file_url = phrase_file_reference(file)
+                files.append({
+                    "filename": filename,
+                    "url": file_url,
+                    "is_image": phrase_file_is_image(file, filename, file_url),
+                })
+            phrases.append({
+                "id": phrase["id"],
+                "text": str(phrase.get("text") or ""),
+                "files": files,
+            })
+        self.send_mobile_json({"ok": True, "phrases": phrases})
+
     def api_m_send(self) -> None:
         # Text-only replies come as JSON; replies with image attachments come as
         # multipart/form-data (files under "files", other values as form fields).
@@ -7447,14 +7469,22 @@ class Handler(BaseHTTPRequestHandler):
             conv_id = int(fields.get("id") or 0)
             message = clean_text(fields.get("message"))
             target_lang = clean_text(fields.get("target_lang")) or "en"
+            phrase_id = clean_text(fields.get("phrase_id"))
         else:
             payload = self.read_json_body()
             platform = clean_text(payload.get("platform") or "digiseller") or "digiseller"
             conv_id = int(payload.get("id") or 0)
             message = clean_text(payload.get("message"))
             target_lang = clean_text(payload.get("target_lang")) or "en"
+            phrase_id = clean_text(payload.get("phrase_id"))
         if not conv_id:
             return self.send_mobile_json({"ok": False, "error": "id is required"}, 400)
+        if phrase_id:
+            phrase = next((item for item in load_common_phrases() if item["id"] == phrase_id), None)
+            if phrase:
+                if not message:
+                    message = str(phrase.get("text") or "").strip()
+                uploads.extend(phrase_upload_items(phrase))
         if not message and not uploads:
             return self.send_mobile_json({"ok": False, "error": "message is required"}, 400)
         if message and should_translate_outgoing_message(message, target_lang):
