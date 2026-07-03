@@ -7379,6 +7379,9 @@ class Handler(BaseHTTPRequestHandler):
                 entry["text"] = seller_bubble_text(text)
             messages.append(entry)
         buyer_name = name or "会员"
+        price = self._mobile_order_price(platform, conv_id)
+        if price:
+            buyer_name = f"{buyer_name}（{price}）"
         options = self._mobile_order_options(platform, conv_id)
         verify = digiseller_order_verify_status(conv_id) if platform == "digiseller" else {"needs": False}
         delivery = self._mobile_delivery_status(platform, conv_id)
@@ -7399,6 +7402,24 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {"supported": True, "status": "", "delivered": False}
         return {"supported": True, "status": status, "delivered": ggsel_delivery_is_delivered(status)}
+
+    def _mobile_order_price(self, platform: str, order_id: int) -> str:
+        """Current price of the conversation's order, formatted as "<amount> <currency>".
+        Empty when unknown or unsupported (e.g. FunPay has no order amount)."""
+        if not order_id:
+            return ""
+        try:
+            if platform == "ggsel":
+                amount, currency = ggsel_order_amount_from_info(cached_ggsel_order_info(order_id))
+            elif platform == "digiseller":
+                # ggsel_order_amount_from_info reads generic amount/currency keys,
+                # so it also fits Digiseller's purchase info payload.
+                amount, currency = ggsel_order_amount_from_info(cached_purchase_info(order_id))
+            else:
+                return ""
+        except Exception:
+            return ""
+        return f"{clean_text(amount)} {clean_text(currency)}".strip()
 
     def _mobile_order_options(self, platform: str, order_id: int) -> list[dict[str, str]]:
         """Buyer-selected purchase options for a conversation, translated to zh."""
