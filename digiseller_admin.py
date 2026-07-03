@@ -2036,12 +2036,24 @@ class FunPayClient:
         return attrs
 
     def first_text(self, html_text: str, class_name: str) -> str:
-        match = re.search(
-            rf'<[^>]*class="[^"]*\b{re.escape(class_name)}\b[^"]*"[^>]*>(.*?)</[^>]+>',
+        open_match = re.search(
+            rf'<([A-Za-z0-9]+)\b[^>]*class="[^"]*\b{re.escape(class_name)}\b[^"]*"[^>]*?(/?)>',
             html_text,
-            re.S | re.I,
+            re.I,
         )
-        return clean_text(match.group(1) if match else "")
+        if not open_match or open_match.group(2):
+            return ""
+        tag = open_match.group(1)
+        inner_start = open_match.end()
+        depth = 1
+        for match in re.finditer(rf'<(/?){re.escape(tag)}\b[^>]*?(/?)>', html_text[inner_start:], re.I):
+            if match.group(1):
+                depth -= 1
+                if depth == 0:
+                    return clean_text(html_text[inner_start : inner_start + match.start()])
+            elif not match.group(2):
+                depth += 1
+        return clean_text(html_text[inner_start:])
 
     def chat_page(self, node_id: int | None = None) -> str:
         params = {"node": str(node_id)} if node_id else None
