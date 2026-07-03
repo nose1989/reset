@@ -1248,6 +1248,34 @@ class DigisellerClient:
         return saved
 
 
+def downscale_image_for_send(data: bytes, mime: str, max_dim: int = 2000) -> tuple[bytes, str]:
+    # GGSEL rejects chat attachments larger than 2000x2000px. Shrink oversized
+    # images so the send succeeds; smaller images pass through unchanged. Falls
+    # back to the original bytes if Pillow is unavailable or decoding fails.
+    try:
+        import io as _io
+
+        from PIL import Image
+    except Exception:
+        return data, mime
+    try:
+        with Image.open(_io.BytesIO(data)) as im:
+            width, height = im.size
+            if width <= max_dim and height <= max_dim:
+                return data, mime
+            scale = min(max_dim / width, max_dim / height)
+            size = (max(1, round(width * scale)), max(1, round(height * scale)))
+            resized = im.resize(size, Image.LANCZOS)
+            out = _io.BytesIO()
+            if (im.format or "").upper() == "PNG":
+                resized.save(out, format="PNG")
+                return out.getvalue(), "image/png"
+            resized.convert("RGB").save(out, format="JPEG", quality=90)
+            return out.getvalue(), "image/jpeg"
+    except Exception:
+        return data, mime
+
+
 class GgselClient:
     def __init__(self) -> None:
         load_env()
@@ -1578,7 +1606,8 @@ class GgselClient:
 
     def chat_image_data_url(self, item: UploadItem) -> str:
         content_type = self.image_upload_content_type(item)
-        return f"data:{content_type};base64,{base64.b64encode(item.data).decode('ascii')}"
+        data, content_type = downscale_image_for_send(item.data, content_type)
+        return f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
 
     def is_image_upload(self, item: UploadItem) -> bool:
         content_type = (item.content_type or "").split(";", 1)[0].lower()
