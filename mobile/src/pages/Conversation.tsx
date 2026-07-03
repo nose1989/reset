@@ -213,20 +213,19 @@ export default function Conversation() {
     }
   };
 
-  const toggleDelivered = async () => {
-    if (delivering) return;
-    const next = !delivery.delivered;
+  const markDelivered = async () => {
+    if (delivering || delivery.delivered) return;
     setDelivering(true);
     setError("");
     try {
-      const data = await setDelivered({ platform, id: convId, delivered: next });
+      const data = await setDelivered({ platform, id: convId, delivered: true });
       if (!data.ok) throw new Error(data.error || "操作失败");
       setDelivery({
         supported: true,
         status: data.status,
         delivered: !!data.delivered,
       });
-      showToast(data.delivered ? "已标记发货" : "已改回待发货");
+      showToast("已标记发货");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -302,7 +301,7 @@ export default function Conversation() {
           {!delivery.delivered && (
             <button
               className="delivery-btn"
-              onClick={toggleDelivered}
+              onClick={markDelivered}
               disabled={delivering}
             >
               {delivering ? "处理中…" : "标记已发货"}
