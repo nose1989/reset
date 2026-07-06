@@ -508,7 +508,7 @@ export default function Conversation() {
                         >
                           {original ? "显示中文" : "查看原文"}
                         </button>
-                        {m.lang && <span className="tag">{m.lang} → 中</span>}
+
                       </div>
                     </>
                   ) : (
