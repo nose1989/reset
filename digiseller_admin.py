@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 import uuid
 import webbrowser
 from dataclasses import dataclass
@@ -9044,6 +9045,14 @@ def main() -> None:
     start_chat_keepalive_browser()
     start_translation_cache_cleanup()
     server = ThreadingHTTPServer((host, port), Handler)
+
+    def warm_mobile_conversations() -> None:
+        try:
+            urllib.request.urlopen(f"http://{host}:{port}/api/m/conversations", timeout=120).read()
+        except Exception:
+            pass
+
+    threading.Thread(target=warm_mobile_conversations, daemon=True).start()
     print(f"Digiseller admin running at http://{host}:{port}")
     print("Open the page and click the alerts button to allow sound/voice notifications.")
     print("Online keepalive: enabled by default; set DIGISELLER_KEEP_ONLINE=0 to disable.")
