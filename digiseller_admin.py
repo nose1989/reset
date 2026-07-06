@@ -2828,7 +2828,7 @@ FUNPAY_BOOST_STATUS: dict[str, Any] = {
 }
 FUNPAY_BOOST_COOLDOWNS: dict[int, float] = {}
 FUNPAY_BOOST_HISTORY: dict[int, dict[str, Any]] = {}
-MCONV_CACHE_TTL_SECONDS = 20
+MCONV_CACHE_TTL_SECONDS = 300
 _MCONV_CACHE: dict[str, Any] = {"payload": None, "ts": 0.0}
 _MCONV_LOCK = threading.Lock()
 _MCONV_REFRESHING = False
