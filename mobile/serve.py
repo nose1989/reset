@@ -26,6 +26,7 @@ Environment variables:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import os
@@ -99,6 +100,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802
         self._dispatch("OPTIONS")
 
+    def _fingerprint(self) -> str:
+        ua = self.headers.get("User-Agent", "")
+        return hashlib.sha256(ua.encode("utf-8")).hexdigest()
+
     def _device_id(self) -> str | None:
         jar = http_cookies.SimpleCookie(self.headers.get("Cookie") or "")
         morsel = jar.get(DEVICE_COOKIE)
@@ -119,8 +124,12 @@ class Handler(BaseHTTPRequestHandler):
         device_id = self._device_id() or secrets.token_urlsafe(24)
         with _ALLOWLIST_LOCK:
             allow = _load_allowlist()
-            if device_id not in allow:
-                allow[device_id] = {"ua": self.headers.get("User-Agent", "")[:200]}
+            entry = allow.get(device_id)
+            if not isinstance(entry, dict) or entry.get("fp") != self._fingerprint():
+                allow[device_id] = {
+                    "ua": self.headers.get("User-Agent", "")[:200],
+                    "fp": self._fingerprint(),
+                }
                 _save_allowlist(allow)
         self.send_response(302)
         self.send_header("Location", "/")
@@ -141,7 +150,12 @@ class Handler(BaseHTTPRequestHandler):
         if not ACTIVATION_KEY:
             return True
         device_id = self._device_id()
-        return bool(device_id) and device_id in _load_allowlist()
+        if not device_id:
+            return False
+        entry = _load_allowlist().get(device_id)
+        # The cookie is bound to the browser fingerprint captured at activation;
+        # a cookie copied to a different device/browser is rejected.
+        return isinstance(entry, dict) and entry.get("fp") == self._fingerprint()
 
     def _dispatch(self, method: str) -> None:
         parsed = urllib.parse.urlparse(self.path)
