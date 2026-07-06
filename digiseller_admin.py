@@ -51,6 +51,7 @@ COMMON_PHRASES_FILE = APP_DIR / "common_phrases.json"
 COMMON_PHRASES_DIR = APP_DIR / "common_phrase_files"
 COMMON_PHRASES_DIR.mkdir(exist_ok=True)
 SALES_ORDER_SEEN_FILE = APP_DIR / "sales_order_seen.json"
+GGSEL_READ_STATE_FILE = APP_DIR / "ggsel_read_state.json"
 DIGISELLER_STOCK_CACHE_FILE = APP_DIR / "digiseller_stock_cache.json"
 API_BASE = "https://api.digiseller.com/api"
 APP_VERSION = "v8.21-funpay-sync-products"
@@ -172,6 +173,40 @@ def load_env(path: Path = APP_DIR / ".env") -> None:
         key = key.strip()
         if key and not os.environ.get(key, "").strip():
             os.environ[key] = value.strip().strip('"').strip("'")
+
+
+_ENV_WRITE_LOCK = threading.Lock()
+
+
+def persist_env_value(key: str, value: str, path: Path = APP_DIR / ".env") -> None:
+    """Update (or append) a single KEY=value line in the .env file, preserving the
+    rest of the file, and mirror the value into os.environ. Best-effort: never
+    raises. Used to save refreshed GGSEL session cookies so they survive restarts."""
+    try:
+        with _ENV_WRITE_LOCK:
+            lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+            out = []
+            found = False
+            prefix = f"{key}="
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith(prefix) and not stripped.startswith("#"):
+                    out.append(f"{key}={value}")
+                    found = True
+                    continue
+                out.append(line)
+            if not found:
+                out.append(f"{key}={value}")
+            tmp = path.parent / f".{path.name}.tmp.{os.getpid()}"
+            tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            os.replace(tmp, path)
+        os.environ[key] = value
+    except Exception:
+        return
 
 
 def clean_text(value: Any) -> str:
@@ -611,13 +646,6 @@ def sent_original_for(translated: str) -> str:
     return SENT_ORIGINALS.get(key, "")
 
 
-def seller_bubble_text(translated: str) -> str:
-    """Text to show in my own sent bubble on my client: the original Chinese I
-    typed, falling back to the sent text when no original was recorded. The buyer
-    still receives the translated `translated` text — only my client shows Chinese."""
-    return sent_original_for(translated) or translated
-
-
 LANG_LABELS = {
     "zh": "中文",
     "zh-CN": "中文",
@@ -805,6 +833,17 @@ def translate_incoming_html(text: str, message_id: Any, should_translate: bool =
         f"</div>"
     )
 
+
+def seller_bubble_html(text: str, message_id: Any) -> str:
+    """Render my own sent bubble. Show the Chinese I typed when we recorded it;
+    otherwise translate foreign-language seller text (e.g. FunPay auto-replies
+    and notifications) to Chinese so I can read it."""
+    original = sent_original_for(text)
+    if original:
+        return message_text_html(original, allow_save=True)
+    if should_translate_text(text) and heuristic_language(text) not in {"zh", "zh-CN"}:
+        return translate_incoming_html(text, message_id, should_translate=True)
+    return message_text_html(text, allow_save=True)
 
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
@@ -1290,9 +1329,87 @@ class GgselClient:
         self.http = httpx.Client(timeout=35, headers={"Accept": "application/json", "User-Agent": "Digiseller Local Admin"})
         self._token: str | None = None
         self.valid_thru: str | None = None
+        self._seller_cookie_lock = threading.Lock()
+        self._last_seller_refresh = 0
+        self.seller_refresh_error = ""
 
     def configured(self) -> bool:
         return bool(self.seller_id and self.api_key)
+
+    @staticmethod
+    def _parse_cookie_string(cookie: str) -> dict[str, str]:
+        jar = {}
+        for part in (cookie or "").split(";"):
+            part = part.strip()
+            if "=" in part:
+                name, value = part.split("=", 1)
+                name = name.strip()
+                if name:
+                    jar[name] = value.strip()
+        return jar
+
+    @staticmethod
+    def _serialize_cookie(jar: dict[str, str]) -> str:
+        return "; ".join(f"{name}={value}" for name, value in jar.items() if value)
+
+    @staticmethod
+    def _set_cookie_updates(response: httpx.Response) -> dict[str, str]:
+        updates = {}
+        for raw in response.headers.get_list("set-cookie"):
+            first = raw.split(";", 1)[0].strip()
+            if "=" not in first:
+                continue
+            name, value = first.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if name and value and value.lower() not in {"", "null", "deleted"}:
+                updates[name] = value
+        return updates
+
+    def refresh_seller_session(self) -> bool:
+        """Mint a fresh seller-office ACCESS_TOKEN from the REFRESH_TOKEN cookie
+        (the same call seller.ggsel.com makes) and persist the updated cookie to
+        .env so image/attachment replies keep working without re-pasting. Returns
+        True when a new token was obtained."""
+        with self._seller_cookie_lock:
+            jar = self._parse_cookie_string(self.seller_cookie)
+            if not jar.get("REFRESH_TOKEN"):
+                self.seller_refresh_error = "no REFRESH_TOKEN in GGSEL_SELLER_COOKIE"
+                return False
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "x-request-id": str(uuid.uuid4()),
+                "locale": "en",
+                "User-Agent": "Mozilla/5.0",
+                "Origin": self.seller_office_base,
+                "Referer": f"{self.seller_office_base}/en/offers",
+                "Cookie": self._serialize_cookie(jar),
+            }
+            try:
+                r = self.http.post(
+                    f"{self.seller_office_base}/api/auth/refresh",
+                    headers=headers,
+                    json={},
+                    follow_redirects=False,
+                )
+            except Exception as exc:
+                self.seller_refresh_error = f"refresh request failed: {exc}"
+                return False
+            if r.status_code != 200:
+                self.seller_refresh_error = f"refresh HTTP {r.status_code}: {short(r.text, 200)}"
+                return False
+            updates = self._set_cookie_updates(r)
+            if "ACCESS_TOKEN" not in updates:
+                self.seller_refresh_error = "refresh returned no ACCESS_TOKEN"
+                return False
+            jar.update(updates)
+            new_cookie = self._serialize_cookie(jar)
+            self.seller_cookie = new_cookie
+            self._last_seller_refresh = time.time()
+            self.seller_refresh_error = ""
+        persist_env_value("GGSEL_SELLER_COOKIE", new_cookie)
+        return True
 
     def login(self) -> dict[str, Any]:
         if not self.api_key:
@@ -1742,6 +1859,7 @@ class GgselClient:
         path: str,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        _allow_refresh: bool = True,
     ) -> Any:
         if not self.seller_cookie:
             raise RuntimeError("GGSEL_SELLER_COOKIE is missing. Put the seller login cookie in .env to send stock items.")
@@ -1761,6 +1879,8 @@ class GgselClient:
             follow_redirects=True,
         )
         if r.status_code in (401, 403):
+            if _allow_refresh and self.refresh_seller_session():
+                return self.seller_office_request(method, path, params=params, json_body=json_body, _allow_refresh=False)
             raise RuntimeError("GGSEL seller cookie is missing or expired")
         if r.status_code >= 400:
             raise RuntimeError(f"GGSEL seller office HTTP {r.status_code}: {short(r.text, 400)}")
@@ -1791,7 +1911,7 @@ class GgselClient:
     def seller_office_delete(self, path: str) -> None:
         self.seller_office_request("DELETE", path)
 
-    def seller_office_fetch_text(self, url_or_path: str) -> str:
+    def seller_office_fetch_text(self, url_or_path: str, _allow_refresh: bool = True) -> str:
         if not self.seller_cookie:
             raise RuntimeError("GGSEL_SELLER_COOKIE is missing. Put the seller login cookie in .env to send stock items.")
         target = url_or_path.strip()
@@ -1803,12 +1923,13 @@ class GgselClient:
             target = self.seller_office_base + target
         elif not re.match(r"https?://", target, flags=re.I):
             target = self.seller_office_base + "/" + target.lstrip("/")
+        same_origin = urllib.parse.urlparse(target).netloc == urllib.parse.urlparse(self.seller_office_base).netloc
         headers = {
             "Accept": "text/plain, application/octet-stream, application/json;q=0.9, */*;q=0.8",
             "User-Agent": "Digiseller Local Admin",
             "Referer": f"{self.seller_office_base}/en/offers",
         }
-        if urllib.parse.urlparse(target).netloc == urllib.parse.urlparse(self.seller_office_base).netloc:
+        if same_origin:
             headers["Cookie"] = self.seller_cookie
         r = self.http.get(target, headers=headers, follow_redirects=True)
         content_length = r.headers.get("content-length")
@@ -1819,6 +1940,8 @@ class GgselClient:
             except ValueError:
                 pass
         if r.status_code in (401, 403):
+            if same_origin and _allow_refresh and self.refresh_seller_session():
+                return self.seller_office_fetch_text(url_or_path, _allow_refresh=False)
             raise RuntimeError("GGSEL seller cookie is missing or expired")
         if r.status_code >= 400:
             raise RuntimeError(f"GGSEL seller office file HTTP {r.status_code}: {short(r.text, 400)}")
@@ -2032,12 +2155,24 @@ class FunPayClient:
         return attrs
 
     def first_text(self, html_text: str, class_name: str) -> str:
-        match = re.search(
-            rf'<[^>]*class="[^"]*\b{re.escape(class_name)}\b[^"]*"[^>]*>(.*?)</[^>]+>',
+        open_match = re.search(
+            rf'<([A-Za-z0-9]+)\b[^>]*class="[^"]*\b{re.escape(class_name)}\b[^"]*"[^>]*?(/?)>',
             html_text,
-            re.S | re.I,
+            re.I,
         )
-        return clean_text(match.group(1) if match else "")
+        if not open_match or open_match.group(2):
+            return ""
+        tag = open_match.group(1)
+        inner_start = open_match.end()
+        depth = 1
+        for match in re.finditer(rf'<(/?){re.escape(tag)}\b[^>]*?(/?)>', html_text[inner_start:], re.I):
+            if match.group(1):
+                depth -= 1
+                if depth == 0:
+                    return clean_text(html_text[inner_start : inner_start + match.start()])
+            elif not match.group(2):
+                depth += 1
+        return clean_text(html_text[inner_start:])
 
     def chat_page(self, node_id: int | None = None) -> str:
         params = {"node": str(node_id)} if node_id else None
@@ -3649,6 +3784,45 @@ def ggsel_chat_last_date(chat: dict[str, Any]) -> Any:
     return chat.get("last_message") or chat.get("date")
 
 
+# GGSEL's API has no working "mark seen" endpoint (/debates/v2/seen returns 404),
+# and its chat objects always report cnt_new=null, so a chat only leaves the
+# filter_new=1 result when GGSEL itself decides to. To let opening a chat clear
+# its unread badge (and keep it cleared across refreshes), we persist the newest
+# message timestamp we have read per order. A chat then counts as unread only
+# when it is in filter_new=1 AND a message newer than what we read has arrived.
+_ggsel_read_lock = threading.Lock()
+
+
+def load_ggsel_read_state() -> dict[str, str]:
+    try:
+        data = json.loads(GGSEL_READ_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def mark_ggsel_read_locally(order_id: int, last_message: Any) -> None:
+    if not order_id:
+        return
+    with _ggsel_read_lock:
+        state = load_ggsel_read_state()
+        state[str(order_id)] = str(last_message or "")
+        tmp = GGSEL_READ_STATE_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(GGSEL_READ_STATE_FILE)
+
+
+def ggsel_chat_is_unread(order_id: int, last_message: Any, read_state: dict[str, str]) -> bool:
+    """A GGSEL chat (already known to be in filter_new=1) is unread unless we
+    have locally read it and no newer message has arrived since."""
+    stored = read_state.get(str(order_id))
+    if stored is None:
+        return True
+    return sort_time(last_message) > sort_time(stored)
+
+
 def ggsel_delivery_is_delivered(status: Any) -> bool:
     """A seller-office order counts as delivered once its delivery_status leaves
     'pending' (the delivered action reports back as 'shipped')."""
@@ -4344,6 +4518,117 @@ def ggsel_order_amount_from_info(info: dict[str, Any]) -> tuple[str, str]:
         if amount_usd:
             return amount_usd, "USD"
     return "", ""
+
+
+# --- Currency -> USD conversion (cached) -------------------------------------
+# Approximate USD value of one unit of each currency. Used only as a fallback
+# when the live rate fetch fails. WebMoney purse codes map to their base fiat.
+FX_STATIC_USD_RATES: dict[str, float] = {
+    "USD": 1.0,
+    "EUR": 1.08,
+    "RUB": 0.0125, "RUR": 0.0125,
+    "UAH": 0.024,
+    "KZT": 0.0021,
+    "BYN": 0.31,
+    "CNY": 0.14,
+    "GBP": 1.27,
+}
+FX_RATE_TTL = 6 * 3600  # refresh live rates at most once every 6 hours
+_FX_RATE_CACHE: dict[str, Any] = {"rates": {}, "ts": 0.0}
+_FX_RATE_LOCK = threading.Lock()
+# "<platform>:<order_id>" -> USD price, cached because order prices don't change.
+ORDER_USD_PRICE_CACHE: dict[str, float] = {}
+_ORDER_USD_PRICE_LOCK = threading.Lock()
+
+
+def _normalize_currency(code: Any) -> str:
+    text = clean_text(code).upper()
+    # WebMoney purses are quoted with letter codes; map them to real currencies.
+    wm = {
+        "WMZ": "USD", "WMT": "USD",
+        "WME": "EUR",
+        "WMR": "RUB", "WMP": "RUB",
+        "WMU": "UAH",
+        "WMK": "KZT", "WMG": "KZT",
+        "WMB": "BYN",
+    }
+    return wm.get(text, text)
+
+
+def _fetch_live_usd_rates() -> dict[str, float]:
+    """USD value of one unit of each currency from a free FX API. {} on failure."""
+    try:
+        resp = httpx.get("https://open.er-api.com/v6/latest/USD", timeout=8.0)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return {}
+    rates = data.get("rates") if isinstance(data, dict) else None
+    if not isinstance(rates, dict):
+        return {}
+    out: dict[str, float] = {}
+    for code, per_usd in rates.items():
+        try:
+            per_usd = float(per_usd)
+        except (TypeError, ValueError):
+            continue
+        if per_usd > 0:
+            out[str(code).upper()] = 1.0 / per_usd
+    return out
+
+
+def usd_rate_for_currency(currency: Any) -> float:
+    """USD value of one unit of ``currency`` (e.g. RUB -> ~0.0125). 0.0 if unknown."""
+    code = _normalize_currency(currency)
+    if not code:
+        return 0.0
+    if code == "USD":
+        return 1.0
+    now = time.time()
+    with _FX_RATE_LOCK:
+        fresh = now - _FX_RATE_CACHE["ts"] < FX_RATE_TTL
+        if fresh:
+            rates = dict(_FX_RATE_CACHE["rates"])
+        else:
+            fetched = _fetch_live_usd_rates()
+            if fetched:
+                _FX_RATE_CACHE["rates"] = fetched
+                _FX_RATE_CACHE["ts"] = now
+            rates = dict(_FX_RATE_CACHE["rates"])  # keep last good rates on failure
+    rate = rates.get(code)
+    if rate:
+        return rate
+    return FX_STATIC_USD_RATES.get(code, 0.0)
+
+
+def order_amount_usd(info: dict[str, Any]) -> float | None:
+    """Best-effort USD value of an order. Prefers an explicit USD field, else
+    converts the native amount/currency. Returns None when unknown."""
+    containers: list[dict[str, Any]] = []
+    for value in (info, info.get("content"), info.get("sale"), info.get("order"), info.get("purchase")):
+        if isinstance(value, dict):
+            containers.append(value)
+    for container in containers:
+        for key in ("amount_usd", "sum_usd", "total_usd"):
+            raw = container.get(key)
+            if raw not in (None, "", 0, 0.0):
+                try:
+                    return float(str(raw).replace(",", "."))
+                except (TypeError, ValueError):
+                    pass
+    for container in containers:
+        raw_amount = container.get("amount") or container.get("amount_in") or container.get("sum") or container.get("total")
+        currency = container.get("type_curr") or container.get("currency") or container.get("currency_type")
+        if raw_amount in (None, ""):
+            continue
+        try:
+            amount = float(str(raw_amount).replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+        rate = usd_rate_for_currency(currency)
+        if rate:
+            return amount * rate
+    return None
 
 
 def ggsel_sale_order_amount(sale: dict[str, Any]) -> tuple[str, str]:
@@ -5256,6 +5541,37 @@ def start_online_keepalive() -> None:
     threading.Thread(target=run_online_keepalive, args=(interval,), daemon=True).start()
 
 
+def run_ggsel_seller_refresh(interval: int) -> None:
+    """Proactively refresh the GGSEL seller-office ACCESS_TOKEN so image/attachment
+    replies keep working. GGSEL rotates a short-lived ACCESS_TOKEN; as long as we
+    keep exchanging the REFRESH_TOKEN before it lapses the web session stays alive
+    without re-pasting the cookie. On-demand refresh (on 401) still covers any gap."""
+    while True:
+        try:
+            if ggsel_client.seller_office_configured():
+                if ggsel_client.refresh_seller_session():
+                    print("GGSEL seller session refreshed.", flush=True)
+                else:
+                    print(
+                        f"GGSEL seller session refresh unavailable: {ggsel_client.seller_refresh_error}",
+                        flush=True,
+                    )
+        except Exception as exc:
+            print(f"GGSEL seller session refresh error: {exc}", flush=True)
+        time.sleep(interval)
+
+
+def start_ggsel_seller_refresh() -> None:
+    enabled = os.getenv("GGSEL_SELLER_REFRESH", "1").strip().lower() not in {"0", "false", "no", "off"}
+    if not enabled:
+        return
+    try:
+        interval = max(60, int(os.getenv("GGSEL_SELLER_REFRESH_INTERVAL", "600") or "600"))
+    except ValueError:
+        interval = 600
+    threading.Thread(target=run_ggsel_seller_refresh, args=(interval,), daemon=True).start()
+
+
 def notify_desktop(text: str) -> None:
     print("\a" + text, flush=True)
     if sys.platform == "darwin":
@@ -5824,10 +6140,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_m_conversations()
             if path == "/api/m/messages":
                 return self.api_m_messages()
-            if path == "/api/m/phrases":
-                return self.api_m_phrases()
             if path == "/api/m/verify_code":
                 return self.api_m_verify_code()
+            if path == "/api/m/phrases":
+                return self.api_m_phrases()
             if path.startswith("/downloads/"):
                 return self.serve_download(path)
             if path.startswith("/phrase-files/"):
@@ -6940,7 +7256,7 @@ class Handler(BaseHTTPRequestHandler):
                     if is_attachment_message(msg):
                         text_html = attachment_html(msg)
                     elif is_seller:
-                        text_html = message_text_html(seller_bubble_text(text), allow_save=True)
+                        text_html = seller_bubble_html(text, msg.get("id"))
                     else:
                         text_html = translate_incoming_html(text, msg.get("id"), should_translate=True)
                 except Exception as exc:
@@ -7006,7 +7322,7 @@ class Handler(BaseHTTPRequestHandler):
             if is_attachment_message(msg):
                 text_html = attachment_html(msg, allow_guess_preview=True)
             elif is_seller:
-                text_html = message_text_html(seller_bubble_text(text), allow_save=True)
+                text_html = seller_bubble_html(text, msg.get("id"))
             else:
                 text_html = translate_incoming_html(text, msg.get("id"), should_translate=True)
             msg_no = f"#{idx}/{total_messages}"
@@ -7042,7 +7358,7 @@ class Handler(BaseHTTPRequestHandler):
                 if is_attachment_message(msg):
                     text_html = attachment_html(msg, allow_guess_preview=True)
                 elif is_seller:
-                    text_html = message_text_html(seller_bubble_text(text), allow_save=True)
+                    text_html = seller_bubble_html(text, msg.get("id"))
                 else:
                     text_html = translate_incoming_html(text, msg.get("id"), should_translate=True)
             except Exception as exc:
@@ -7081,7 +7397,7 @@ class Handler(BaseHTTPRequestHandler):
             text = clean_text(msg.get("message"))
             try:
                 if is_seller:
-                    text_html = message_text_html(seller_bubble_text(text), allow_save=True)
+                    text_html = seller_bubble_html(text, msg.get("id"))
                 else:
                     text_html = translate_incoming_html(text, msg.get("id"), should_translate=True)
             except Exception as exc:
@@ -7285,6 +7601,20 @@ class Handler(BaseHTTPRequestHandler):
             errors.append(str(exc))
         try:
             if ggsel_client.configured():
+                # GGSEL never fills cnt_new (it is null even for unread chats),
+                # so the only reliable unread signal is membership in the
+                # filter_new=1 result. Build that set once and use it below.
+                # Chats we have locally read (and that got no newer message
+                # since) are excluded so opening a chat clears its badge for good.
+                ggsel_unread_ids: set[int] = set()
+                try:
+                    ggsel_read_state = load_ggsel_read_state()
+                    for chat in ggsel_client.all_chats(only_unread=True):
+                        oid = ggsel_chat_order_id(chat)
+                        if oid and ggsel_chat_is_unread(oid, ggsel_chat_last_date(chat), ggsel_read_state):
+                            ggsel_unread_ids.add(oid)
+                except Exception:
+                    ggsel_unread_ids = set()
                 for chat in ggsel_client.all_chats():
                     if not is_recent_time(ggsel_chat_last_date(chat), RECENT_CHAT_DAYS):
                         continue
@@ -7300,7 +7630,8 @@ class Handler(BaseHTTPRequestHandler):
                         "name": name, "email": email,
                         "preview": short(product, 80), "product": clean_text(product),
                         "time": when, "time_label": self._mobile_time_label(when),
-                        "unread": int(chat.get("cnt_new") or 0),
+                        "unread": int(chat.get("cnt_new") or 0)
+                        or (1 if order_id in ggsel_unread_ids else 0),
                         "initial": self._mobile_initial(name),
                         "avatar": self._mobile_avatar(product, self._mobile_initial(name)),
                     }))
@@ -7333,7 +7664,8 @@ class Handler(BaseHTTPRequestHandler):
                     }))
         except Exception as exc:
             errors.append(str(exc))
-        entries.sort(key=lambda item: item[0], reverse=True)
+        # Unread conversations float to the top; within each group sort by time.
+        entries.sort(key=lambda item: (int(item[1].get("unread") or 0) > 0, item[0]), reverse=True)
         conversations = [item for _, item in entries]
         unread_total = sum(int(c.get("unread") or 0) for c in conversations)
         self.send_mobile_json({"ok": True, "conversations": conversations, "unread_total": unread_total, "errors": errors})
@@ -7365,6 +7697,10 @@ class Handler(BaseHTTPRequestHandler):
                 raw = ggsel_client.chat_messages(conv_id)
                 if raw:
                     safe_mark_ggsel_chat_read(conv_id)
+                    # GGSEL's remote "seen" endpoint 404s, so also record the
+                    # newest message locally to clear the unread badge for good.
+                    newest = max((m.get("date_written") for m in raw), key=sort_time, default="")
+                    mark_ggsel_read_locally(conv_id, newest)
                 product = ggsel_order_product_name(conv_id, self.q("product", ""))
                 email = ggsel_order_buyer_email(conv_id, "")
                 name = self._mobile_display_name(self.q("name", ""), conv_id) or (email.split("@", 1)[0] if email else "")
@@ -7402,9 +7738,20 @@ class Handler(BaseHTTPRequestHandler):
                     entry["translated"] = cached[0]
                     entry["lang"] = lang_label(cached[1])
             elif is_seller:
-                entry["text"] = seller_bubble_text(text)
+                original_zh = sent_original_for(text)
+                if original_zh:
+                    entry["text"] = original_zh
+                elif should_translate_text(text) and heuristic_language(text) not in {"zh", "zh-CN"}:
+                    entry["translate"] = True
+                    cached = cached_translation(text, "zh-CN")
+                    if cached:
+                        entry["translated"] = cached[0]
+                        entry["lang"] = lang_label(cached[1])
             messages.append(entry)
         buyer_name = name or "会员"
+        price = self._mobile_order_price(platform, conv_id)
+        if price:
+            buyer_name = f"{buyer_name}（{price}）"
         options = self._mobile_order_options(platform, conv_id)
         verify = digiseller_order_verify_status(conv_id) if platform == "digiseller" else {"needs": False}
         delivery = self._mobile_delivery_status(platform, conv_id)
@@ -7425,6 +7772,33 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {"supported": True, "status": "", "delivered": False}
         return {"supported": True, "status": status, "delivered": ggsel_delivery_is_delivered(status)}
+
+    def _mobile_order_price(self, platform: str, order_id: int) -> str:
+        """Current price of the conversation's order in USD, formatted as "$X.XX".
+        Cached per order (prices don't change) so the FX conversion runs at most
+        once per order. Empty when unknown or unsupported (e.g. FunPay)."""
+        if not order_id:
+            return ""
+        cache_key = f"{platform}:{order_id}"
+        with _ORDER_USD_PRICE_LOCK:
+            cached = ORDER_USD_PRICE_CACHE.get(cache_key)
+        if cached is not None:
+            return f"${cached:.2f}"
+        try:
+            if platform == "ggsel":
+                info = cached_ggsel_order_info(order_id)
+            elif platform == "digiseller":
+                info = cached_purchase_info(order_id)
+            else:
+                return ""
+            usd = order_amount_usd(info)
+        except Exception:
+            return ""
+        if usd is None:
+            return ""
+        with _ORDER_USD_PRICE_LOCK:
+            ORDER_USD_PRICE_CACHE[cache_key] = usd
+        return f"${usd:.2f}"
 
     def _mobile_order_options(self, platform: str, order_id: int) -> list[dict[str, str]]:
         """Buyer-selected purchase options for a conversation, translated to zh."""
@@ -7470,24 +7844,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_mobile_json({"ok": True, "results": results})
 
     def api_m_phrases(self) -> None:
-        phrases: list[dict[str, Any]] = []
+        result: list[dict[str, Any]] = []
         for phrase in load_common_phrases():
-            files: list[dict[str, Any]] = []
+            files_out: list[dict[str, Any]] = []
             for file in phrase.get("files") or []:
                 if not isinstance(file, dict):
                     continue
                 filename, _, file_url = phrase_file_reference(file)
-                files.append({
-                    "filename": filename,
-                    "url": file_url,
-                    "is_image": phrase_file_is_image(file, filename, file_url),
-                })
-            phrases.append({
-                "id": phrase["id"],
+                if filename or file_url:
+                    files_out.append({
+                        "filename": filename or "file",
+                        "url": file_url,
+                        "is_image": phrase_file_is_image(file, filename, file_url),
+                    })
+            result.append({
+                "id": phrase.get("id") or "",
                 "text": str(phrase.get("text") or ""),
-                "files": files,
+                "files": files_out,
             })
-        self.send_mobile_json({"ok": True, "phrases": phrases})
+        self.send_mobile_json({"ok": True, "phrases": result})
 
     def api_m_phrase_save(self) -> None:
         # Add (no id) or edit (with id) a text phrase. Attachments are managed on
@@ -7529,28 +7904,29 @@ class Handler(BaseHTTPRequestHandler):
         # Text-only replies come as JSON; replies with image attachments come as
         # multipart/form-data (files under "files", other values as form fields).
         uploads: list[UploadItem] = []
+        phrase_id = ""
         if self.headers.get("Content-Type", "").startswith("multipart/form-data"):
             fields, uploads = self.read_form()
             platform = mobile_platform_real(clean_text(fields.get("platform") or "digiseller")) or "digiseller"
             conv_id = int(fields.get("id") or 0)
             message = clean_text(fields.get("message"))
             target_lang = clean_text(fields.get("target_lang")) or "en"
-            phrase_id = clean_text(fields.get("phrase_id"))
+            phrase_id = fields.get("phrase_id", "").strip()
         else:
             payload = self.read_json_body()
             platform = mobile_platform_real(clean_text(payload.get("platform") or "digiseller")) or "digiseller"
             conv_id = int(payload.get("id") or 0)
             message = clean_text(payload.get("message"))
             target_lang = clean_text(payload.get("target_lang")) or "en"
-            phrase_id = clean_text(payload.get("phrase_id"))
-        if not conv_id:
-            return self.send_mobile_json({"ok": False, "error": "id is required"}, 400)
+            phrase_id = str(payload.get("phrase_id") or "").strip()
         if phrase_id:
             phrase = next((item for item in load_common_phrases() if item["id"] == phrase_id), None)
             if phrase:
                 if not message:
-                    message = str(phrase.get("text") or "").strip()
+                    message = clean_text(phrase.get("text"))
                 uploads.extend(phrase_upload_items(phrase))
+        if not conv_id:
+            return self.send_mobile_json({"ok": False, "error": "id is required"}, 400)
         if not message and not uploads:
             return self.send_mobile_json({"ok": False, "error": "message is required"}, 400)
         if message and should_translate_outgoing_message(message, target_lang):
@@ -7601,6 +7977,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_mobile_json({"ok": False, "error": str(exc)}, 404)
         result = {k: v for k, v in item.items() if k != "raw"}
         result["state_label"] = unique_code_label_zh(item.get("state"))
+        # The order's cached purchase info still carries the pre-verify code
+        # state; drop it so the next messages load reports the fresh state.
+        invoice = item.get("invoice")
+        if invoice:
+            try:
+                PURCHASE_INFO_CACHE.pop(int(invoice), None)
+            except (TypeError, ValueError):
+                pass
         self.send_mobile_json({"ok": True, "item": result})
 
     def chats(self) -> None:
@@ -8575,6 +8959,7 @@ def main() -> None:
     port = int(os.getenv("DIGISELLER_ADMIN_PORT", "8765"))
     start_auto_reload()
     start_online_keepalive()
+    start_ggsel_seller_refresh()
     start_chat_keepalive_browser()
     start_translation_cache_cleanup()
     server = ThreadingHTTPServer((host, port), Handler)
