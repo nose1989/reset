@@ -5282,6 +5282,32 @@ def run_watch(interval: int = 15) -> None:
         time.sleep(interval)
 
 
+# The mobile API never puts real platform names on the wire; requests and
+# responses use opaque codes so traffic sniffing can't tell platforms apart.
+MOBILE_PLATFORM_ALIASES = {"digiseller": "s1", "ggsel": "s2", "funpay": "s3"}
+MOBILE_PLATFORM_REAL = {alias: name for name, alias in MOBILE_PLATFORM_ALIASES.items()}
+
+
+def mobile_platform_real(value: Any) -> str:
+    text = str(value or "").strip()
+    return MOBILE_PLATFORM_REAL.get(text, text)
+
+
+def mobile_mask_platforms(data: Any) -> Any:
+    if isinstance(data, dict):
+        return {
+            key: (
+                MOBILE_PLATFORM_ALIASES.get(str(value), value)
+                if key == "platform"
+                else mobile_mask_platforms(value)
+            )
+            for key, value in data.items()
+        }
+    if isinstance(data, list):
+        return [mobile_mask_platforms(item) for item in data]
+    return data
+
+
 class Handler(BaseHTTPRequestHandler):
     def send_html(self, title: str, body: str, status: int = 200, *, include_funpay_boost: bool = False) -> None:
         data = layout(title, body, include_funpay_boost=include_funpay_boost)
@@ -7176,7 +7202,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def send_mobile_json(self, data: dict[str, Any], status: int = 200) -> None:
-        raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        raw = json.dumps(mobile_mask_platforms(data), ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -7324,7 +7350,7 @@ class Handler(BaseHTTPRequestHandler):
         return {"filename": filename or "file", "url": url or preview, "preview": preview, "is_image": bool(is_image)}
 
     def api_m_messages(self) -> None:
-        platform = self.q("platform", "digiseller").strip() or "digiseller"
+        platform = mobile_platform_real(self.q("platform", "digiseller")) or "digiseller"
         conv_id = int(self.q("id", "0") or 0)
         if not conv_id:
             return self.send_mobile_json({"ok": False, "error": "id is required"}, 400)
@@ -7505,14 +7531,14 @@ class Handler(BaseHTTPRequestHandler):
         uploads: list[UploadItem] = []
         if self.headers.get("Content-Type", "").startswith("multipart/form-data"):
             fields, uploads = self.read_form()
-            platform = clean_text(fields.get("platform") or "digiseller") or "digiseller"
+            platform = mobile_platform_real(clean_text(fields.get("platform") or "digiseller")) or "digiseller"
             conv_id = int(fields.get("id") or 0)
             message = clean_text(fields.get("message"))
             target_lang = clean_text(fields.get("target_lang")) or "en"
             phrase_id = clean_text(fields.get("phrase_id"))
         else:
             payload = self.read_json_body()
-            platform = clean_text(payload.get("platform") or "digiseller") or "digiseller"
+            platform = mobile_platform_real(clean_text(payload.get("platform") or "digiseller")) or "digiseller"
             conv_id = int(payload.get("id") or 0)
             message = clean_text(payload.get("message"))
             target_lang = clean_text(payload.get("target_lang")) or "en"
@@ -7547,7 +7573,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_m_deliver(self) -> None:
         payload = self.read_json_body()
-        platform = clean_text(payload.get("platform"))
+        platform = mobile_platform_real(clean_text(payload.get("platform")))
         conv_id = int(payload.get("id") or 0)
         delivered = bool(payload.get("delivered"))
         if platform != "ggsel":
