@@ -15,14 +15,26 @@ Environment variables:
     MOBILE_HOST               interface to bind (default 0.0.0.0, i.e. LAN)
     DIGISELLER_ADMIN_ORIGIN   backend origin to proxy to (default
                               http://127.0.0.1:8765)
+    DEVICE_ACTIVATION_KEY     when set, only activated devices may access the
+                              app. A new device is activated once by opening
+                              /activate?key=<DEVICE_ACTIVATION_KEY>; its
+                              generated device id is stored in the allowlist
+                              file and in a long-lived cookie. Unknown devices
+                              get 403. When unset, access is open (no gating).
+    DEVICE_ALLOWLIST_FILE     path of the allowlist JSON file (default
+                              <repo>/allowed_devices.json)
 """
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
+import secrets
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from http import cookies as http_cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -39,6 +51,41 @@ HOP_BY_HOP = {
     "te", "trailers", "transfer-encoding", "upgrade", "content-length",
 }
 
+ACTIVATION_KEY = (os.environ.get("DEVICE_ACTIVATION_KEY") or "").strip()
+ALLOWLIST_FILE = Path(
+    os.environ.get("DEVICE_ALLOWLIST_FILE")
+    or Path(__file__).resolve().parent.parent / "allowed_devices.json"
+)
+DEVICE_COOKIE = "reset_device_id"
+COOKIE_MAX_AGE = 10 * 365 * 24 * 3600
+_ALLOWLIST_LOCK = threading.Lock()
+
+
+def _load_allowlist() -> dict[str, dict]:
+    try:
+        data = json.loads(ALLOWLIST_FILE.read_text("utf-8"))
+        if isinstance(data, dict):
+            return data
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def _save_allowlist(allow: dict[str, dict]) -> None:
+    tmp = ALLOWLIST_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(allow, ensure_ascii=False, indent=2), "utf-8")
+    tmp.replace(ALLOWLIST_FILE)
+
+
+FORBIDDEN_HTML = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>\u8bbe\u5907\u672a\u6388\u6743</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f5f6f8;color:#333}main{text-align:center;padding:24px}h1{font-size:20px}p{color:#777;font-size:14px}</style>
+</head><body><main><h1>\u8bbe\u5907\u672a\u6388\u6743</h1>
+<p>\u6b64\u8bbe\u5907\u6ca1\u6709\u8bbf\u95ee\u6743\u9650\u3002\u8bf7\u8054\u7cfb\u7ba1\u7406\u5458\u83b7\u53d6\u6fc0\u6d3b\u94fe\u63a5\u3002</p>
+</main></body></html>"""
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "MobileServe/1.0"
@@ -52,9 +99,60 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802
         self._dispatch("OPTIONS")
 
+    def _device_id(self) -> str | None:
+        jar = http_cookies.SimpleCookie(self.headers.get("Cookie") or "")
+        morsel = jar.get(DEVICE_COOKIE)
+        return morsel.value if morsel else None
+
+    def _set_device_cookie(self, device_id: str) -> None:
+        self.send_header(
+            "Set-Cookie",
+            f"{DEVICE_COOKIE}={device_id}; Max-Age={COOKIE_MAX_AGE}; Path=/; HttpOnly; SameSite=Lax",
+        )
+
+    def _activate(self, query: str) -> None:
+        params = urllib.parse.parse_qs(query)
+        key = (params.get("key") or [""])[0]
+        if not ACTIVATION_KEY or not secrets.compare_digest(key, ACTIVATION_KEY):
+            self._forbidden()
+            return
+        device_id = self._device_id() or secrets.token_urlsafe(24)
+        with _ALLOWLIST_LOCK:
+            allow = _load_allowlist()
+            if device_id not in allow:
+                allow[device_id] = {"ua": self.headers.get("User-Agent", "")[:200]}
+                _save_allowlist(allow)
+        self.send_response(302)
+        self.send_header("Location", "/")
+        self._set_device_cookie(device_id)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _forbidden(self) -> None:
+        body = FORBIDDEN_HTML.encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _authorized(self) -> bool:
+        if not ACTIVATION_KEY:
+            return True
+        device_id = self._device_id()
+        return bool(device_id) and device_id in _load_allowlist()
+
     def _dispatch(self, method: str) -> None:
-        path = urllib.parse.urlparse(self.path).path
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
         try:
+            if ACTIVATION_KEY and path == "/activate":
+                self._activate(parsed.query)
+                return
+            if not self._authorized():
+                self._forbidden()
+                return
             if path.startswith(PROXY_PREFIXES):
                 self._proxy(method)
             else:
