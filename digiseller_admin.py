@@ -2827,6 +2827,32 @@ FUNPAY_BOOST_STATUS: dict[str, Any] = {
 }
 FUNPAY_BOOST_COOLDOWNS: dict[int, float] = {}
 FUNPAY_BOOST_HISTORY: dict[int, dict[str, Any]] = {}
+MCONV_CACHE_TTL_SECONDS = 20
+_MCONV_CACHE: dict[str, Any] = {"payload": None, "ts": 0.0}
+_MCONV_LOCK = threading.Lock()
+_MCONV_REFRESHING = False
+
+
+def _mconv_store(payload: dict[str, Any]) -> None:
+    with _MCONV_LOCK:
+        _MCONV_CACHE["payload"] = payload
+        _MCONV_CACHE["ts"] = time.time()
+
+
+def _mconv_clear_unread(platform: str, conv_id: int) -> None:
+    """Zero the unread badge of one conversation in the cached list so the
+    badge clears immediately after the chat is opened."""
+    with _MCONV_LOCK:
+        payload = _MCONV_CACHE["payload"]
+        if not payload:
+            return
+        conversations = payload.get("conversations") or []
+        for conv in conversations:
+            if conv.get("platform") == platform and conv.get("id") == conv_id:
+                conv["unread"] = 0
+        payload["unread_total"] = sum(int(c.get("unread") or 0) for c in conversations)
+
+
 FUNPAY_BOOST_LOCK = threading.Lock()
 FUNPAY_BOOST_THREAD: threading.Thread | None = None
 
@@ -7575,6 +7601,35 @@ class Handler(BaseHTTPRequestHandler):
         return {"kind": "initial", "initial": fallback}
 
     def api_m_conversations(self) -> None:
+        # The list is expensive to build (several remote API calls, ~5s), so
+        # serve it from a short-lived cache and refresh stale data in the
+        # background: every poll after the first responds instantly.
+        global _MCONV_REFRESHING
+        with _MCONV_LOCK:
+            payload = _MCONV_CACHE["payload"]
+            fresh = payload is not None and time.time() - _MCONV_CACHE["ts"] < MCONV_CACHE_TTL_SECONDS
+            start_refresh = payload is not None and not fresh and not _MCONV_REFRESHING
+            if start_refresh:
+                _MCONV_REFRESHING = True
+        if payload is not None:
+            if start_refresh:
+                threading.Thread(target=self._refresh_m_conversations, daemon=True).start()
+            return self.send_mobile_json(payload)
+        payload = self._build_m_conversations()
+        _mconv_store(payload)
+        self.send_mobile_json(payload)
+
+    def _refresh_m_conversations(self) -> None:
+        global _MCONV_REFRESHING
+        try:
+            _mconv_store(self._build_m_conversations())
+        except Exception:
+            pass
+        finally:
+            with _MCONV_LOCK:
+                _MCONV_REFRESHING = False
+
+    def _build_m_conversations(self) -> dict[str, Any]:
         entries: list[tuple[float, dict[str, Any]]] = []
         errors: list[str] = []
         try:
@@ -7668,7 +7723,7 @@ class Handler(BaseHTTPRequestHandler):
         entries.sort(key=lambda item: (int(item[1].get("unread") or 0) > 0, item[0]), reverse=True)
         conversations = [item for _, item in entries]
         unread_total = sum(int(c.get("unread") or 0) for c in conversations)
-        self.send_mobile_json({"ok": True, "conversations": conversations, "unread_total": unread_total, "errors": errors})
+        return {"ok": True, "conversations": conversations, "unread_total": unread_total, "errors": errors}
 
     @staticmethod
     def _mobile_attachment(msg: dict[str, Any]) -> dict[str, Any]:
@@ -7735,6 +7790,7 @@ class Handler(BaseHTTPRequestHandler):
                 name = self._mobile_display_name(self.q("name", ""), conv_id) or (email.split("@", 1)[0] if email else "")
         except Exception as exc:
             return self.send_mobile_json({"ok": False, "error": str(exc)}, 502)
+        _mconv_clear_unread(platform, conv_id)
         target_lang = detect_buyer_language(raw)
         messages = []
         for idx, msg in enumerate(raw, 1):
