@@ -517,7 +517,16 @@ export default function Conversation() {
                     </div>
                   )}
                 </div>
-                {m.date && <div className="msg-time">{m.date}</div>}
+                {(m.date || (isOut && typeof m.read === "boolean")) && (
+                  <div className="msg-time">
+                    {isOut && typeof m.read === "boolean" && (
+                      <span className={`msg-read ${m.read ? "is-read" : ""}`}>
+                        {m.read ? "✓ 已读" : "未读"}
+                      </span>
+                    )}
+                    {m.date}
+                  </div>
+                )}
               </div>
             );
           })

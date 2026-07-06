@@ -566,6 +566,14 @@ body {
   font-size: 11px;
   margin-top: 3px;
 }
+.msg-read {
+  margin-right: 6px;
+  color: #94a3b8;
+  font-weight: 700;
+}
+.msg-read.is-read {
+  color: #16a34a;
+}
 .attachment {
   display: flex;
   flex-direction: column;

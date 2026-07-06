@@ -7681,6 +7681,27 @@ class Handler(BaseHTTPRequestHandler):
             preview = "https://graph.digiseller.ru/img_deb.ashx?f=" + urllib.parse.quote(f"{msg.get('id')}/{filename}") + "&w=360"
         return {"filename": filename or "file", "url": url or preview, "preview": preview, "is_image": bool(is_image)}
 
+    @staticmethod
+    def _message_read_state(msg: dict[str, Any]) -> bool | None:
+        """Whether the buyer has read this message, or None when the platform
+        does not report per-message read state (e.g. FunPay scraped chats)."""
+        has_signal = False
+        for key in (
+            "date_seen", "dateSeen", "DateSeen",
+            "date_view", "dateView", "DateView",
+            "date_viewed", "dateViewed", "DateViewed",
+        ):
+            if key in msg:
+                has_signal = True
+                if msg.get(key):
+                    return True
+        for key in ("is_viewed", "isViewed", "IsViewed", "is_seen", "isSeen", "IsSeen"):
+            if key in msg:
+                has_signal = True
+                if str(msg.get(key) or "").lower() in {"1", "true", "yes"}:
+                    return True
+        return False if has_signal else None
+
     def api_m_messages(self) -> None:
         platform = mobile_platform_real(self.q("platform", "digiseller")) or "digiseller"
         conv_id = int(self.q("id", "0") or 0)
@@ -7729,6 +7750,10 @@ class Handler(BaseHTTPRequestHandler):
                 "translated": "",
                 "lang": "",
             }
+            if is_seller:
+                read = self._message_read_state(msg)
+                if read is not None:
+                    entry["read"] = read
             if is_attachment_message(msg):
                 entry["attachment"] = self._mobile_attachment(msg)
             elif not is_seller and should_translate_text(text) and heuristic_language(text) not in {"zh", "zh-CN"}:

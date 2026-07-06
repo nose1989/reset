@@ -46,6 +46,7 @@ export interface Message {
   translate: boolean;
   translated: string;
   lang: string;
+  read?: boolean;
   attachment?: Attachment;
 }
 
