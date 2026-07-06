@@ -112,7 +112,7 @@ class Handler(BaseHTTPRequestHandler):
     def _set_device_cookie(self, device_id: str) -> None:
         self.send_header(
             "Set-Cookie",
-            f"{DEVICE_COOKIE}={device_id}; Max-Age={COOKIE_MAX_AGE}; Path=/; HttpOnly; SameSite=Lax",
+            f"{DEVICE_COOKIE}={device_id}; Max-Age={COOKIE_MAX_AGE}; Path=/; HttpOnly; Secure; SameSite=Lax",
         )
 
     def _activate(self, query: str) -> None:
