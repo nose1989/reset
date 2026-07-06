@@ -685,6 +685,7 @@ CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 FUNPAY_CHAT_BASE = "https://funpay.com"
 RECENT_ORDER_DAYS = 30
 RECENT_CHAT_DAYS = 30
+MOBILE_CHAT_DAYS = 7
 
 
 def lang_label(lang: str) -> str:
@@ -7635,7 +7636,7 @@ class Handler(BaseHTTPRequestHandler):
         errors: list[str] = []
         try:
             for chat in client.chats(page_size=100):
-                if not is_recent_time(chat.get("last_date"), RECENT_CHAT_DAYS):
+                if not is_recent_time(chat.get("last_date"), MOBILE_CHAT_DAYS):
                     continue
                 order_id = int(chat.get("id_i") or 0)
                 if not order_id:
@@ -7672,7 +7673,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     ggsel_unread_ids = set()
                 for chat in ggsel_client.all_chats():
-                    if not is_recent_time(ggsel_chat_last_date(chat), RECENT_CHAT_DAYS):
+                    if not is_recent_time(ggsel_chat_last_date(chat), MOBILE_CHAT_DAYS):
                         continue
                     order_id = ggsel_chat_order_id(chat)
                     if not order_id:
@@ -7697,7 +7698,7 @@ class Handler(BaseHTTPRequestHandler):
             if funpay_client.configured():
                 products_by_user = funpay_client.cached_products_by_user()
                 for index, chat in enumerate(funpay_client.chats(limit=50)):
-                    if not is_recent_time(chat.get("last_date"), RECENT_CHAT_DAYS):
+                    if not is_recent_time(chat.get("last_date"), MOBILE_CHAT_DAYS):
                         continue
                     node_id = int(chat.get("node_id") or 0)
                     if not node_id:
