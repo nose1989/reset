@@ -2841,9 +2841,68 @@ def _mconv_store(payload: dict[str, Any]) -> None:
         _MCONV_CACHE["ts"] = time.time()
 
 
+M_RECENT_OPEN_FILE = APP_DIR / "m_recent_opens.json"
+M_RECENT_OPEN_WINDOW_SECONDS = 24 * 3600
+_M_RECENT_OPENS: dict[str, float] = {}
+_m_recent_opens_lock = threading.Lock()
+
+
+def _load_m_recent_opens() -> None:
+    try:
+        data = json.loads(M_RECENT_OPEN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if isinstance(data, dict):
+        for key, value in data.items():
+            try:
+                _M_RECENT_OPENS[str(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+
+
+_load_m_recent_opens()
+
+
+def mark_m_conversation_opened(platform: str, conv_id: int) -> None:
+    now = time.time()
+    with _m_recent_opens_lock:
+        _M_RECENT_OPENS[f"{platform}:{conv_id}"] = now
+        for key in [k for k, ts in _M_RECENT_OPENS.items() if now - ts > M_RECENT_OPEN_WINDOW_SECONDS]:
+            del _M_RECENT_OPENS[key]
+        snapshot = dict(_M_RECENT_OPENS)
+    try:
+        M_RECENT_OPEN_FILE.write_text(json.dumps(snapshot), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def m_recent_open_ts(platform: Any, conv_id: Any) -> float:
+    with _m_recent_opens_lock:
+        ts = _M_RECENT_OPENS.get(f"{platform}:{conv_id}", 0.0)
+    if ts and time.time() - ts <= M_RECENT_OPEN_WINDOW_SECONDS:
+        return ts
+    return 0.0
+
+
+def _mconv_sort(conversations: list[dict[str, Any]]) -> None:
+    """Order the mobile list: unread first, then recently opened chats
+    (newest click first), then everything else by latest message time."""
+
+    def key(conv: dict[str, Any]) -> tuple[int, float]:
+        if int(conv.get("unread") or 0) > 0:
+            return (2, float(conv.get("sort") or 0.0))
+        opened = m_recent_open_ts(conv.get("platform"), conv.get("id"))
+        if opened:
+            return (1, opened)
+        return (0, float(conv.get("sort") or 0.0))
+
+    conversations.sort(key=key, reverse=True)
+
+
 def _mconv_clear_unread(platform: str, conv_id: int) -> None:
     """Zero the unread badge of one conversation in the cached list so the
-    badge clears immediately after the chat is opened."""
+    badge clears immediately after the chat is opened, and re-rank the list
+    so the freshly opened chat lands in the recently-opened tier."""
     with _MCONV_LOCK:
         payload = _MCONV_CACHE["payload"]
         if not payload:
@@ -2852,6 +2911,7 @@ def _mconv_clear_unread(platform: str, conv_id: int) -> None:
         for conv in conversations:
             if conv.get("platform") == platform and conv.get("id") == conv_id:
                 conv["unread"] = 0
+        _mconv_sort(conversations)
         payload["unread_total"] = sum(int(c.get("unread") or 0) for c in conversations)
 
 
@@ -7830,9 +7890,11 @@ class Handler(BaseHTTPRequestHandler):
                     }))
         except Exception as exc:
             errors.append(str(exc))
-        # Unread conversations float to the top; within each group sort by time.
-        entries.sort(key=lambda item: (int(item[1].get("unread") or 0) > 0, item[0]), reverse=True)
-        conversations = [item for _, item in entries]
+        conversations = []
+        for sort_key, conv in entries:
+            conv["sort"] = sort_key
+            conversations.append(conv)
+        _mconv_sort(conversations)
         unread_total = sum(int(c.get("unread") or 0) for c in conversations)
         return {"ok": True, "conversations": conversations, "unread_total": unread_total, "errors": errors}
 
@@ -7901,6 +7963,7 @@ class Handler(BaseHTTPRequestHandler):
                 name = self._mobile_display_name(self.q("name", ""), conv_id) or (email.split("@", 1)[0] if email else "")
         except Exception as exc:
             return self.send_mobile_json({"ok": False, "error": str(exc)}, 502)
+        mark_m_conversation_opened(platform, conv_id)
         _mconv_clear_unread(platform, conv_id)
         target_lang = detect_buyer_language(raw)
         messages = []
