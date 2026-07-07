@@ -5600,6 +5600,115 @@ def start_ggsel_seller_refresh() -> None:
     threading.Thread(target=run_ggsel_seller_refresh, args=(interval,), daemon=True).start()
 
 
+def _parse_id_list(raw: str) -> list[int]:
+    ids: list[int] = []
+    for part in re.split(r"[\s,;]+", raw or ""):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            continue
+        if value not in ids:
+            ids.append(value)
+    return ids
+
+
+GGSEL_AD_STATUS: dict[str, Any] = {"last_run": "", "last_error": "", "actions": []}
+
+
+def ggsel_auto_ads_once() -> None:
+    """Keep paid placement (summpays) active for the configured GGSEL offers:
+    bid the minimum rate for the next days, but only while the offer is on sale."""
+    load_env()
+    offer_ids = _parse_id_list(os.getenv("GGSEL_AD_OFFER_IDS", ""))
+    if not offer_ids or not ggsel_client.seller_office_configured():
+        return
+    try:
+        bid = float(os.getenv("GGSEL_AD_BID", "0.4") or "0.4")
+    except ValueError:
+        bid = 0.4
+    try:
+        days_ahead = max(1, min(9, int(os.getenv("GGSEL_AD_DAYS_AHEAD", "2") or "2")))
+    except ValueError:
+        days_ahead = 2
+    offers: dict[int, dict[str, Any]] = {}
+    page = 1
+    while True:
+        data = ggsel_client.seller_office_get("/api/v1/offers", {"page": page, "limit": 100})
+        items = data.get("data") or []
+        for item in items:
+            gid = item.get("ggsel_id")
+            if isinstance(gid, int):
+                offers[gid] = item
+        pagination = data.get("pagination") or {}
+        if page >= int(pagination.get("total_pages") or 1) or not items:
+            break
+        page += 1
+    table: dict[int, dict[str, Any]] = {}
+    data = ggsel_client.seller_office_get("/api/v1/summpays/table_view", {"page": 1, "limit": 100})
+    for item in data.get("data") or []:
+        gid = item.get("ggsel_id")
+        if isinstance(gid, int):
+            table[gid] = item
+    actions: list[str] = []
+    for gid in offer_ids:
+        offer = offers.get(gid)
+        if not offer:
+            actions.append(f"{gid}: offer not found, skipped")
+            continue
+        if (offer.get("status") or "").lower() != "active":
+            actions.append(f"{gid}: status={offer.get('status')}, skipped")
+            continue
+        quantity = offer.get("quantity")
+        if not offer.get("unlimited_quantity") and isinstance(quantity, int) and quantity <= 0:
+            actions.append(f"{gid}: out of stock, skipped")
+            continue
+        row = table.get(gid)
+        slots = (row.get("summpays") if row else None) or []
+        internal_id = (row or {}).get("id") or offer.get("id")
+        missing = [
+            s["date"]
+            for s in slots[:days_ahead]
+            if float(s.get("sum") or 0) < bid
+        ]
+        for date in missing:
+            ggsel_client.seller_office_request(
+                "POST",
+                "/api/v1/summpays",
+                json_body={"sum": bid, "date_start": date, "date_end": date, "offer_ids": [internal_id]},
+            )
+            actions.append(f"{gid}: bid {bid} set for {date}")
+        if not missing:
+            actions.append(f"{gid}: ok")
+    GGSEL_AD_STATUS["actions"] = actions
+    print("GGSEL auto-ads: " + "; ".join(actions), flush=True)
+
+
+def run_ggsel_auto_ads(interval: int) -> None:
+    while True:
+        try:
+            ggsel_auto_ads_once()
+            GGSEL_AD_STATUS["last_error"] = ""
+        except Exception as exc:
+            GGSEL_AD_STATUS["last_error"] = str(exc)
+            print(f"GGSEL auto-ads error: {exc}", flush=True)
+        GGSEL_AD_STATUS["last_run"] = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        time.sleep(interval)
+
+
+def start_ggsel_auto_ads() -> None:
+    enabled = os.getenv("GGSEL_AUTO_ADS", "1").strip().lower() not in {"0", "false", "no", "off"}
+    if not enabled:
+        return
+    try:
+        interval = max(300, int(os.getenv("GGSEL_AD_INTERVAL", "1800") or "1800"))
+    except ValueError:
+        interval = 1800
+    threading.Thread(target=run_ggsel_auto_ads, args=(interval,), daemon=True).start()
+
+
 def notify_desktop(text: str) -> None:
     print("\a" + text, flush=True)
     if sys.platform == "darwin":
@@ -9043,6 +9152,7 @@ def main() -> None:
     start_auto_reload()
     start_online_keepalive()
     start_ggsel_seller_refresh()
+    start_ggsel_auto_ads()
     start_chat_keepalive_browser()
     start_translation_cache_cleanup()
     server = ThreadingHTTPServer((host, port), Handler)
